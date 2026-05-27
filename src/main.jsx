@@ -10,7 +10,7 @@ import {
 } from './data.jsx';
 import {
   Icon, Pill, Btn, ProgChip, ClubNameCell,
-  affPill, cqiBand, useToast,
+  affPill, cqiBand, useToast, useEscapeClose,
 } from './atoms.jsx';
 import {
   AdminDashboard, AdminClubsList, AdminClubDetail, AdminFixtures,
@@ -137,6 +137,7 @@ const HELP_CONTACTS = [
   { name: "Yash",  role: "Union office",   email: "yash@dolphinscricket.co.za"  },
 ];
 function HelpModal({ onClose }) {
+  useEscapeClose(onClose);
   return (
     <div className="task-modal-backdrop" onClick={e=>e.target===e.currentTarget && onClose()}>
       <div className="task-modal narrow" style={{maxWidth:560}}>
@@ -195,6 +196,7 @@ function HelpModal({ onClose }) {
 
 /* ─── TaskModal — wraps the affiliation form & documents view ─── */
 function TaskModal({ eyebrow, title, sub, onClose, narrow, children }) {
+  useEscapeClose(onClose);
   return (
     <div className="task-modal-backdrop" onClick={e=>e.target===e.currentTarget && onClose()}>
       <div className={`task-modal ${narrow?"narrow":""}`}>
@@ -406,8 +408,8 @@ function Shell({
   function renderMain() {
     if (role === "admin") {
       const gotoList = () => gotoAdminView("clubs_list");
-      if (view === "dashboard")    return <AdminDashboard clubs={clubs} gotoClub={setActiveClub} gotoList={gotoList} />;
-      if (view === "clubs_list")   return <AdminClubsList clubs={clubs} gotoClub={setActiveClub} />;
+      if (view === "dashboard")    return <AdminDashboard clubs={clubs} gotoClub={setActiveClub} gotoList={gotoList} gotoAdminView={gotoAdminView} toast={toastShow} />;
+      if (view === "clubs_list")   return <AdminClubsList clubs={clubs} gotoClub={setActiveClub} toast={toastShow} />;
       if (view === "club_detail")  return <AdminClubDetail club={activeClub} gotoList={gotoList} />;
       if (view === "affiliations") return <AdminFiltered clubs={clubs} kind="affiliation" gotoClub={setActiveClub}/>;
       if (view === "documents")    return <AdminFiltered clubs={clubs} kind="docs" gotoClub={setActiveClub}/>;
@@ -510,7 +512,7 @@ function Shell({
             <>
               <div className="nav-section" style={{marginTop:18}}>Workspace</div>
               {[
-                {v:"_settings", label:"Settings",       icon:Icon.Shield, action:()=>{}},
+                {v:"_settings", label:"Settings",       icon:Icon.Shield, action:()=>toastShow("Settings coming soon — workspace preferences, notifications and access controls.", "warn")},
                 {v:"_help",     label:"Need Help?",     icon:Icon.Mail,   action:()=>setShowHelp(true)},
               ].map(n=>(
                 <button key={n.v} className="nav-item" onClick={n.action}>

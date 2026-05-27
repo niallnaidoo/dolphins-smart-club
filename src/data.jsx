@@ -161,7 +161,7 @@ export const SAMPLE_CLUBS = [
   },
   {
     id: "verulam",    name: "Verulam CC",          district: "Ethekwini Metro CU",
-    sub: "Verulam",   chair: "Kugan Subrayen",     affiliation: "in_progress", paid: false,
+    sub: "EMCU",      chair: "Kugan Subrayen",     affiliation: "in_progress", paid: false,
     cqi: 38.5,        docs: { constitution:true,  agm:false, financials:false, exco:false },
     players: 21,      teams: 1, women: 0, juniors: 2, color:"#D85A30",
     ground: { venue:"Verulam Sports Field", suburb:"Verulam", lat:-29.6411, lon:31.0498 },
@@ -182,14 +182,14 @@ export const SAMPLE_CLUBS = [
   },
   {
     id: "ilembe",     name: "Ilembe CC",           district: "Illembe Cricket District",
-    sub: "Ilembe",    chair: "Naren Singh",        affiliation: "complete", paid: true,
+    sub: "ICD",       chair: "Naren Singh",        affiliation: "complete", paid: true,
     cqi: 47.6,        docs: { constitution:true,  agm:false, financials:true,  exco:false },
     players: 28,      teams: 2, women: 0, juniors: 0, color:"#8A6E1C",
     ground: { venue:"KwaDukuza Stadium", suburb:"KwaDukuza", lat:-29.3398, lon:31.2810 },
   },
   {
     id: "tongaat",    name: "Tongaat CC",          district: "Ethekwini Metro CU",
-    sub: "Tongaat",   chair: "Praven Govender",    affiliation: "not_started", paid: false,
+    sub: "EMCU",      chair: "Praven Govender",    affiliation: "not_started", paid: false,
     cqi: 0,           docs: { constitution:false, agm:false, financials:false, exco:false },
     players: 0,       teams: 1, women: 0, juniors: 1, color:"#D85A30",
     ground: { venue:"Tongaat Sports Field", suburb:"Tongaat", lat:-29.5783, lon:31.1149 },

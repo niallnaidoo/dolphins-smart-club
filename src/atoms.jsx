@@ -1,6 +1,7 @@
 /* ─── Shared atom components ─── */
 
 import { useState, useEffect, useRef } from 'react';
+import { CQI_STRUCTURE } from './data.jsx';
 
 /* ─── Icons (inline, no external deps) ─── */
 export const Icon = {
@@ -276,6 +277,15 @@ export function scoreCQI(answers) {
 }
 
 /* Simulated toast */
+/* Close-on-Escape hook for modals/overlays. */
+export function useEscapeClose(onClose) {
+  useEffect(() => {
+    const handler = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+}
+
 export function useToast() {
   const [msg, setMsg] = useState(null);
   const [tone, setTone] = useState("ok");
@@ -293,5 +303,5 @@ export function useToast() {
 
 Object.assign(window, {
   Icon, Pill, Btn, Card, KPI, ProgressBar, ProgChip, ClubAvatar, ClubNameCell,
-  YN, NumStep, NumSlider, Choice, MoneyInput, CountUp, statusFor, affPill, cqiBand, scoreCQI, useToast,
+  YN, NumStep, NumSlider, Choice, MoneyInput, CountUp, statusFor, affPill, cqiBand, scoreCQI, useToast, useEscapeClose,
 });

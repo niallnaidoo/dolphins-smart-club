@@ -1,9 +1,10 @@
 /* ─── Club Onboarding · 3-step cinematic flow ─── */
 
 import { useState as useStateOb } from 'react';
-import { Icon, Btn } from './atoms.jsx';
+import { Icon, Btn, useEscapeClose } from './atoms.jsx';
 
 export function Onboarding({ club, onClose, onComplete, onStart }) {
+  useEscapeClose(onClose);
   const [step, setStep] = useStateOb(1);
   const [contact, setContact] = useStateOb({
     name: club.chair,

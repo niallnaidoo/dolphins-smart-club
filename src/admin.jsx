@@ -811,23 +811,25 @@ export function CreateSeriesForm({ clubs, onCreate, onClose }) {
   );
 }
 
-export function AdminDashboard({ clubs, gotoClub, gotoList }) {
+export function AdminDashboard({ clubs, gotoClub, gotoList, gotoAdminView, toast }) {
   const stats = cohortStats(clubs);
   const pct = (n,d) => Math.round(n/d*100);
+  const notify = (m) => toast ? toast(m, "warn") : null;
 
   // Sort by progress descending for "at risk" / "leaders"
   const ranked = [...clubs].map(c => ({...c, prog: overallProgress(c)})).sort((a,b)=>b.prog-a.prog);
   const leaders = ranked.slice(0, 5);
   const atRisk  = [...ranked].sort((a,b)=>a.prog-b.prog).slice(0, 5);
 
-  // Phase completion roll-up
+  // Phase completion roll-up — each card routes to its filtered cohort view
   const phases = [
-    { num:"01", label:"Affiliation",   tone:"navy",  done: clubs.filter(c=>c.paid).length },
-    { num:"02", label:"League / Fixtures", tone:"teal", done: clubs.filter(c=>c.affiliation==="complete").length },
-    { num:"03", label:"Player Registration", tone:"navy", done: clubs.filter(c=>c.players >= 30).length },
-    { num:"04", label:"Live Scoring / Talent ID", tone:"teal", done: 0 },
-    { num:"05", label:"Compliance Docs", tone:"gold", done: clubs.filter(c=>Object.values(c.docs).every(v=>v)).length },
+    { num:"01", label:"Affiliation",   tone:"navy",  done: clubs.filter(c=>c.paid).length, view:"affiliations" },
+    { num:"02", label:"League / Fixtures", tone:"teal", done: clubs.filter(c=>c.affiliation==="complete").length, view:"fixtures" },
+    { num:"03", label:"Player Registration", tone:"navy", done: clubs.filter(c=>c.players >= 30).length, view:"clubs_list" },
+    { num:"04", label:"Live Scoring / Talent ID", tone:"teal", done: 0, view:null },
+    { num:"05", label:"Compliance Docs", tone:"gold", done: clubs.filter(c=>Object.values(c.docs).every(v=>v)).length, view:"documents" },
   ];
+  const onPhaseClick = (p) => p.view ? (gotoAdminView ? gotoAdminView(p.view) : null) : notify("Phase 04 dashboards coming soon");
 
   return (
     <div>
@@ -845,11 +847,11 @@ export function AdminDashboard({ clubs, gotoClub, gotoList }) {
         <div className="ph-left">
           <div className="ph-crumb">Dolphins · Admin Console</div>
           <h1 className="ph-title">Club Integration <em>Cohort</em></h1>
-          <p className="ph-desc">86 affiliated clubs across the Dolphins Cricket Services districts. Track affiliation, document compliance, CQI scoring and franchise readiness for the 2026/27 season.</p>
+          <p className="ph-desc">{stats.total} affiliated clubs across the Dolphins Cricket Services districts. Track affiliation, document compliance, CQI scoring and franchise readiness for the 2026/27 season.</p>
         </div>
         <div className="ph-actions">
-          <Btn tone="outline" icon={Icon.Download} size="sm">Export cohort report</Btn>
-          <Btn tone="ink" icon={Icon.Mail} size="sm">Send bulk reminder</Btn>
+          <Btn tone="outline" icon={Icon.Download} size="sm" onClick={()=>notify("Export coming soon — the report will email as CSV to the union office.")}>Export cohort report</Btn>
+          <Btn tone="ink" icon={Icon.Mail} size="sm" onClick={()=>notify("Bulk reminder coming soon — will email all clubs missing submissions.")}>Send bulk reminder</Btn>
         </div>
       </div>
 
@@ -860,7 +862,7 @@ export function AdminDashboard({ clubs, gotoClub, gotoList }) {
           <strong>Submission deadline · 21 June 2026.</strong> Clubs must complete affiliation, upload required compliance documents, and submit the CQI form. <span className="days">31 days remaining</span>.
         </div>
         <div className="deadline-cta">
-          <Btn tone="outline" size="sm">Edit deadline</Btn>
+          <Btn tone="outline" size="sm" onClick={()=>notify("Editing the deadline is coming soon — contact the union office for now.")}>Edit deadline</Btn>
         </div>
       </div>
 
@@ -888,7 +890,7 @@ export function AdminDashboard({ clubs, gotoClub, gotoList }) {
       <Card title="Integration phase roll-up" sub="Cohort progress through the 5-phase smart integration journey">
         <div className="phase-track" style={{borderRadius:0, border:"none"}}>
           {phases.map((p,i)=>(
-            <div key={i} className="phase-step" style={{padding:"14px 18px", borderRight: i<phases.length-1?"1px solid var(--line)":"none"}}>
+            <div key={i} className="phase-step" style={{padding:"14px 18px", borderRight: i<phases.length-1?"1px solid var(--line)":"none"}} onClick={()=>onPhaseClick(p)}>
               <div className="ps-n">PHASE {p.num}</div>
               <div className="ps-t">{p.label}</div>
               <div style={{display:"flex",alignItems:"center",gap:8,marginTop:10}}>
@@ -1063,7 +1065,8 @@ function ClubInsights({ clubs }) {
   );
 }
 
-export function AdminClubsList({ clubs, gotoClub }) {
+export function AdminClubsList({ clubs, gotoClub, toast }) {
+  const notify = (m) => toast ? toast(m, "warn") : null;
   const [q, setQ] = useStateA("");
   const [filter, setFilter] = useStateA("all");
 
@@ -1094,8 +1097,8 @@ export function AdminClubsList({ clubs, gotoClub }) {
           <p className="ph-desc">Filter, sort and drill into each affiliated club's submission status across all five phases of the smart integration programme.</p>
         </div>
         <div className="ph-actions">
-          <Btn tone="outline" icon={Icon.Download} size="sm">Export CSV</Btn>
-          <Btn tone="ink" icon={Icon.Plus} size="sm">Onboard new club</Btn>
+          <Btn tone="outline" icon={Icon.Download} size="sm" onClick={()=>notify("Export coming soon — full CSV with cohort filters applied.")}>Export CSV</Btn>
+          <Btn tone="ink" icon={Icon.Plus} size="sm" onClick={()=>notify("Onboarding flow coming soon — contact the union office to add a new club.")}>Onboard new club</Btn>
         </div>
       </div>
 

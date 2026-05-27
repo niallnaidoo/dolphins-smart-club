@@ -121,7 +121,7 @@ export function ClubHome({ club, goto, toast, replayOnboarding }) {
         <div className="ph-left">
           <div className="ph-crumb">Club Portal · {club.name}</div>
           <h1 className="ph-title">Good morning, <em>{club.chair.split(" ")[0]}</em></h1>
-          <p className="ph-desc">Your 2026/27 Cricket Services club integration sits at <strong style={{color:"var(--ink)"}}>{op}% complete</strong>. {next ? `Next up — ${next.t.toLowerCase()}.` : "All required steps are done — well batted."}</p>
+          <p className="ph-desc">Your 2026/27 Cricket Services club integration sits at <strong style={{color:"var(--ink)"}}>{next ? op : 100}% complete</strong>. {next ? `Next up — ${next.t.toLowerCase()}.` : "All required steps are done — well batted."}</p>
         </div>
         <div className="ph-actions">
           <Btn tone="outline" size="sm" onClick={replayOnboarding}>Walkthrough</Btn>
