@@ -424,7 +424,7 @@ function Shell({
     if (role === "admin") {
       const gotoList = () => gotoAdminView("clubs_list");
       if (view === "dashboard")    return <AdminDashboard clubs={clubs} gotoClub={setActiveClub} gotoList={gotoList} gotoAdminView={gotoAdminView} toast={toastShow} submissionDeadline={submissionDeadline} onUpdateDeadline={setSubmissionDeadline} />;
-      if (view === "clubs_list")   return <AdminClubsList clubs={clubs} gotoClub={setActiveClub} toast={toastShow} />;
+      if (view === "clubs_list")   return <AdminClubsList clubs={clubs} gotoClub={setActiveClub} toast={toastShow} submissionDeadline={submissionDeadline} />;
       if (view === "club_detail")  return <AdminClubDetail club={activeClub} gotoList={gotoList} onGenerateLink={()=>generatePlayerRegLink(activeClub.id)} toast={toastShow}/>;
       if (view === "affiliations") return <AdminFiltered clubs={clubs} kind="affiliation" gotoClub={setActiveClub}/>;
       if (view === "documents")    return <AdminFiltered clubs={clubs} kind="docs" gotoClub={setActiveClub}/>;

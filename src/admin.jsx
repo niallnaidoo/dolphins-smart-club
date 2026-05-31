@@ -1100,7 +1100,7 @@ function ClubInsights({ clubs, submissionDeadline }) {
   );
 }
 
-export function AdminClubsList({ clubs, gotoClub, toast }) {
+export function AdminClubsList({ clubs, gotoClub, toast, submissionDeadline }) {
   const notify = (m) => toast ? toast(m, "warn") : null;
   const [q, setQ] = useStateA("");
   const [filter, setFilter] = useStateA("all");
