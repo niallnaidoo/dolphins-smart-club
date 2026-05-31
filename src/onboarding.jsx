@@ -2,9 +2,12 @@
 
 import { useState as useStateOb } from 'react';
 import { Icon, Btn, useEscapeClose } from './atoms.jsx';
+import { formatDeadlineLong, formatDeadlineMid } from './data.jsx';
 
-export function Onboarding({ club, onClose, onComplete, onStart }) {
+export function Onboarding({ club, onClose, onComplete, onStart, submissionDeadline }) {
   useEscapeClose(onClose);
+  const deadlineLong = formatDeadlineLong(submissionDeadline);
+  const deadlineMid = formatDeadlineMid(submissionDeadline);
   const [step, setStep] = useStateOb(1);
   const [contact, setContact] = useStateOb({
     name: club.chair,
@@ -47,9 +50,9 @@ export function Onboarding({ club, onClose, onComplete, onStart }) {
         {/* ─── Stage ─── */}
         <div className="ob-stage">
           <div className="ob-step-content" key={step}>
-            {step === 1 && <StepWelcome club={club}/>}
-            {step === 2 && <StepSubmissions/>}
-            {step === 3 && <StepContact contact={contact} setContact={setContact} club={club}/>}
+            {step === 1 && <StepWelcome club={club} deadlineLong={deadlineLong}/>}
+            {step === 2 && <StepSubmissions deadlineLong={deadlineLong}/>}
+            {step === 3 && <StepContact contact={contact} setContact={setContact} club={club} deadlineMid={deadlineMid}/>}
           </div>
         </div>
 
@@ -71,7 +74,7 @@ export function Onboarding({ club, onClose, onComplete, onStart }) {
 }
 
 /* ─── Step 1 — Cinematic welcome (photo left · content right) ─── */
-function StepWelcome({ club }) {
+function StepWelcome({ club, deadlineLong }) {
   return (
     <div className="ob-hero">
       <div className="ob-hero-photo" style={{backgroundImage:"url('/players/ackerman-green.jpg')"}}>
@@ -87,7 +90,7 @@ function StepWelcome({ club }) {
           You're now the chair of <strong>{club.name}</strong> on the Smart Club platform — the digital home for every cricket club in the Dolphins Cricket Services district leagues.
         </p>
         <p className="ob-desc">
-          We'll walk you through what's required before <strong>21 June 2026</strong>, then hand over to your first form. The full setup takes about 8 minutes.
+          We'll walk you through what's required before <strong>{deadlineLong}</strong>, then hand over to your first form. The full setup takes about 8 minutes.
         </p>
       </div>
     </div>
@@ -95,7 +98,7 @@ function StepWelcome({ club }) {
 }
 
 /* ─── Step 2 — Three submissions ─── */
-function StepSubmissions() {
+function StepSubmissions({ deadlineLong }) {
   const items = [
     { i:<Icon.Form/>,   t:"2026/27 Affiliation Form",      d:"Club details, executive committee, leagues entered and coaches by designation.", tag:"~ 5 min" },
     { i:<Icon.Upload/>, t:"Compliance documents",          d:"Constitution · AGM Minutes · Financial Statements · Exco Reps Listed (PDF up to 10 MB each).", tag:"~ 3 min" },
@@ -104,7 +107,7 @@ function StepSubmissions() {
   return (
     <div className="ob-panel">
       <div className="ob-eyebrow">What we need from you</div>
-      <h2 className="ob-title">Three submissions <em>before 21 June 2026</em></h2>
+      <h2 className="ob-title">Three submissions <em>before {deadlineLong}</em></h2>
       <p className="ob-desc" style={{maxWidth:560}}>
         Everything below is a digital form built directly on the platform — no printing, no emailing PDFs. We've pre-filled what we can from the union database.
       </p>
@@ -125,7 +128,7 @@ function StepSubmissions() {
 }
 
 /* ─── Step 3 — Verify contact details ─── */
-function StepContact({ contact, setContact, club }) {
+function StepContact({ contact, setContact, club, deadlineMid }) {
   function up(k, v) { setContact(c => ({...c, [k]: v})); }
   return (
     <div className="ob-panel">
@@ -161,7 +164,7 @@ function StepContact({ contact, setContact, club }) {
         style={{width:"100%", textAlign:"left"}}
       >
         <div className="box">{contact.notify && <Icon.Check/>}</div>
-        Send me email &amp; SMS reminders as the 21 June deadline approaches.
+        Send me email &amp; SMS reminders as the {deadlineMid} deadline approaches.
       </button>
 
       <div className="ob-confirm-card">

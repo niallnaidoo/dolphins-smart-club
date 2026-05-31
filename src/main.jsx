@@ -5,8 +5,8 @@ import {
   useNavigate, useLocation, useParams,
 } from 'react-router-dom';
 import {
-  REQUIRED_DOCS, SAMPLE_CLUBS, SERIES,
-  cohortStats, docCompletion,
+  REQUIRED_DOCS, SAMPLE_CLUBS, SERIES, SUBMISSION_DEADLINE_DEFAULT,
+  cohortStats, docCompletion, formatDeadlineShort,
 } from './data.jsx';
 import {
   Icon, Pill, Btn, ProgChip, ClubNameCell,
@@ -23,9 +23,10 @@ import { Onboarding } from './onboarding.jsx';
 
 
 /* ─── Profile Select (entry screen) ─── */
-function ProfileSelect({ onSelect, clubs }) {
+function ProfileSelect({ onSelect, clubs, submissionDeadline }) {
   const stats = cohortStats(clubs);
   const unpaid = clubs.filter(c => !c.paid).length;
+  const deadlineShort = formatDeadlineShort(submissionDeadline);
 
   return (
     <div className="ps-screen">
@@ -106,7 +107,7 @@ function ProfileSelect({ onSelect, clubs }) {
               <div className="ps-card-stat-l">Steps</div>
             </div>
             <div className="ps-card-stat">
-              <div className="ps-card-stat-n">21 Jun</div>
+              <div className="ps-card-stat-n">{deadlineShort}</div>
               <div className="ps-card-stat-l">Deadline</div>
             </div>
           </div>
@@ -232,6 +233,7 @@ function AppRoutes() {
   const [showOnboarding, setShowOnboarding] = useStateApp(false);
   const [showCreateSeries, setShowCreateSeries] = useStateApp(false);
   const [showHelp, setShowHelp] = useStateApp(false);
+  const [submissionDeadline, setSubmissionDeadline] = useStateApp(SUBMISSION_DEADLINE_DEFAULT);
   const [toastShow, toastNode] = useToast();
   const navigate = useNavigate();
 
@@ -266,6 +268,7 @@ function AppRoutes() {
     onboarded, setOnboarded, showOnboarding, setShowOnboarding,
     showCreateSeries, setShowCreateSeries,
     showHelp, setShowHelp,
+    submissionDeadline, setSubmissionDeadline,
     updateSeries, deleteSeries, duplicateSeries, setReleased,
   };
 
@@ -275,6 +278,7 @@ function AppRoutes() {
         <Route path="/" element={
           <ProfileSelect
             clubs={clubs}
+            submissionDeadline={submissionDeadline}
             onSelect={(r) => navigate(r === "admin" ? "/admin/dashboard" : "/club/phoenix")}
           />
         }/>
@@ -293,6 +297,7 @@ function Shell({
   onboarded, setOnboarded, showOnboarding, setShowOnboarding,
   showCreateSeries, setShowCreateSeries,
   showHelp, setShowHelp,
+  submissionDeadline, setSubmissionDeadline,
   updateSeries, deleteSeries, duplicateSeries, setReleased,
 }) {
   const navigate = useNavigate();
@@ -418,7 +423,7 @@ function Shell({
   function renderMain() {
     if (role === "admin") {
       const gotoList = () => gotoAdminView("clubs_list");
-      if (view === "dashboard")    return <AdminDashboard clubs={clubs} gotoClub={setActiveClub} gotoList={gotoList} gotoAdminView={gotoAdminView} toast={toastShow} />;
+      if (view === "dashboard")    return <AdminDashboard clubs={clubs} gotoClub={setActiveClub} gotoList={gotoList} gotoAdminView={gotoAdminView} toast={toastShow} submissionDeadline={submissionDeadline} onUpdateDeadline={setSubmissionDeadline} />;
       if (view === "clubs_list")   return <AdminClubsList clubs={clubs} gotoClub={setActiveClub} toast={toastShow} />;
       if (view === "club_detail")  return <AdminClubDetail club={activeClub} gotoList={gotoList} onGenerateLink={()=>generatePlayerRegLink(activeClub.id)} toast={toastShow}/>;
       if (view === "affiliations") return <AdminFiltered clubs={clubs} kind="affiliation" gotoClub={setActiveClub}/>;
@@ -438,8 +443,9 @@ function Shell({
       // Affiliation + Documents render in modals layered on top of Home (handled below).
       // The base content stays Home while those are open.
       if (view === "home" || view === "affiliation" || view === "documents")
-        return <ClubHome club={activeClub} goto={gotoClubView} toast={toastShow} replayOnboarding={()=>setShowOnboarding(true)}/>;
+        return <ClubHome club={activeClub} goto={gotoClubView} toast={toastShow} replayOnboarding={()=>setShowOnboarding(true)} submissionDeadline={submissionDeadline}/>;
       if (view === "cqi")      return <CQIView club={activeClub} goto={gotoClubView} toast={toastShow}
+                                       submissionDeadline={submissionDeadline}
                                        onSubmit={(score)=>{ updateClub({cqi: score}); gotoClubView("home"); }}/>;
       if (view === "fixtures") {
         // Locked until affiliation is paid
@@ -547,6 +553,7 @@ function Shell({
       {showOnboarding && role === "club" && (
         <Onboarding
           club={activeClub}
+          submissionDeadline={submissionDeadline}
           onClose={() => setShowOnboarding(false)}
           onComplete={() => {
             setOnboarded(o => ({...o, [clubId]: true}));
@@ -596,6 +603,7 @@ function Shell({
             toast={toastShow}
             onUpload={uploadDoc}
             onSaveExco={saveExco}
+            submissionDeadline={submissionDeadline}
           />
         </TaskModal>
       )}

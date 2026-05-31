@@ -1,5 +1,44 @@
 /* ─── Sample data ─── */
 
+// 2026/27 season submission deadline — editable by the Dolphins admin via
+// the "Edit deadline" button on the cohort dashboard. Stored as ISO date so
+// date inputs and helpers work naturally.
+export const SUBMISSION_DEADLINE_DEFAULT = "2026-06-21";
+
+// "21 June 2026"
+export function formatDeadlineLong(iso) {
+  if (!iso) return "";
+  const d = new Date(iso + "T00:00:00");
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-ZA", { day: "numeric", month: "long", year: "numeric" });
+}
+
+// "21 Jun"
+export function formatDeadlineShort(iso) {
+  if (!iso) return "";
+  const d = new Date(iso + "T00:00:00");
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-ZA", { day: "numeric", month: "short" });
+}
+
+// "21 June"
+export function formatDeadlineMid(iso) {
+  if (!iso) return "";
+  const d = new Date(iso + "T00:00:00");
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-ZA", { day: "numeric", month: "long" });
+}
+
+// Whole days between today and the deadline (floor at 0). Past = 0.
+export function daysUntil(iso) {
+  if (!iso) return 0;
+  const target = new Date(iso + "T00:00:00");
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  const diff = Math.ceil((target - today) / 86400000);
+  return Math.max(0, diff);
+}
+
 // Sub-unions / districts derived from the affiliation form's drop-down
 export const DISTRICTS = [
   "Ethekwini Metro Cricket Union",

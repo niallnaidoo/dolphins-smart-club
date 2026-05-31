@@ -7,6 +7,7 @@ import {
   DISTRICTS, COACHING_LEVELS, REQUIRED_DOCS, CQI_STRUCTURE,
   LEAGUE_OPTIONS, LEAGUE_LABEL_BY_KEY, leagueOptionsForDistrict,
   docCompletion, overallProgress, fixtureCost,
+  formatDeadlineLong, formatDeadlineShort, daysUntil,
 } from './data.jsx';
 import {
   Icon, Pill, Btn, Card, KPI, ClubNameCell, YN, Choice, MoneyInput, NumSlider, CountUp,
@@ -91,7 +92,11 @@ export function GroundMap({ query, onResolved }) {
 }
 
 /* ─── Club Home: phase tracker + onboarding next step ─── */
-export function ClubHome({ club, goto, toast, replayOnboarding }) {
+export function ClubHome({ club, goto, toast, replayOnboarding, submissionDeadline }) {
+  const deadlineLong = formatDeadlineLong(submissionDeadline);
+  const deadlineShort = formatDeadlineShort(submissionDeadline);
+  const daysLeft = daysUntil(submissionDeadline);
+  const daysLabel = daysLeft === 0 ? "Deadline today" : daysLeft === 1 ? "1 day remaining" : `${daysLeft} days remaining`;
   const dc = docCompletion(club);
   const op = overallProgress(club);
   const band = cqiBand(club.cqi);
@@ -132,7 +137,7 @@ export function ClubHome({ club, goto, toast, replayOnboarding }) {
       <div className="deadline">
         <div className="deadline-icon"><Icon.Clock/></div>
         <div className="deadline-text">
-          <strong>Submission deadline · 21 June 2026.</strong> All three forms must reach the Union office before this date. <span className="days">31 days remaining</span>.
+          <strong>Submission deadline · {deadlineLong}.</strong> All three forms must reach the Union office before this date. <span className="days">{daysLabel}</span>.
         </div>
       </div>
 
@@ -156,7 +161,7 @@ export function ClubHome({ club, goto, toast, replayOnboarding }) {
       </Card>
 
       <div style={{display:"grid", gridTemplateColumns:"1.4fr 1fr", gap:16, marginTop:16}}>
-        <Card title="Outstanding items" sub="Action required before 21 June 2026">
+        <Card title="Outstanding items" sub={`Action required before ${deadlineLong}`}>
           <div className="stack" style={{gap:8}}>
             <button className="row" style={{
               width:"100%", textAlign:"left", padding:"12px 14px",
@@ -1073,7 +1078,10 @@ function ExcoFormModal({ club, onClose, onSave }) {
   );
 }
 
-export function DocumentsView({ club, goto, toast, onUpload, onSaveExco }) {
+export function DocumentsView({ club, goto, toast, onUpload, onSaveExco, submissionDeadline }) {
+  const deadlineShort = formatDeadlineShort(submissionDeadline);
+  const daysLeft = daysUntil(submissionDeadline);
+  const daysLabel = daysLeft === 0 ? "Deadline today" : daysLeft === 1 ? "1 day remaining" : `${daysLeft} days remaining`;
   const dc = docCompletion(club);
   const [showExcoForm, setShowExcoForm] = useStateC(false);
   const excoBearerCount = (() => {
@@ -1100,7 +1108,7 @@ export function DocumentsView({ club, goto, toast, onUpload, onSaveExco }) {
         <KPI tone="teal" label="Submitted"   num={Object.values(club.docs).filter(v=>v).length}  sub="of 4 required" />
         <KPI tone="coral" label="Outstanding" num={4 - Object.values(club.docs).filter(v=>v).length} sub="needs attention" />
         <KPI label="Completion" num={dc + "%"} sub="overall" />
-        <KPI tone="gold" label="Deadline" num="21 Jun" sub="31 days remaining" />
+        <KPI tone="gold" label="Deadline" num={deadlineShort} sub={daysLabel} />
       </div>
 
       <Card title="Submit your documents" sub="3 file uploads · 1 on-platform form"
@@ -1195,7 +1203,8 @@ export function DocumentsView({ club, goto, toast, onUpload, onSaveExco }) {
 }
 
 /* ─── CQI Self-Assessment ─── */
-export function CQIView({ club, goto, toast, onSubmit }) {
+export function CQIView({ club, goto, toast, onSubmit, submissionDeadline }) {
+  const deadlineLong = formatDeadlineLong(submissionDeadline);
   const [answers, setAnswers] = useStateC(()=>{
     // Prefill from existing data shape
     const a = {};
@@ -1318,7 +1327,7 @@ export function CQIView({ club, goto, toast, onSubmit }) {
             <div style={{fontFamily:"'Montserrat',sans-serif", fontSize:15, fontWeight:700}}>{submitted ? "Submitted on 16 May 2026" : "Ready to submit?"}</div>
             <div style={{fontSize:12, color:"var(--muted)", marginTop:4}}>
               {submitted
-                ? "Your score has been forwarded to the Dolphins Admin office. You can re-submit any time before 21 June 2026."
+                ? `Your score has been forwarded to the Dolphins Admin office. You can re-submit any time before ${deadlineLong}.`
                 : "Your CQI will be visible to the Dolphins administrators alongside your affiliation and compliance documents."}
             </div>
           </div>

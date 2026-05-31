@@ -4,7 +4,9 @@ import { useState as useStateA, useMemo as useMemoA, useEffect as useEffectA } f
 import { createPortal } from 'react-dom';
 import {
   REQUIRED_DOCS, CQI_STRUCTURE, LEAGUE_OPTIONS, LEAGUE_LABEL_BY_KEY,
+  SUBMISSION_DEADLINE_DEFAULT,
   cohortStats, docCompletion, overallProgress, fixtureCost, generateRoundRobin,
+  formatDeadlineLong, formatDeadlineShort, formatDeadlineMid, daysUntil,
 } from './data.jsx';
 import {
   Icon, Pill, Btn, Card, KPI, ProgressBar, ProgChip,
@@ -811,10 +813,15 @@ export function CreateSeriesForm({ clubs, onCreate, onClose }) {
   );
 }
 
-export function AdminDashboard({ clubs, gotoClub, gotoList, gotoAdminView, toast }) {
+export function AdminDashboard({ clubs, gotoClub, gotoList, gotoAdminView, toast, submissionDeadline, onUpdateDeadline }) {
   const stats = cohortStats(clubs);
   const pct = (n,d) => Math.round(n/d*100);
   const notify = (m) => toast ? toast(m, "warn") : null;
+  const [showEditDeadline, setShowEditDeadline] = useStateA(false);
+  const deadlineLong = formatDeadlineLong(submissionDeadline);
+  const deadlineMid = formatDeadlineMid(submissionDeadline);
+  const daysLeft = daysUntil(submissionDeadline);
+  const daysLabel = daysLeft === 0 ? "Deadline today" : daysLeft === 1 ? "1 day remaining" : `${daysLeft} days remaining`;
 
   // Sort by progress descending for "at risk" / "leaders"
   const ranked = [...clubs].map(c => ({...c, prog: overallProgress(c)})).sort((a,b)=>b.prog-a.prog);
@@ -860,10 +867,10 @@ export function AdminDashboard({ clubs, gotoClub, gotoList, gotoAdminView, toast
       <div className="deadline">
         <div className="deadline-icon"><Icon.Clock/></div>
         <div className="deadline-text">
-          <strong>Submission deadline · 21 June 2026.</strong> Clubs must complete affiliation, upload required compliance documents, and submit the CQI form. <span className="days">31 days remaining</span>.
+          <strong>Submission deadline · {deadlineLong}.</strong> Clubs must complete affiliation, upload required compliance documents, and submit the CQI form. <span className="days">{daysLabel}</span>.
         </div>
         <div className="deadline-cta">
-          <Btn tone="outline" size="sm" onClick={()=>notify("Editing the deadline is coming soon — contact the union office for now.")}>Edit deadline</Btn>
+          <Btn tone="outline" size="sm" icon={Icon.Form} onClick={()=>setShowEditDeadline(true)}>Edit deadline</Btn>
         </div>
       </div>
 
@@ -971,12 +978,24 @@ export function AdminDashboard({ clubs, gotoClub, gotoList, gotoAdminView, toast
           </div>
         </Card>
       </div>
+
+      {showEditDeadline && (
+        <EditDeadlineModal
+          currentISO={submissionDeadline}
+          defaultISO={SUBMISSION_DEADLINE_DEFAULT}
+          onClose={()=>setShowEditDeadline(false)}
+          onSave={(iso)=>onUpdateDeadline && onUpdateDeadline(iso)}
+          toast={toast}
+        />
+      )}
     </div>
   );
 }
 
 /* ─── Cohort insights — visualises CQI bands, doc compliance, outstanding resources ─── */
-function ClubInsights({ clubs }) {
+function ClubInsights({ clubs, submissionDeadline }) {
+  const deadlineShort = formatDeadlineShort(submissionDeadline);
+  const deadlineMid = formatDeadlineMid(submissionDeadline);
   // CQI bands
   const bandTone = (key) => key === "C" ? "warn" : key === "D" ? "danger" : key === "P" ? "pending" : "";
   const bands = [
@@ -1051,7 +1070,7 @@ function ClubInsights({ clubs }) {
       <div className="insights-card">
         <div className="insights-card-head">
           <div className="insights-card-title">Resources Required</div>
-          <div className="insights-card-meta">21 Jun deadline</div>
+          <div className="insights-card-meta">{deadlineShort} deadline</div>
         </div>
         <div className="resource-list">
           <div className="resource-row">
@@ -1074,7 +1093,7 @@ function ClubInsights({ clubs }) {
           </div>
         </div>
         <div className="insights-callout alert">
-          Send <strong>{totalReminders}</strong> reminder{totalReminders===1?"":"s"} before <strong>21 June</strong> — target the at-risk clubs first.
+          Send <strong>{totalReminders}</strong> reminder{totalReminders===1?"":"s"} before <strong>{deadlineMid}</strong> — target the at-risk clubs first.
         </div>
       </div>
     </div>
@@ -1119,7 +1138,7 @@ export function AdminClubsList({ clubs, gotoClub, toast }) {
       </div>
 
       {/* Cohort insights panel — CQI distribution, document compliance, resources required */}
-      <ClubInsights clubs={clubs}/>
+      <ClubInsights clubs={clubs} submissionDeadline={submissionDeadline}/>
 
       <div className="filter-row">
         <input className="search-box" placeholder="Search by club name or chairperson…" value={q} onChange={e=>setQ(e.target.value)}/>
@@ -1168,6 +1187,96 @@ export function AdminClubsList({ clubs, gotoClub, toast }) {
             })}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+/* ─── EditDeadlineModal — admin edits the 2026/27 submission deadline ───
+   Date picker defaults to the current deadline. Save commits the new ISO
+   value to AppRoutes state and toasts a confirmation. Reset restores the
+   default. The change is visible immediately across the entire UI. */
+function EditDeadlineModal({ currentISO, defaultISO, onClose, onSave, toast }) {
+  const [value, setValue] = useStateA(currentISO || defaultISO);
+  const long = formatDeadlineLong(value);
+  const days = daysUntil(value);
+  const daysLine = days === 0
+    ? "Deadline falls today"
+    : days === 1
+      ? "Deadline is 1 day away"
+      : `Deadline is ${days} days away`;
+  const isPast = (() => {
+    if (!value) return false;
+    const d = new Date(value + "T00:00:00");
+    const t = new Date(); t.setHours(0,0,0,0);
+    return d < t;
+  })();
+
+  function save() {
+    if (!value) return;
+    onSave && onSave(value);
+    toast && toast(`Deadline updated · ${long}`);
+    onClose && onClose();
+  }
+  function resetToDefault() {
+    setValue(defaultISO);
+  }
+
+  return (
+    <div className="task-modal-backdrop" onClick={e=>e.target===e.currentTarget && onClose()}>
+      <div className="task-modal narrow" style={{maxWidth:520}}>
+        <div className="task-modal-head">
+          <div className="task-modal-head-text">
+            <div className="task-modal-head-eyebrow">Cohort settings</div>
+            <div className="task-modal-head-title">Edit <em>submission deadline</em></div>
+          </div>
+          <button className="task-modal-close" onClick={onClose} title="Close">
+            <Icon.X/>
+          </button>
+        </div>
+        <div className="task-modal-body">
+          <p style={{margin:"0 0 14px", fontSize:13, color:"var(--muted)", lineHeight:1.5}}>
+            Change the 2026/27 affiliation, compliance and CQI submission cut-off.
+            The new date will update across the homepage, club portal, onboarding flow
+            and every reminder.
+          </p>
+
+          <div className="field">
+            <div className="field-label">New deadline <span className="req">*</span></div>
+            <input
+              type="date"
+              className="field-input"
+              value={value || ""}
+              onChange={e=>setValue(e.target.value)}
+              style={{maxWidth:220}}
+              autoFocus
+            />
+          </div>
+
+          <div style={{
+            background: isPast ? "rgba(216,90,48,0.08)" : "var(--paper)",
+            border: `1px solid ${isPast ? "rgba(216,90,48,0.4)" : "var(--line)"}`,
+            borderRadius:10, padding:"12px 14px", marginTop:6, marginBottom:18,
+          }}>
+            <div style={{fontSize:10.5, letterSpacing:"0.12em", textTransform:"uppercase", color: isPast ? "var(--coral)" : "var(--muted-2)", fontFamily:"'Montserrat',sans-serif", fontWeight:700, marginBottom:4}}>
+              Preview
+            </div>
+            <div style={{fontFamily:"'Montserrat',sans-serif", fontSize:15, fontWeight:700, color:"var(--ink)"}}>
+              {long || "—"}
+            </div>
+            <div style={{fontSize:12, color: isPast ? "var(--coral)" : "var(--muted)", marginTop:2}}>
+              {isPast ? "⚠ This date is in the past — clubs will see “Deadline today”." : daysLine}
+            </div>
+          </div>
+
+          <div className="row" style={{justifyContent:"space-between", gap:10, paddingTop:6, borderTop:"1px solid var(--line)"}}>
+            <Btn tone="ghost" onClick={resetToDefault}>↻ Reset to {formatDeadlineShort(defaultISO)}</Btn>
+            <div className="row" style={{gap:8}}>
+              <Btn tone="outline" onClick={onClose}>Cancel</Btn>
+              <Btn tone="teal" icon={Icon.Check} disabled={!value} onClick={save}>Save deadline</Btn>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
