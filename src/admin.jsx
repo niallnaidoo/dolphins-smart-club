@@ -3,6 +3,7 @@
 import { useState as useStateA, useMemo as useMemoA, useEffect as useEffectA } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  DISTRICTS,
   REQUIRED_DOCS, CQI_STRUCTURE, LEAGUE_OPTIONS, LEAGUE_LABEL_BY_KEY,
   SUBMISSION_DEADLINE_DEFAULT,
   cohortStats, docCompletion, overallProgress, fixtureCost, generateRoundRobin,
@@ -1100,10 +1101,11 @@ function ClubInsights({ clubs, submissionDeadline }) {
   );
 }
 
-export function AdminClubsList({ clubs, gotoClub, toast, submissionDeadline }) {
+export function AdminClubsList({ clubs, gotoClub, toast, submissionDeadline, onOnboardClub }) {
   const notify = (m) => toast ? toast(m, "warn") : null;
   const [q, setQ] = useStateA("");
   const [filter, setFilter] = useStateA("all");
+  const [showOnboard, setShowOnboard] = useStateA(false);
 
   const filtered = useMemoA(()=>{
     let cs = clubs;
@@ -1133,7 +1135,7 @@ export function AdminClubsList({ clubs, gotoClub, toast, submissionDeadline }) {
         </div>
         <div className="ph-actions">
           <Btn tone="outline" icon={Icon.Download} size="sm" onClick={()=>notify("Export coming soon — full CSV with cohort filters applied.")}>Export CSV</Btn>
-          <Btn tone="ink" icon={Icon.Plus} size="sm" onClick={()=>notify("Onboarding flow coming soon — contact the union office to add a new club.")}>Onboard new club</Btn>
+          <Btn tone="ink" icon={Icon.Plus} size="sm" onClick={()=>setShowOnboard(true)}>Onboard new club</Btn>
         </div>
       </div>
 
@@ -1187,6 +1189,278 @@ export function AdminClubsList({ clubs, gotoClub, toast, submissionDeadline }) {
             })}
           </tbody>
         </table>
+      </div>
+
+      {showOnboard && (
+        <OnboardNewClubModal
+          clubs={clubs}
+          onClose={()=>setShowOnboard(false)}
+          onOnboard={onOnboardClub}
+          toast={toast}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ─── OnboardNewClubModal — admin onboards a brand-new club + shares the link ───
+   Step 1: search existing clubs by name; matches show inline so the admin can't
+   accidentally double-onboard. No match → form (chair, email, cell, district).
+   Step 2: switches to the share view with the deep link + Copy / Email / WhatsApp.
+   The chair's email and cell are pre-filled into the share affordances. */
+function OnboardNewClubModal({ clubs, onClose, onOnboard, toast }) {
+  const [query, setQuery] = useStateA("");
+  const [chair, setChair] = useStateA("");
+  const [chairEmail, setChairEmail] = useStateA("");
+  const [chairCell, setChairCell] = useStateA("");
+  const [district, setDistrict] = useStateA(DISTRICTS[0]);
+  const [createdClub, setCreatedClub] = useStateA(null);
+  const [copied, setCopied] = useStateA(false);
+
+  const trimmedQuery = query.trim();
+  const matches = trimmedQuery.length >= 2
+    ? clubs.filter(c => c.name.toLowerCase().includes(trimmedQuery.toLowerCase()))
+    : [];
+  const exact = matches.find(c => c.name.toLowerCase() === trimmedQuery.toLowerCase());
+  const showForm = trimmedQuery.length >= 2 && !exact;
+
+  const canSubmit = trimmedQuery.length >= 2 && chair.trim() && chairEmail.trim() && chairCell.trim() && !exact;
+
+  function handleOnboard() {
+    if (!canSubmit) return;
+    const club = onOnboard({
+      name: trimmedQuery,
+      chair: chair.trim(),
+      chairEmail: chairEmail.trim(),
+      chairCell: chairCell.trim(),
+      district,
+    });
+    setCreatedClub(club);
+    toast && toast(`${club.name} onboarded · ready to share the link`);
+  }
+
+  // E.164-ish for wa.me: keep digits only, swap leading 0 for ZA country code 27.
+  function waNumber(cell) {
+    const digits = (cell || "").replace(/\D+/g, "");
+    if (!digits) return "";
+    if (digits.startsWith("0")) return "27" + digits.slice(1);
+    if (digits.startsWith("27")) return digits;
+    return digits;
+  }
+
+  // Share-state derived values (only used after a club has been created).
+  const baseUrl = (typeof window !== "undefined" && window.location.origin) || "";
+  const url = createdClub ? `${baseUrl}/club/${createdClub.id}` : "";
+  const emailBody = createdClub
+    ? `Hi ${createdClub.chair || "team"},\n\nWelcome to the 2026/27 Dolphins Cricket Services season.\n\nOpen this link to get started — affiliation form, compliance documents and the Club Quality Index self-assessment all live here:\n\n${url}\n\nIf any of the required documents are outstanding, reach out to the union office. The deadline for submissions is in the platform.\n\nWelcome aboard,\nThe Dolphins office`
+    : "";
+  const waText = createdClub
+    ? `Welcome to Dolphins Pipeline · ${createdClub.name}. Open this link to start your 2026/27 affiliation: ${url}`
+    : "";
+
+  function doCopy() {
+    if (!url) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(() => { setCopied(true); toast && toast("Onboarding link copied"); });
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = url; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); setCopied(true); toast && toast("Onboarding link copied"); } catch {}
+      ta.remove();
+    }
+    setTimeout(()=>setCopied(false), 2000);
+  }
+
+  // ───────────── Step 2: share view ─────────────
+  if (createdClub) {
+    const wa = waNumber(createdClub.exco?.chair?.cell);
+    return (
+      <div className="task-modal-backdrop" onClick={e=>e.target===e.currentTarget && onClose()}>
+        <div className="task-modal narrow" style={{maxWidth:620}}>
+          <div className="task-modal-head">
+            <div className="task-modal-head-text">
+              <div className="task-modal-head-eyebrow">Onboarded · {createdClub.district}</div>
+              <div className="task-modal-head-title">Share the link · <em>{createdClub.name}</em></div>
+            </div>
+            <button className="task-modal-close" onClick={onClose} title="Close"><Icon.X/></button>
+          </div>
+          <div className="task-modal-body">
+            <div style={{
+              background:"var(--paper)", borderRadius:10, padding:"14px 16px", marginBottom:14,
+              border:"1px solid var(--line)",
+            }}>
+              <div style={{fontSize:10.5, letterSpacing:"0.12em", textTransform:"uppercase", color:"var(--muted-2)", fontFamily:"'Montserrat',sans-serif", fontWeight:700, marginBottom:6}}>Onboarding link</div>
+              <div style={{
+                fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace", fontSize:13,
+                color:"var(--ink)", wordBreak:"break-all", lineHeight:1.45,
+                padding:"10px 12px", background:"var(--white)", borderRadius:8,
+                border:"1px solid var(--line)",
+              }}>{url}</div>
+              <div style={{fontSize:11, color:"var(--muted)", marginTop:8}}>
+                Chair: <strong style={{color:"var(--ink)"}}>{createdClub.chair}</strong> · {createdClub.exco?.chair?.email} · {createdClub.exco?.chair?.cell}
+              </div>
+            </div>
+
+            <div style={{display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:14}}>
+              <Btn tone={copied ? "teal" : "outline"} icon={copied ? Icon.Check : Icon.Form} onClick={doCopy}>
+                {copied ? "Copied" : "Copy link"}
+              </Btn>
+              <a
+                href={`mailto:${createdClub.exco?.chair?.email || ""}?subject=${encodeURIComponent(`Welcome to Dolphins Pipeline · ${createdClub.name}`)}&body=${encodeURIComponent(emailBody)}`}
+                className="btn btn-outline"
+                style={{textDecoration:"none", display:"inline-flex", alignItems:"center", justifyContent:"center", gap:6}}
+              >
+                <Icon.Mail/> Email
+              </a>
+              <a
+                href={wa ? `https://wa.me/${wa}?text=${encodeURIComponent(waText)}` : `https://wa.me/?text=${encodeURIComponent(waText)}`}
+                target="_blank" rel="noopener noreferrer"
+                className="btn btn-outline"
+                style={{textDecoration:"none", display:"inline-flex", alignItems:"center", justifyContent:"center", gap:6}}
+              >
+                <Icon.Arrow/> WhatsApp
+              </a>
+            </div>
+
+            <div style={{
+              background:"rgba(15,143,74,0.08)", border:"1px solid rgba(15,143,74,0.3)",
+              borderRadius:10, padding:"12px 14px", marginBottom:14,
+            }}>
+              <div style={{fontSize:10.5, letterSpacing:"0.12em", textTransform:"uppercase", color:"var(--teal-deep)", fontFamily:"'Montserrat',sans-serif", fontWeight:800, marginBottom:4}}>
+                What happens next
+              </div>
+              <div style={{fontSize:12, color:"var(--ink)", lineHeight:1.5}}>
+                {createdClub.chair.split(" ")[0]} clicks the link, lands on the {createdClub.name} portal and is walked through onboarding → affiliation form → compliance documents → CQI self-assessment.
+              </div>
+            </div>
+
+            <div className="row" style={{justifyContent:"flex-end", gap:8, paddingTop:6, borderTop:"1px solid var(--line)"}}>
+              <Btn tone="ink" onClick={onClose}>Done</Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ───────────── Step 1: search + form ─────────────
+  return (
+    <div className="task-modal-backdrop" onClick={e=>e.target===e.currentTarget && onClose()}>
+      <div className="task-modal narrow" style={{maxWidth:620}}>
+        <div className="task-modal-head">
+          <div className="task-modal-head-text">
+            <div className="task-modal-head-eyebrow">Cohort · admin tool</div>
+            <div className="task-modal-head-title">Onboard a <em>new club</em></div>
+          </div>
+          <button className="task-modal-close" onClick={onClose} title="Close"><Icon.X/></button>
+        </div>
+        <div className="task-modal-body">
+          <p style={{margin:"0 0 14px", fontSize:13, color:"var(--muted)", lineHeight:1.5}}>
+            Type the club name. If they're already in the cohort you'll see them below — otherwise add their chairperson's contact details and we'll email + WhatsApp them the onboarding link.
+          </p>
+
+          <div className="field">
+            <div className="field-label">Club name <span className="req">*</span></div>
+            <input
+              className="field-input"
+              placeholder="Start typing a club name…"
+              value={query}
+              onChange={e=>setQuery(e.target.value)}
+              autoFocus
+            />
+          </div>
+
+          {trimmedQuery.length >= 2 && matches.length > 0 && (
+            <div style={{marginBottom:14}}>
+              <div style={{fontSize:10.5, letterSpacing:"0.12em", textTransform:"uppercase", color:"var(--muted-2)", fontFamily:"'Montserrat',sans-serif", fontWeight:700, marginBottom:6}}>
+                {exact ? "Already in the cohort" : `Matches in cohort (${matches.length})`}
+              </div>
+              <div style={{display:"flex", flexDirection:"column", gap:6}}>
+                {matches.slice(0, 5).map(c => (
+                  <div key={c.id} style={{
+                    display:"flex", alignItems:"center", justifyContent:"space-between",
+                    padding:"10px 12px", border:"1px solid var(--line)", borderRadius:8,
+                    background: c.name.toLowerCase()===trimmedQuery.toLowerCase() ? "rgba(216,90,48,0.06)" : "var(--paper)",
+                  }}>
+                    <div style={{minWidth:0}}>
+                      <div style={{fontFamily:"'Montserrat',sans-serif", fontSize:13, fontWeight:700, color:"var(--ink)"}}>{c.name}</div>
+                      <div style={{fontSize:11, color:"var(--muted)", marginTop:2}}>
+                        {c.district} · {c.chair} · {c.paid ? "Affiliated" : c.affiliation === "in_progress" ? "In progress" : "Not started"}
+                      </div>
+                    </div>
+                    {c.name.toLowerCase()===trimmedQuery.toLowerCase() && (
+                      <span style={{
+                        fontSize:9.5, letterSpacing:"0.1em", textTransform:"uppercase",
+                        fontWeight:800, padding:"3px 8px", borderRadius:999,
+                        background:"rgba(216,90,48,0.12)", color:"var(--coral)",
+                        border:"1px solid rgba(216,90,48,0.35)",
+                      }}>Duplicate</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {exact && (
+            <div style={{
+              background:"rgba(216,90,48,0.06)", border:"1px solid rgba(216,90,48,0.3)",
+              borderRadius:10, padding:"12px 14px", marginBottom:14,
+              fontSize:12.5, color:"var(--ink)", lineHeight:1.5,
+            }}>
+              <strong>{exact.name}</strong> is already onboarded. Open their detail page to manage their existing record instead.
+            </div>
+          )}
+
+          {showForm && (
+            <>
+              <div style={{fontSize:10.5, letterSpacing:"0.12em", textTransform:"uppercase", color:"var(--muted-2)", fontFamily:"'Montserrat',sans-serif", fontWeight:700, marginTop:8, marginBottom:6}}>
+                New club details
+              </div>
+              <div className="field-grid-2">
+                <div className="field">
+                  <div className="field-label">Chairperson name <span className="req">*</span></div>
+                  <input className="field-input" placeholder="Name &amp; surname" value={chair} onChange={e=>setChair(e.target.value)}/>
+                </div>
+                <div className="field">
+                  <div className="field-label">District <span className="req">*</span></div>
+                  <select className="field-select" value={district} onChange={e=>setDistrict(e.target.value)}>
+                    {DISTRICTS.map(d => <option key={d}>{d}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="field-grid-2">
+                <div className="field">
+                  <div className="field-label">Chair email <span className="req">*</span></div>
+                  <input className="field-input" type="email" placeholder="chair@club.co.za" value={chairEmail} onChange={e=>setChairEmail(e.target.value)}/>
+                </div>
+                <div className="field">
+                  <div className="field-label">Chair cell <span className="req">*</span></div>
+                  <input className="field-input" placeholder="0XX XXX XXXX" value={chairCell} onChange={e=>setChairCell(e.target.value)}/>
+                </div>
+              </div>
+              <div style={{fontSize:11, color:"var(--muted)", marginTop:4, marginBottom:14}}>
+                Email + cell are used to share the onboarding link on the next screen.
+              </div>
+            </>
+          )}
+
+          <div className="row" style={{justifyContent:"space-between", gap:10, paddingTop:6, borderTop:"1px solid var(--line)"}}>
+            <div style={{fontSize:11.5, color:"var(--muted)", fontFamily:"'Montserrat',sans-serif", fontWeight:500}}>
+              {!trimmedQuery
+                ? "Type a club name to begin"
+                : exact
+                  ? "Already onboarded — cancel and open their record"
+                  : showForm && !canSubmit
+                    ? "Chair contact details are required"
+                    : "Ready — adds the club and reveals the share screen"}
+            </div>
+            <div className="row" style={{gap:8}}>
+              <Btn tone="outline" onClick={onClose}>Cancel</Btn>
+              <Btn tone="teal" icon={Icon.Plus} disabled={!canSubmit} onClick={handleOnboard}>Onboard club</Btn>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
