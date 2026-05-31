@@ -1290,9 +1290,9 @@ export function AdminClubDetail({ club, gotoList }) {
                     <div key={cat.key} className="score-card" style={{"--fill": (score/cat.weight*100)+"%", "--accent": cat.accent}}>
                       <div>
                         <span className="sc-cat">{cat.title}</span>
-                        <span className="sc-w">/{cat.weight}</span>
+                        <span className="sc-w">{cat.weight} pts</span>
                       </div>
-                      <div className="sc-num">{score.toFixed(1)}<span className="sc-of">/{cat.weight}</span></div>
+                      <div className="sc-num">{score.toFixed(1)}</div>
                     </div>
                   );
                 })}

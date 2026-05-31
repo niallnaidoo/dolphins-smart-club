@@ -1230,7 +1230,7 @@ export function CQIView({ club, goto, toast, onSubmit }) {
         <div className="ph-left">
           <div className="ph-crumb"><a onClick={()=>goto("home")}>Home</a> &nbsp;/&nbsp; CQI Self-Assessment</div>
           <h1 className="ph-title">Club Quality <em>Index</em> · 2026/27</h1>
-          <p className="ph-desc">Score your club across six dimensions of capability. Your responses are scored in real time using the official Dolphins CQI weighting model — administration 20%, teams 20%, coaching 20%, facilities 15%, representation 10%, financial sustainability 15%.</p>
+          <p className="ph-desc">Score your club across six dimensions of capability. Your responses are scored in real time using the official Dolphins CQI weighting model — administration 20 pts, teams 20 pts, coaching 20 pts, facilities 15 pts, representation 10 pts, financial sustainability 15 pts.</p>
         </div>
         <div className="ph-actions">
           <Btn tone="outline" size="sm" icon={Icon.Download}>Export CQI as PDF</Btn>
@@ -1262,9 +1262,9 @@ export function CQIView({ club, goto, toast, onSubmit }) {
             <div key={cat.key} className="score-card" style={{"--fill": (s.earned/cat.possible*100)+"%", "--accent": cat.accent}}>
               <div>
                 <span className="sc-cat">{cat.title}</span>
-                <span className="sc-w">/{cat.weight}</span>
+                <span className="sc-w">{cat.weight} pts</span>
               </div>
-              <div className="sc-num">{s.earned.toFixed(1)}<span className="sc-of">/{cat.weight}</span></div>
+              <div className="sc-num">{s.earned.toFixed(1)}</div>
             </div>
           );
         })}
@@ -1279,7 +1279,7 @@ export function CQIView({ club, goto, toast, onSubmit }) {
               <div className="cqi-section-title">{cat.title}</div>
               <div style={{fontSize:11.5, color:"var(--muted)"}}>{cat.desc}</div>
             </div>
-            <div className="cqi-section-w">Weight · {cat.weight}%</div>
+            <div className="cqi-section-w">Weight · {cat.weight} pts</div>
           </div>
 
           {cat.questions.map(q=>(
