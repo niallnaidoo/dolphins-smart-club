@@ -1101,7 +1101,7 @@ function ClubInsights({ clubs, submissionDeadline }) {
   );
 }
 
-export function AdminClubsList({ clubs, gotoClub, toast, submissionDeadline, onOnboardClub }) {
+export function AdminClubsList({ clubs, gotoClub, toast, submissionDeadline, onOnboardClub, onBulkOnboardClubs }) {
   const notify = (m) => toast ? toast(m, "warn") : null;
   const [q, setQ] = useStateA("");
   const [filter, setFilter] = useStateA("all");
@@ -1196,6 +1196,7 @@ export function AdminClubsList({ clubs, gotoClub, toast, submissionDeadline, onO
           clubs={clubs}
           onClose={()=>setShowOnboard(false)}
           onOnboard={onOnboardClub}
+          onBulkOnboard={onBulkOnboardClubs}
           toast={toast}
         />
       )}
@@ -1208,15 +1209,25 @@ export function AdminClubsList({ clubs, gotoClub, toast, submissionDeadline, onO
    accidentally double-onboard. No match → form (chair, email, cell, district).
    Step 2: switches to the share view with the deep link + Copy / Email / WhatsApp.
    The chair's email and cell are pre-filled into the share affordances. */
-function OnboardNewClubModal({ clubs, onClose, onOnboard, toast }) {
+function OnboardNewClubModal({ clubs, onClose, onOnboard, onBulkOnboard, toast }) {
   const [query, setQuery] = useStateA("");
   const [chair, setChair] = useStateA("");
   const [chairEmail, setChairEmail] = useStateA("");
   const [chairCell, setChairCell] = useStateA("");
   const [district, setDistrict] = useStateA(DISTRICTS[0]);
   const [createdClub, setCreatedClub] = useStateA(null);
+  const [bulkCreated, setBulkCreated] = useStateA(null); // array of created clubs after bulk onboard
+  const [selectedKeys, setSelectedKeys] = useStateA(new Set()); // checkbox state, keyed by known-club name
   const [copied, setCopied] = useStateA(false);
   const [autoFilled, setAutoFilled] = useStateA(null); // null | club name auto-filled from
+
+  function toggleSelect(name) {
+    setSelectedKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  }
 
   const trimmedQuery = query.trim();
   const matches = trimmedQuery.length >= 2
@@ -1286,6 +1297,28 @@ function OnboardNewClubModal({ clubs, onClose, onOnboard, toast }) {
     toast && toast(`${club.name} onboarded · ready to share the link`);
   }
 
+  // Bulk onboard everything currently ticked in the known-clubs picker.
+  // Atomic via bulkOnboardClubs so the new clubs land in one setState batch.
+  function handleBulkOnboard() {
+    const specs = remainingKnown.filter(k => selectedKeys.has(k.name));
+    if (specs.length === 0) return;
+    const created = (onBulkOnboard ? onBulkOnboard(specs) : specs.map(s => onOnboard(s)));
+    setBulkCreated(created);
+    setSelectedKeys(new Set());
+    toast && toast(`${created.length} clubs onboarded · share the links`);
+  }
+  // Select-all toggle respects the current filtered list.
+  const allVisibleSelected = filteredKnown.length > 0 && filteredKnown.every(k => selectedKeys.has(k.name));
+  function toggleSelectAll() {
+    setSelectedKeys(prev => {
+      const next = new Set(prev);
+      if (allVisibleSelected) filteredKnown.forEach(k => next.delete(k.name));
+      else filteredKnown.forEach(k => next.add(k.name));
+      return next;
+    });
+  }
+  const selectedCount = selectedKeys.size;
+
   // E.164-ish for wa.me: keep digits only, swap leading 0 for ZA country code 27.
   function waNumber(cell) {
     const digits = (cell || "").replace(/\D+/g, "");
@@ -1318,7 +1351,106 @@ function OnboardNewClubModal({ clubs, onClose, onOnboard, toast }) {
     setTimeout(()=>setCopied(false), 2000);
   }
 
-  // ───────────── Step 2: share view ─────────────
+  // ───────────── Step 2 (bulk): bulk share view ─────────────
+  if (bulkCreated && bulkCreated.length > 0) {
+    const baseUrl = (typeof window !== "undefined" && window.location.origin) || "";
+    const allEmails = bulkCreated.map(c => c.exco?.chair?.email).filter(Boolean).join(",");
+    const bulkBody = `Welcome to the 2026/27 Dolphins Cricket Services season.\n\nEach club has its own onboarding link below — open yours to start the affiliation flow:\n\n` +
+      bulkCreated.map(c => `• ${c.name} → ${baseUrl}/club/${c.id}`).join("\n") +
+      `\n\nIf any documents are outstanding, reach out to the union office.\n\nThe Dolphins office`;
+    const bulkMailto = `mailto:?bcc=${encodeURIComponent(allEmails)}&subject=${encodeURIComponent("Welcome to Dolphins Pipeline · 2026/27")}&body=${encodeURIComponent(bulkBody)}`;
+
+    function emailAllAndWaEach() {
+      // Open one WhatsApp tab per club; browser may rate-limit, but the first
+      // few will land — admin sees the rest via the per-row buttons below.
+      bulkCreated.forEach((c, i) => {
+        const wa = waNumber(c.exco?.chair?.cell);
+        if (!wa) return;
+        const text = `Welcome to Dolphins Pipeline · ${c.name}. Start your 2026/27 affiliation here: ${baseUrl}/club/${c.id}`;
+        try { window.open(`https://wa.me/${wa}?text=${encodeURIComponent(text)}`, "_blank", "noopener,noreferrer"); } catch {}
+      });
+      try { window.location.href = bulkMailto; } catch {}
+      toast && toast(`Sent ${bulkCreated.length} welcome emails + opened WhatsApp tabs`);
+    }
+
+    return (
+      <div className="task-modal-backdrop" onClick={e=>e.target===e.currentTarget && onClose()}>
+        <div className="task-modal narrow" style={{maxWidth:680}}>
+          <div className="task-modal-head">
+            <div className="task-modal-head-text">
+              <div className="task-modal-head-eyebrow">Bulk onboard · {bulkCreated.length} clubs</div>
+              <div className="task-modal-head-title">Share the <em>onboarding links</em></div>
+            </div>
+            <button className="task-modal-close" onClick={onClose} title="Close"><Icon.X/></button>
+          </div>
+          <div className="task-modal-body">
+            <p style={{margin:"0 0 14px", fontSize:13, color:"var(--muted)", lineHeight:1.5}}>
+              {bulkCreated.length} clubs were added to the cohort. Email all chairs together below, or scroll the list and use a per-row send.
+            </p>
+
+            {/* Top-level bulk send */}
+            <Btn tone="teal" icon={Icon.Mail} onClick={emailAllAndWaEach} style={{width:"100%", justifyContent:"center", marginBottom:8}}>
+              Send to all · Email + WhatsApp tabs
+            </Btn>
+            <a
+              href={bulkMailto}
+              className="btn btn-outline"
+              style={{textDecoration:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6, width:"100%", marginBottom:14}}
+            >
+              <Icon.Mail/> Email all chairs (one BCC'd message)
+            </a>
+
+            {/* Per-row share */}
+            <div style={{fontSize:10.5, letterSpacing:"0.12em", textTransform:"uppercase", color:"var(--muted-2)", fontFamily:"'Montserrat',sans-serif", fontWeight:700, marginBottom:6}}>
+              Onboarded clubs · {bulkCreated.length}
+            </div>
+            <div style={{
+              maxHeight:320, overflowY:"auto", border:"1px solid var(--line)", borderRadius:10,
+              background:"var(--white)",
+            }}>
+              {bulkCreated.map(c => {
+                const url = `${baseUrl}/club/${c.id}`;
+                const wa = waNumber(c.exco?.chair?.cell);
+                const mailto = `mailto:${c.exco?.chair?.email || ""}?subject=${encodeURIComponent(`Welcome to Dolphins Pipeline · ${c.name}`)}&body=${encodeURIComponent(`Hi ${c.chair || "team"},\n\nWelcome aboard. Open this link to start your 2026/27 affiliation:\n\n${url}\n\nThe Dolphins office`)}`;
+                const waUrl = wa ? `https://wa.me/${wa}?text=${encodeURIComponent(`Welcome to Dolphins Pipeline · ${c.name}. Start your 2026/27 affiliation: ${url}`)}` : `https://wa.me/?text=${encodeURIComponent(`Welcome to Dolphins Pipeline · ${c.name}. Start your 2026/27 affiliation: ${url}`)}`;
+                return (
+                  <div key={c.id} style={{
+                    display:"grid", gridTemplateColumns:"1fr auto", gap:10,
+                    padding:"12px 14px", borderBottom:"1px solid var(--line)", alignItems:"center",
+                  }}>
+                    <div style={{minWidth:0}}>
+                      <div style={{fontFamily:"'Montserrat',sans-serif", fontSize:13, fontWeight:700, color:"var(--ink)"}}>{c.name}</div>
+                      <div style={{fontSize:11, color:"var(--muted)", marginTop:2}}>
+                        {c.chair} · {c.exco?.chair?.email} · {c.exco?.chair?.cell}
+                      </div>
+                      <div style={{
+                        fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace", fontSize:11,
+                        color:"var(--teal-deep)", marginTop:4, wordBreak:"break-all",
+                      }}>{url}</div>
+                    </div>
+                    <div style={{display:"flex", gap:6, flexShrink:0}}>
+                      <a href={mailto} className="btn btn-outline" style={{textDecoration:"none", padding:"6px 10px", fontSize:11, display:"inline-flex", alignItems:"center", gap:4}}>
+                        <Icon.Mail/> Email
+                      </a>
+                      <a href={waUrl} target="_blank" rel="noopener noreferrer" className="btn btn-outline" style={{textDecoration:"none", padding:"6px 10px", fontSize:11, display:"inline-flex", alignItems:"center", gap:4}}>
+                        <Icon.Arrow/> WA
+                      </a>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="row" style={{justifyContent:"flex-end", gap:8, paddingTop:14, marginTop:14, borderTop:"1px solid var(--line)"}}>
+              <Btn tone="ink" onClick={onClose}>Done</Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ───────────── Step 2 (single): share view ─────────────
   if (createdClub) {
     const wa = waNumber(createdClub.exco?.chair?.cell);
     const chairEmailValue = createdClub.exco?.chair?.email || "";
@@ -1433,7 +1565,7 @@ function OnboardNewClubModal({ clubs, onClose, onOnboard, toast }) {
             />
           </div>
 
-          {/* Known clubs from past records — one-click pre-fill */}
+          {/* Known clubs from past records — tick to bulk-onboard, or click "Use details" to single-pre-fill */}
           {remainingKnown.length > 0 && (
             <div style={{marginBottom:14}}>
               <div style={{
@@ -1442,10 +1574,21 @@ function OnboardNewClubModal({ clubs, onClose, onOnboard, toast }) {
                 <div style={{fontSize:10.5, letterSpacing:"0.12em", textTransform:"uppercase", color:"var(--muted-2)", fontFamily:"'Montserrat',sans-serif", fontWeight:700}}>
                   Known clubs · {filteredKnown.length} of {remainingKnown.length} not yet onboarded
                 </div>
-                <span style={{fontSize:10.5, color:"var(--muted)", fontStyle:"italic"}}>Click to pre-fill</span>
+                <button
+                  type="button"
+                  onClick={toggleSelectAll}
+                  disabled={filteredKnown.length === 0}
+                  style={{
+                    fontSize:11, fontFamily:"'Montserrat',sans-serif", fontWeight:700, letterSpacing:"0.04em",
+                    color: filteredKnown.length === 0 ? "var(--muted-3)" : "var(--teal-deep)",
+                    background:"transparent", border:"none", padding:0, cursor: filteredKnown.length === 0 ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {allVisibleSelected ? "Clear selection" : `Select all (${filteredKnown.length})`}
+                </button>
               </div>
               <div style={{
-                maxHeight:208, overflowY:"auto", border:"1px solid var(--line)", borderRadius:10,
+                maxHeight:240, overflowY:"auto", border:"1px solid var(--line)", borderRadius:10,
                 background:"var(--paper)",
               }}>
                 {filteredKnown.length === 0 ? (
@@ -1454,37 +1597,51 @@ function OnboardNewClubModal({ clubs, onClose, onOnboard, toast }) {
                   </div>
                 ) : filteredKnown.map(k => {
                   const isPicked = autoFilled === k.name;
+                  const isChecked = selectedKeys.has(k.name);
                   return (
-                    <button
+                    <div
                       key={k.name}
-                      onClick={()=>pickKnown(k)}
                       style={{
-                        width:"100%", textAlign:"left", display:"block",
-                        padding:"10px 14px", border:"none", borderBottom:"1px solid var(--line)",
-                        background: isPicked ? "rgba(15,143,74,0.08)" : "var(--white)",
+                        display:"flex", alignItems:"flex-start", gap:10,
+                        padding:"10px 14px", borderBottom:"1px solid var(--line)",
+                        background: isChecked ? "rgba(15,143,74,0.06)" : isPicked ? "rgba(15,143,74,0.08)" : "var(--white)",
                         cursor:"pointer", font:"inherit",
                       }}
-                      onMouseEnter={e=>{ if(!isPicked) e.currentTarget.style.background="var(--paper2)"; }}
-                      onMouseLeave={e=>{ if(!isPicked) e.currentTarget.style.background="var(--white)"; }}
+                      onClick={()=>toggleSelect(k.name)}
+                      onMouseEnter={e=>{ if(!isChecked && !isPicked) e.currentTarget.style.background="var(--paper2)"; }}
+                      onMouseLeave={e=>{ if(!isChecked && !isPicked) e.currentTarget.style.background="var(--white)"; }}
                     >
-                      <div style={{display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10}}>
-                        <div style={{minWidth:0, flex:1}}>
-                          <div style={{fontFamily:"'Montserrat',sans-serif", fontSize:13, fontWeight:700, color:"var(--ink)", display:"flex", alignItems:"center", gap:8}}>
-                            {k.name}
-                            {isPicked && <span style={{fontSize:9.5, letterSpacing:"0.08em", textTransform:"uppercase", fontWeight:800, padding:"1px 7px", borderRadius:999, background:"rgba(15,143,74,0.15)", color:"var(--teal-deep)", border:"1px solid rgba(15,143,74,0.35)"}}>Pre-filled</span>}
-                          </div>
-                          <div style={{fontSize:11, color:"var(--muted)", marginTop:2}}>
-                            {k.chair} · {k.chairEmail} · {k.chairCell}
-                          </div>
-                          <div style={{fontSize:10.5, color:"var(--muted-2)", marginTop:2, fontFamily:"'Montserrat',sans-serif", letterSpacing:"0.04em"}}>
-                            {k.district}
-                          </div>
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={()=>toggleSelect(k.name)}
+                        onClick={e=>e.stopPropagation()}
+                        style={{marginTop:3, width:16, height:16, cursor:"pointer", flexShrink:0, accentColor:"var(--teal-deep)"}}
+                      />
+                      <div style={{minWidth:0, flex:1}}>
+                        <div style={{fontFamily:"'Montserrat',sans-serif", fontSize:13, fontWeight:700, color:"var(--ink)", display:"flex", alignItems:"center", gap:8, flexWrap:"wrap"}}>
+                          {k.name}
+                          {isPicked && <span style={{fontSize:9.5, letterSpacing:"0.08em", textTransform:"uppercase", fontWeight:800, padding:"1px 7px", borderRadius:999, background:"rgba(15,143,74,0.15)", color:"var(--teal-deep)", border:"1px solid rgba(15,143,74,0.35)"}}>Pre-filled</span>}
                         </div>
-                        <span style={{fontSize:11, color:"var(--teal-deep)", whiteSpace:"nowrap", fontFamily:"'Montserrat',sans-serif", fontWeight:600}}>
-                          Use details →
-                        </span>
+                        <div style={{fontSize:11, color:"var(--muted)", marginTop:2}}>
+                          {k.chair} · {k.chairEmail} · {k.chairCell}
+                        </div>
+                        <div style={{fontSize:10.5, color:"var(--muted-2)", marginTop:2, fontFamily:"'Montserrat',sans-serif", letterSpacing:"0.04em"}}>
+                          {k.district}
+                        </div>
                       </div>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={e=>{ e.stopPropagation(); pickKnown(k); }}
+                        style={{
+                          fontSize:11, color:"var(--teal-deep)", whiteSpace:"nowrap",
+                          fontFamily:"'Montserrat',sans-serif", fontWeight:600,
+                          background:"transparent", border:"none", padding:"2px 4px", cursor:"pointer", flexShrink:0,
+                        }}
+                      >
+                        Use details →
+                      </button>
+                    </div>
                   );
                 })}
               </div>
@@ -1568,17 +1725,25 @@ function OnboardNewClubModal({ clubs, onClose, onOnboard, toast }) {
 
           <div className="row" style={{justifyContent:"space-between", gap:10, paddingTop:6, borderTop:"1px solid var(--line)"}}>
             <div style={{fontSize:11.5, color:"var(--muted)", fontFamily:"'Montserrat',sans-serif", fontWeight:500}}>
-              {!trimmedQuery
-                ? "Type a club name to begin"
-                : exact
-                  ? "Already onboarded — cancel and open their record"
-                  : showForm && !canSubmit
-                    ? "Chair contact details are required"
-                    : "Ready — adds the club and reveals the share screen"}
+              {selectedCount > 0
+                ? `${selectedCount} club${selectedCount===1?"":"s"} ticked — bulk onboards them in one go`
+                : !trimmedQuery
+                  ? "Tick clubs above for a bulk onboard, or type a name to add a new one"
+                  : exact
+                    ? "Already onboarded — cancel and open their record"
+                    : showForm && !canSubmit
+                      ? "Chair contact details are required"
+                      : "Ready — adds the club and reveals the share screen"}
             </div>
             <div className="row" style={{gap:8}}>
               <Btn tone="outline" onClick={onClose}>Cancel</Btn>
-              <Btn tone="teal" icon={Icon.Plus} disabled={!canSubmit} onClick={handleOnboard}>Onboard club</Btn>
+              {selectedCount > 0 ? (
+                <Btn tone="teal" icon={Icon.Plus} onClick={handleBulkOnboard}>
+                  Bulk onboard {selectedCount} club{selectedCount===1?"":"s"}
+                </Btn>
+              ) : (
+                <Btn tone="teal" icon={Icon.Plus} disabled={!canSubmit} onClick={handleOnboard}>Onboard club</Btn>
+              )}
             </div>
           </div>
         </div>

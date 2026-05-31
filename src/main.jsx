@@ -392,39 +392,51 @@ function Shell({
     return { token, createdAt };
   }
 
-  // Admin: onboard a brand-new club into the cohort. Returns the created club
-  // so callers can email / WhatsApp the chair the onboarding link straight away.
-  function onboardClub({ name, chair, chairEmail, chairCell, district }) {
-    const slugBase = (name || "club").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "club";
-    const taken = new Set(clubs.map(c => c.id));
+  // Shared helpers for the onboard-club flow.
+  const _SUB_FOR = (d) => d === "Ethekwini Metro Cricket Union" ? "EMCU"
+                      : d === "Illembe Cricket District" ? "Ilembe"
+                      : d === "Ugu Cricket District" ? "Southern Natal"
+                      : d === "KCCD" ? "King Cetshwayo"
+                      : d === "Umkhanyakude Cricket District" ? "King Cetshwayo"
+                      : "—";
+  const _PALETTE = ["#1B2A4A","#1D9E75","#C8A84B","#D85A30","#2E4070","#8A6E1C","#243356"];
+  function _buildClubFromSpec(spec, takenIds, paletteOffset) {
+    const slugBase = (spec.name || "club").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "club";
     let id = slugBase, n = 2;
-    while (taken.has(id)) { id = `${slugBase}-${n++}`; }
-    // District code → sub-union short code (used elsewhere in the UI).
-    const subFor = (d) => d === "Ethekwini Metro Cricket Union" ? "EMCU"
-                       : d === "Illembe Cricket District" ? "Ilembe"
-                       : d === "Ugu Cricket District" ? "Southern Natal"
-                       : d === "KCCD" ? "King Cetshwayo"
-                       : d === "Umkhanyakude Cricket District" ? "King Cetshwayo"
-                       : "—";
-    // Friendly default colour palette so the avatar isn't grey.
-    const palette = ["#1B2A4A","#1D9E75","#C8A84B","#D85A30","#2E4070","#8A6E1C","#243356"];
-    const color = palette[clubs.length % palette.length];
-
-    const newClub = {
-      id, name: name.trim(),
-      district: district || "Ethekwini Metro Cricket Union",
-      sub: subFor(district || "Ethekwini Metro Cricket Union"),
-      chair: (chair || "").trim() || "—",
+    while (takenIds.has(id)) { id = `${slugBase}-${n++}`; }
+    takenIds.add(id);
+    const district = spec.district || "Ethekwini Metro Cricket Union";
+    return {
+      id, name: spec.name.trim(),
+      district, sub: _SUB_FOR(district),
+      chair: (spec.chair || "").trim() || "—",
       affiliation: "not_started", paid: false, cqi: 0,
       docs: { constitution:false, agm:false, financials:false, exco:false },
-      players: 0, teams: 0, women: 0, juniors: 0, color,
+      players: 0, teams: 0, women: 0, juniors: 0,
+      color: _PALETTE[paletteOffset % _PALETTE.length],
       ground: null, leagues: [],
-      // Capture the chair's contact so the share affordance can mailto: / wa.me directly.
-      exco: { chair: { name: (chair || "").trim(), cell: chairCell || "", email: chairEmail || "" } },
+      exco: { chair: { name: (spec.chair || "").trim(), cell: spec.chairCell || "", email: spec.chairEmail || "" } },
       onboardedAt: new Date().toISOString(),
     };
+  }
+  // Admin: onboard a brand-new club into the cohort. Returns the created club
+  // so callers can email / WhatsApp the chair the onboarding link straight away.
+  function onboardClub(spec) {
+    const taken = new Set(clubs.map(c => c.id));
+    const newClub = _buildClubFromSpec(spec, taken, clubs.length);
     setClubs(cs => [...cs, newClub]);
     return newClub;
+  }
+  // Admin: bulk onboard. Atomic add — every new club gets a unique id and the
+  // entire batch lands in a single setClubs call so React sees one state change.
+  // Returns the array of created clubs so the share view can render per-row.
+  function bulkOnboardClubs(specs) {
+    if (!Array.isArray(specs) || specs.length === 0) return [];
+    const taken = new Set(clubs.map(c => c.id));
+    const baseOffset = clubs.length;
+    const created = specs.map((s, i) => _buildClubFromSpec(s, taken, baseOffset + i));
+    setClubs(cs => [...cs, ...created]);
+    return created;
   }
 
   // — NAV definition —
@@ -459,7 +471,7 @@ function Shell({
     if (role === "admin") {
       const gotoList = () => gotoAdminView("clubs_list");
       if (view === "dashboard")    return <AdminDashboard clubs={clubs} gotoClub={setActiveClub} gotoList={gotoList} gotoAdminView={gotoAdminView} toast={toastShow} submissionDeadline={submissionDeadline} onUpdateDeadline={setSubmissionDeadline} />;
-      if (view === "clubs_list")   return <AdminClubsList clubs={clubs} gotoClub={setActiveClub} toast={toastShow} submissionDeadline={submissionDeadline} onOnboardClub={onboardClub} />;
+      if (view === "clubs_list")   return <AdminClubsList clubs={clubs} gotoClub={setActiveClub} toast={toastShow} submissionDeadline={submissionDeadline} onOnboardClub={onboardClub} onBulkOnboardClubs={bulkOnboardClubs} />;
       if (view === "club_detail")  return <AdminClubDetail club={activeClub} gotoList={gotoList} onGenerateLink={()=>generatePlayerRegLink(activeClub.id)} toast={toastShow}/>;
       if (view === "affiliations") return <AdminFiltered clubs={clubs} kind="affiliation" gotoClub={setActiveClub}/>;
       if (view === "documents")    return <AdminFiltered clubs={clubs} kind="docs" gotoClub={setActiveClub}/>;
