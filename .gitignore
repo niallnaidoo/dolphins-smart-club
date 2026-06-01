@@ -9,3 +9,7 @@ sst-env.d.ts
 .env
 .env*.local
 .claude/
+
+# Playwright MCP test artifacts
+.playwright-mcp/
+dash.md

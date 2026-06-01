@@ -672,30 +672,36 @@ function Shell({
   const releasedForMe = allSeries.filter((s) => s.released && s.teams.includes(clubId));
   const hasReleased = releasedForMe.length > 0;
 
-  const clubNav = [
-    { v: 'home', label: 'Home', icon: Icon.Dashboard },
-    {
-      v: 'affiliation',
-      label: 'Affiliation',
-      icon: Icon.Form,
-      dot: activeClub.paid ? 'teal' : 'coral',
-    },
-    {
-      v: 'documents',
-      label: 'Documents',
-      icon: Icon.Upload,
-      dot: docCompletion(activeClub) === 100 ? 'teal' : 'gold',
-    },
-    { v: 'cqi', label: 'CQI', icon: Icon.Star, dot: activeClub.cqi > 0 ? 'teal' : 'muted' },
-    {
-      v: 'fixtures',
-      label: 'Fixtures',
-      icon: Icon.Field,
-      dot: hasReleased ? 'teal' : activeClub.paid ? 'gold' : 'muted',
-      num: hasReleased ? 'NEW' : undefined,
-    },
-    { v: '_help', label: 'Need Help?', icon: Icon.Mail, action: () => setShowHelp(true) },
-  ];
+  // Built only for the club role (admins never use it). activeClub is guaranteed
+  // defined past the guard above for the club role, but is undefined for an admin
+  // with a blank cohort — so guard the whole array to avoid a deref crash.
+  const clubNav =
+    role === 'club' && activeClub
+      ? [
+          { v: 'home', label: 'Home', icon: Icon.Dashboard },
+          {
+            v: 'affiliation',
+            label: 'Affiliation',
+            icon: Icon.Form,
+            dot: activeClub.paid ? 'teal' : 'coral',
+          },
+          {
+            v: 'documents',
+            label: 'Documents',
+            icon: Icon.Upload,
+            dot: docCompletion(activeClub) === 100 ? 'teal' : 'gold',
+          },
+          { v: 'cqi', label: 'CQI', icon: Icon.Star, dot: activeClub.cqi > 0 ? 'teal' : 'muted' },
+          {
+            v: 'fixtures',
+            label: 'Fixtures',
+            icon: Icon.Field,
+            dot: hasReleased ? 'teal' : activeClub.paid ? 'gold' : 'muted',
+            num: hasReleased ? 'NEW' : undefined,
+          },
+          { v: '_help', label: 'Need Help?', icon: Icon.Mail, action: () => setShowHelp(true) },
+        ]
+      : [];
 
   const nav = role === 'admin' ? adminNav : clubNav;
   const orgName = branding?.name ?? 'Smart Club';
