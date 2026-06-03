@@ -4700,9 +4700,9 @@ export function AdminClubDetail({
 
           <Card title="Communication log">
             <div className="stack" style={{ gap: 8 }}>
-              {[
-                // Admin-added notes (newest first), then the seeded system events.
-                ...[...(club.notes || [])].reverse().map((n) => ({
+              {(() => {
+                // Real, user-inputted communication: admin-added notes (newest first).
+                const notes = [...(club.notes || [])].reverse().map((n) => ({
                   tone: 'navy',
                   t: n.text,
                   d: `${new Date(n.at).toLocaleDateString('en-GB', {
@@ -4710,19 +4710,33 @@ export function AdminClubDetail({
                     month: 'short',
                     year: 'numeric',
                   })} · ${n.author}`,
-                })),
-                { tone: 'teal', t: 'Affiliation invitation sent', d: '03 May 2026 · auto-system' },
-                { tone: 'navy', t: 'Login link emailed to chair', d: '05 May 2026' },
-                { tone: 'gold', t: 'Reminder — CQI form pending', d: '15 May 2026' },
-                {
-                  tone: 'teal',
-                  t: 'AGM document uploaded',
-                  d: '18 May 2026 · by chair',
-                  off: !club.docs.agm,
-                },
-              ]
-                .filter((x) => !x.off)
-                .map((m, i) => (
+                }));
+                // Seeded illustrative events are demo-only — real clubs show just their notes.
+                const demoEvents = club.demo
+                  ? [
+                      {
+                        tone: 'teal',
+                        t: 'Affiliation invitation sent',
+                        d: '03 May 2026 · auto-system',
+                      },
+                      { tone: 'navy', t: 'Login link emailed to chair', d: '05 May 2026' },
+                      { tone: 'gold', t: 'Reminder — CQI form pending', d: '15 May 2026' },
+                      {
+                        tone: 'teal',
+                        t: 'AGM document uploaded',
+                        d: '18 May 2026 · by chair',
+                        off: !club.docs.agm,
+                      },
+                    ].filter((x) => !x.off)
+                  : [];
+                const entries = [...notes, ...demoEvents];
+                if (!entries.length)
+                  return (
+                    <div style={{ fontSize: 12.5, color: 'var(--muted-2)', padding: '8px 0' }}>
+                      No communication logged yet. Add a note below to start the log.
+                    </div>
+                  );
+                return entries.map((m, i) => (
                   <div
                     key={i}
                     style={{
@@ -4748,7 +4762,8 @@ export function AdminClubDetail({
                       </div>
                     </div>
                   </div>
-                ))}
+                ));
+              })()}
             </div>
             <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
               <input

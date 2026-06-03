@@ -9,11 +9,12 @@ export function Onboarding({ club, onClose, onComplete, onStart, submissionDeadl
   const deadlineLong = formatDeadlineLong(submissionDeadline);
   const deadlineMid = formatDeadlineMid(submissionDeadline);
   const [step, setStep] = useStateOb(1);
+  const chair = club.exco?.chair || {};
   const [contact, setContact] = useStateOb({
-    name: club.chair,
+    name: club.chair || chair.name || '',
     role: 'Chairperson',
-    email: club.chair.toLowerCase().replace(/\s+/g, '.') + '@' + club.id + '.co.za',
-    cell: '083 456 7890',
+    email: chair.email || '',
+    cell: chair.cell || '',
     notify: true,
   });
 

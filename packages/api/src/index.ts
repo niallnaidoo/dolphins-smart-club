@@ -30,7 +30,7 @@ import {
 import * as repo from './repo.js';
 import { VersionConflictError } from './repo.js';
 import { validateClubPatch } from './catalogue.js';
-import type { Club, Series, TenantConfig, PlayerRegistration } from './types.js';
+import type { Club, ClubSpec, Series, TenantConfig, PlayerRegistration } from './types.js';
 
 const s3 = new S3Client({});
 const cognito = new CognitoIdentityProviderClient({});
@@ -204,7 +204,7 @@ app.get('/clubs', requireAdmin, async (c) => {
 /** Onboard a new club (admin). Rejects a duplicate name within the tenant. */
 app.post('/clubs', requireAdmin, async (c) => {
   const { tenant } = c.get('requestAuth')!;
-  const spec = await c.req.json<Partial<Club>>();
+  const spec = await c.req.json<ClubSpec>();
   const existing = await repo.listClubs(tenant);
   if (nameTaken(existing, spec.name))
     throw new HttpError(409, `a club named "${spec.name}" already exists`);
@@ -219,7 +219,7 @@ app.post('/clubs', requireAdmin, async (c) => {
  */
 app.post('/clubs/bulk', requireAdmin, async (c) => {
   const { tenant } = c.get('requestAuth')!;
-  const specs = await c.req.json<Partial<Club>[]>();
+  const specs = await c.req.json<ClubSpec[]>();
   const existing = await repo.listClubs(tenant);
   const names = new Set(existing.map((cl) => cl.name.trim().toLowerCase()));
   const created: Club[] = [];
@@ -558,7 +558,21 @@ function affiliationFieldsTouched(patch: Partial<Club>): boolean {
 
 const COLORS = ['#1B2A4A', '#1D9E75', '#C8A84B', '#D85A30', '#2E4070', '#243356', '#8A6E1C'];
 
-function buildClubFromSpec(spec: Partial<Club>): Club {
+/**
+ * Build the initial `exco.chair` from the flat chair contact fields the admin onboard
+ * form sends. Returns undefined when no chair fields are present so genuinely-empty
+ * creates don't get an empty chair record. Shape matches what the affiliation form
+ * reads/writes (`exco.chair = { name, cell, email, ... }`).
+ */
+function buildInitialExco(spec: ClubSpec): Record<string, unknown> | undefined {
+  const name = spec.chair?.trim();
+  const email = spec.chairEmail?.trim();
+  const cell = spec.chairCell?.trim();
+  if (!name && !email && !cell) return undefined;
+  return { chair: { name: name ?? '', email: email ?? '', cell: cell ?? '' } };
+}
+
+function buildClubFromSpec(spec: ClubSpec): Club {
   const id =
     spec.id ??
     (spec.name ?? 'club')
@@ -582,7 +596,7 @@ function buildClubFromSpec(spec: Partial<Club>): Club {
     color: COLORS[Math.abs(hashCode(id)) % COLORS.length],
     ground: {},
     leagues: [],
-    exco: spec.exco,
+    exco: spec.exco ?? buildInitialExco(spec),
     onboardedAt: now(),
     version: 1,
   };

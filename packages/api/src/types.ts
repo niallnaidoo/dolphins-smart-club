@@ -85,12 +85,20 @@ export interface Club {
   /** Admin communication-log notes, appended newest-last via list_append. */
   notes?: { id: string; text: string; author: string; at: string }[];
   playerRegLink?: { token: string; createdAt: string };
+  /** Marks a club loaded from the demo snapshot; gates illustrative-only UI (e.g. seeded comm-log events). */
+  demo?: boolean;
   onboardedAt?: string;
   /** Optimistic-concurrency version + audit trail. */
   version: number;
   changedBy?: string;
   changedAt?: string;
 }
+
+/** Onboard payload: a Club plus the flat chair contact fields the admin form sends. */
+export type ClubSpec = Partial<Club> & {
+  chairEmail?: string;
+  chairCell?: string;
+};
 
 export interface Series {
   id: string;

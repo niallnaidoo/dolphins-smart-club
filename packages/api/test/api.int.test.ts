@@ -211,3 +211,55 @@ describe('POST /clubs/:id/notes', () => {
     assert.equal(after?.notes?.length, start + 2);
   });
 });
+
+describe('POST /clubs', () => {
+  type ExcoChair = {
+    chair?: string;
+    exco?: { chair?: { name?: string; email?: string; cell?: string } };
+  };
+
+  test('admin onboard persists chair contact into exco.chair', async () => {
+    const res = await app.request('/clubs', {
+      method: 'POST',
+      headers: headers(ADMIN),
+      body: JSON.stringify({
+        name: 'Verify FC',
+        chair: 'Carlton',
+        chairEmail: 'carlton@verifyfc.co.za',
+        chairCell: '083 456 7890',
+        district: 'Test District',
+      }),
+    });
+    assert.equal(res.status, 201);
+    const club = (await res.json()) as ExcoChair;
+    // Both the top-level chair name and the nested exco.chair contact are populated.
+    assert.equal(club.chair, 'Carlton');
+    assert.equal(club.exco?.chair?.name, 'Carlton');
+    assert.equal(club.exco?.chair?.email, 'carlton@verifyfc.co.za');
+    assert.equal(club.exco?.chair?.cell, '083 456 7890');
+  });
+
+  test('chair name only defaults email/cell to empty strings (not undefined)', async () => {
+    const res = await app.request('/clubs', {
+      method: 'POST',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ name: 'Partial FC', chair: 'Solo', district: 'Test District' }),
+    });
+    assert.equal(res.status, 201);
+    const club = (await res.json()) as ExcoChair;
+    assert.equal(club.exco?.chair?.name, 'Solo');
+    assert.equal(club.exco?.chair?.email, '');
+    assert.equal(club.exco?.chair?.cell, '');
+  });
+
+  test('name-only onboard leaves exco undefined (no fake data)', async () => {
+    const res = await app.request('/clubs', {
+      method: 'POST',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ name: 'Bare Club', district: 'Test District' }),
+    });
+    assert.equal(res.status, 201);
+    const club = (await res.json()) as ExcoChair;
+    assert.equal(club.exco, undefined);
+  });
+});

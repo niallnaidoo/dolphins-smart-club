@@ -95,7 +95,9 @@ export async function seedTenantConfig(tenant: string): Promise<number> {
 export async function seedDemoData(tenant: string): Promise<{ clubs: number; series: number }> {
   const snap = loadSnapshot(tenant);
   for (const club of snap.clubs) {
-    await repo.putClub(tenant, { ...club, version: 1 });
+    // Flag snapshot clubs as demo so illustrative-only UI (e.g. the seeded
+    // communication-log events) shows for them but not for real onboarded clubs.
+    await repo.putClub(tenant, { ...club, demo: true, version: 1 });
   }
   for (const series of snap.series) {
     await repo.putSeries(tenant, { ...series, version: 1 });

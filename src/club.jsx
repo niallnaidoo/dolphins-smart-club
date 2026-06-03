@@ -656,13 +656,7 @@ export function AffiliationForm({
       gender: ex[key]?.gender ?? fallback.gender ?? '',
       race: ex[key]?.race ?? fallback.race ?? '',
     });
-    const chairSeed = seed('chair', {
-      name: club.chair,
-      cell: '083 786 4098',
-      email: 'chair@' + club.id + '.co.za',
-      gender: 'Male',
-      race: 'Indian',
-    });
+    const chairSeed = seed('chair', { name: club.chair });
     // Additional members are now an array (chair/sec/tre/vc remain fixed required slots)
     const stored = Array.isArray(ex.additionalMembers)
       ? ex.additionalMembers
