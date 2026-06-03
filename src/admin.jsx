@@ -24,6 +24,7 @@ import {
   slugifyLeagueKey,
   OVERARCHING_DISTRICT,
 } from './leagues.js';
+import { exportRowsToXlsx, clubExportRow } from './exportXlsx.js';
 import {
   Icon,
   Pill,
@@ -1820,9 +1821,15 @@ export function AdminDashboard({
             tone="outline"
             icon={Icon.Download}
             size="sm"
-            onClick={() =>
-              notify('Export coming soon — the report will email as CSV to the union office.')
-            }
+            onClick={() => {
+              const rows = clubs.map((c) =>
+                clubExportRow(c, { docCompletion, overallProgress, cqiBand }),
+              );
+              if (!rows.length) return notify('No clubs to export');
+              exportRowsToXlsx('cohort-report.xlsx', 'Cohort', rows).catch(() =>
+                notify('Export failed — please retry'),
+              );
+            }}
           >
             Export cohort report
           </Btn>
@@ -2241,7 +2248,6 @@ export function AdminClubsList({
   onBulkOnboardClubs,
   knownClubs = [],
 }) {
-  const notify = (m) => (toast ? toast(m, 'warn') : null);
   const [q, setQ] = useStateA('');
   const [filter, setFilter] = useStateA('all');
   const [showOnboard, setShowOnboard] = useStateA(false);
@@ -2302,9 +2308,17 @@ export function AdminClubsList({
             tone="outline"
             icon={Icon.Download}
             size="sm"
-            onClick={() => notify('Export coming soon — full CSV with cohort filters applied.')}
+            onClick={() => {
+              const rows = filtered.map((c) =>
+                clubExportRow(c, { docCompletion, overallProgress, cqiBand }),
+              );
+              if (!rows.length) return toast?.('No clubs match — nothing to export', 'warn');
+              exportRowsToXlsx('club-directory.xlsx', 'Clubs', rows).catch(() =>
+                toast?.('Export failed — please retry', 'warn'),
+              );
+            }}
           >
-            Export CSV
+            Export Excel
           </Btn>
           <Btn tone="ink" icon={Icon.Plus} size="sm" onClick={() => setShowOnboard(true)}>
             Onboard new club

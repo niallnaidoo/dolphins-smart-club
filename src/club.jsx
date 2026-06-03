@@ -619,10 +619,6 @@ export function ClubHome({ club, goto, toast, replayOnboarding, submissionDeadli
               </div>
             ))}
           </div>
-          <div className="hr" />
-          <Btn tone="outline" icon={Icon.Eye} style={{ width: '100%', justifyContent: 'center' }}>
-            Visit Athlete Management System
-          </Btn>
         </Card>
       </div>
     </div>
@@ -641,7 +637,15 @@ const EMPTY_COACH = {
   teams: [],
 };
 
-export function AffiliationForm({ club, goto, toast, onSubmit, allLeagues = [] }) {
+export function AffiliationForm({
+  club,
+  goto,
+  toast,
+  onSubmit,
+  onSaveDraft,
+  unionEmail,
+  allLeagues = [],
+}) {
   const [data, setData] = useStateC(() => {
     // Pre-fill exco from club.exco (single source of truth shared with the exco roster doc)
     const ex = club.exco || {};
@@ -718,6 +722,28 @@ export function AffiliationForm({ club, goto, toast, onSubmit, allLeagues = [] }
     };
   });
   const [step, setStep] = useStateC(1);
+  const [savingDraft, setSavingDraft] = useStateC(false);
+
+  // Persist the in-progress form without locking it (no affiliation:'complete').
+  // Toast only on success — updateClub can reject (e.g. version conflict) and we
+  // must not show a false "saved" confirmation. district is included so a step-1
+  // district change isn't lost and leagues validate against the right catalogue.
+  function saveDraft() {
+    if (!onSaveDraft) return;
+    setSavingDraft(true);
+    Promise.resolve(
+      onSaveDraft({
+        district: data.district,
+        exco: getExcoPayload(),
+        coaches: getCoachesPayload(),
+        ground: getGroundPayload(),
+        leagues: getLeaguesPayload(),
+      }),
+    )
+      .then(() => toast('Draft saved'))
+      .catch(() => toast('Could not save draft', 'warn'))
+      .finally(() => setSavingDraft(false));
+  }
 
   function updateMember(idx, field, val) {
     setData((d) => ({
@@ -1794,7 +1820,7 @@ export function AffiliationForm({ club, goto, toast, onSubmit, allLeagues = [] }
                   ← Back
                 </Btn>
                 <div className="row" style={{ gap: 8 }}>
-                  <Btn tone="outline" size="sm">
+                  <Btn tone="outline" size="sm" onClick={saveDraft} disabled={savingDraft}>
                     Save draft
                   </Btn>
                   <Btn tone="ink" onClick={() => setStep(step + 1)} disabled={step === 1 && !valid}>
@@ -1810,7 +1836,7 @@ export function AffiliationForm({ club, goto, toast, onSubmit, allLeagues = [] }
                   ← Back
                 </Btn>
                 <div className="row" style={{ gap: 8 }}>
-                  <Btn tone="outline" size="sm">
+                  <Btn tone="outline" size="sm" onClick={saveDraft} disabled={savingDraft}>
                     Save draft
                   </Btn>
                   <Btn
@@ -1818,6 +1844,7 @@ export function AffiliationForm({ club, goto, toast, onSubmit, allLeagues = [] }
                     icon={Icon.Check}
                     onClick={() => {
                       onSubmit({
+                        district: data.district,
                         exco: getExcoPayload(),
                         coaches: getCoachesPayload(),
                         ground: getGroundPayload(),
@@ -1846,7 +1873,18 @@ export function AffiliationForm({ club, goto, toast, onSubmit, allLeagues = [] }
                 Need a change? Contact the Union office to amend.
               </div>
               <div className="row" style={{ gap: 8 }}>
-                <Btn tone="outline" icon={Icon.Mail} size="sm">
+                <Btn
+                  tone="outline"
+                  icon={Icon.Mail}
+                  size="sm"
+                  onClick={() =>
+                    unionEmail
+                      ? (window.location.href = `mailto:${unionEmail}?subject=${encodeURIComponent(
+                          'Affiliation amendment request — ' + club.name,
+                        )}`)
+                      : toast('Union office contact unavailable', 'warn')
+                  }
+                >
                   Request amendment
                 </Btn>
                 <Btn tone="ink" onClick={() => goto('home')}>
@@ -2340,7 +2378,15 @@ function ExcoFormModal({ club, onClose, onSave }) {
   );
 }
 
-export function DocumentsView({ club, goto, toast, onUpload, onSaveExco, submissionDeadline }) {
+export function DocumentsView({
+  club,
+  goto,
+  toast,
+  onUpload,
+  onSaveExco,
+  submissionDeadline,
+  unionEmail,
+}) {
   const deadlineShort = formatDeadlineShort(submissionDeadline);
   const daysLeft = daysUntil(submissionDeadline);
   const daysLabel =
@@ -2373,11 +2419,6 @@ export function DocumentsView({ club, goto, toast, onUpload, onSaveExco, submiss
             one roster captured directly on the platform. PDFs preferred — max 10 MB per file.
           </p>
         </div>
-        <div className="ph-actions">
-          <Btn tone="outline" icon={Icon.Download} size="sm">
-            Requirements PDF
-          </Btn>
-        </div>
       </div>
 
       <div className="kpi-strip" style={{ gridTemplateColumns: 'repeat(4,1fr)' }}>
@@ -2397,15 +2438,7 @@ export function DocumentsView({ club, goto, toast, onUpload, onSaveExco, submiss
         <KPI tone="gold" label="Deadline" num={deadlineShort} sub={daysLabel} />
       </div>
 
-      <Card
-        title="Submit your documents"
-        sub="3 file uploads · 1 on-platform form"
-        action={
-          <Btn tone="outline" size="sm" icon={Icon.Download}>
-            Download templates
-          </Btn>
-        }
-      >
+      <Card title="Submit your documents" sub="3 file uploads · 1 on-platform form">
         {REQUIRED_DOCS.map((d) => {
           const up = club.docs[d.key];
           const isExco = d.key === 'exco';
@@ -2584,16 +2617,29 @@ export function DocumentsView({ club, goto, toast, onUpload, onSaveExco, submiss
 
         <Card title="Need help?">
           <p style={{ fontSize: 13, color: 'var(--ink3)', lineHeight: 1.6 }}>
-            If your club is missing one of the required documents, reach out to the Union office at{' '}
-            <strong style={{ color: 'var(--navy)' }}>kzncu.office@cricket.co.za</strong>. Sample
-            templates are available for AGM Minutes and Constitution.
+            If your club is missing one of the required documents, reach out to the Union office
+            {unionEmail ? (
+              <>
+                {' '}
+                at <strong style={{ color: 'var(--navy)' }}>{unionEmail}</strong>
+              </>
+            ) : null}
+            .
           </p>
           <div className="row" style={{ marginTop: 12, gap: 8 }}>
-            <Btn tone="outline" icon={Icon.Mail} size="sm">
+            <Btn
+              tone="outline"
+              icon={Icon.Mail}
+              size="sm"
+              onClick={() =>
+                unionEmail
+                  ? (window.location.href = `mailto:${unionEmail}?subject=${encodeURIComponent(
+                      'Compliance documents — ' + club.name,
+                    )}`)
+                  : toast('Union office contact unavailable', 'warn')
+              }
+            >
               Contact union
-            </Btn>
-            <Btn tone="outline" icon={Icon.Download} size="sm">
-              Sample templates
             </Btn>
           </div>
         </Card>
@@ -2676,11 +2722,6 @@ export function CQIView({ club, goto, toast, onSubmit, submissionDeadline }) {
             pts, coaching 20 pts, facilities 15 pts, representation 10 pts, financial sustainability
             15 pts.
           </p>
-        </div>
-        <div className="ph-actions">
-          <Btn tone="outline" size="sm" icon={Icon.Download}>
-            Export CQI as PDF
-          </Btn>
         </div>
       </div>
 
@@ -2941,9 +2982,6 @@ export function ClubFixturesView({ club, allSeries, clubs, toast }) {
           </p>
         </div>
         <div className="ph-actions">
-          <Btn tone="outline" size="sm" icon={Icon.Download}>
-            Export PDF
-          </Btn>
           <Btn tone="outline" size="sm" icon={Icon.Mail}>
             Share with players
           </Btn>

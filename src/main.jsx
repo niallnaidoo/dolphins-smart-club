@@ -587,6 +587,9 @@ function Shell({
   const location = useLocation();
   const routeParams = useParams();
   const branding = tenantConfig?.branding;
+  // Union office email for mailto actions — extracted from the tenant support copy
+  // slot (same regex the HelpModal uses), so it stays correct per tenant.
+  const unionEmail = (branding?.copy?.support?.match(/[\w.+-]+@[\w.-]+/) || [''])[0];
 
   // ── Derive clubId from URL ──
   let clubId;
@@ -648,16 +651,17 @@ function Shell({
   }
 
   // ── Club mutations (API-backed; curried by current clubId) ──
+  // Resolves on success, rejects on failure (withToast already surfaces the error
+  // toast). Fire-and-forget callers append .catch(() => {}); callers that need to
+  // confirm success (e.g. Save draft) chain off the returned promise.
   function updateClub(updates) {
     return withToast(
       () => api.patchClub(clubId, { ...updates, version: activeClub?.version }),
       'Could not save changes',
-    )
-      .then(() => {
-        invalidate(qk.club(clubId));
-        invalidate(qk.clubs());
-      })
-      .catch(() => {});
+    ).then(() => {
+      invalidate(qk.club(clubId));
+      invalidate(qk.clubs());
+    });
   }
   // Compliance doc: DocumentsView uploads to S3 first, then calls this with the
   // stored object metadata. (No-arg legacy callers just flip the flag server-side.)
@@ -822,7 +826,7 @@ function Shell({
             onInvite={inviteUser}
             toast={toastShow}
             allLeagues={allLeagues}
-            onSetLeagues={(keys) => updateClub({ leagues: keys })}
+            onSetLeagues={(keys) => updateClub({ leagues: keys }).catch(() => {})}
           />
         );
       if (view === 'affiliations')
@@ -895,7 +899,7 @@ function Shell({
             toast={toastShow}
             submissionDeadline={submissionDeadline}
             onSubmit={(score, answers) => {
-              updateClub({ cqi: score, cqiAnswers: answers });
+              updateClub({ cqi: score, cqiAnswers: answers }).catch(() => {});
               gotoClubView('home');
             }}
           />
@@ -1107,17 +1111,28 @@ function Shell({
             goto={gotoClubView}
             toast={toastShow}
             allLeagues={allLeagues}
+            unionEmail={unionEmail}
+            onSaveDraft={(payload) =>
+              updateClub({
+                district: payload.district,
+                exco: payload.exco,
+                coaches: payload.coaches,
+                ground: payload.ground,
+                leagues: payload.leagues,
+              })
+            }
             onSubmit={(payload) => {
               // Affiliation submit marks the club complete (locking the form) but
               // does NOT set paid — payment is a separate admin action.
               updateClub({
                 affiliation: 'complete',
+                district: payload.district,
                 exco: payload.exco,
                 coaches: payload.coaches || [],
                 ground: payload.ground || {},
                 leagues: payload.leagues || [],
                 docs: { ...activeClub.docs, exco: true },
-              });
+              }).catch(() => {});
               gotoClubView('home');
             }}
           />
@@ -1142,6 +1157,7 @@ function Shell({
             onUpload={uploadDoc}
             onSaveExco={saveExco}
             submissionDeadline={submissionDeadline}
+            unionEmail={unionEmail}
           />
         </TaskModal>
       )}
