@@ -300,6 +300,8 @@ function AuthedApp({ tenantConfig }) {
   const clubs =
     role === 'admin' ? (clubsQuery.data ?? []) : repClubQueries.map((q) => q.data).filter(Boolean);
   const allSeries = seriesQuery.data ?? [];
+  // Leagues live in tenant config (admin-managed catalogue clubs opt into).
+  const allLeagues = tenantConfig?.leagues ?? [];
   const onboarded = meQuery.data?.onboardingSeen ?? {};
   const submissionDeadline = tenantConfig?.submissionDeadline ?? SUBMISSION_DEADLINE_DEFAULT;
 
@@ -345,6 +347,7 @@ function AuthedApp({ tenantConfig }) {
       if (conflict) {
         invalidate(qk.clubs());
         invalidate(qk.series());
+        invalidate(qk.tenant());
       }
       throw err;
     }
@@ -401,6 +404,38 @@ function AuthedApp({ tenantConfig }) {
       return created;
     });
   }
+  // ── League mutations: leagues are a config array, written whole via PUT /tenant/config. ──
+  function onCreateLeague(league) {
+    if (allLeagues.some((l) => l.key === league.key)) {
+      toastShow('A league with that name already exists.', 'warn');
+      return Promise.reject(new Error('duplicate league key'));
+    }
+    const next = [...allLeagues, league];
+    return withToast(() => api.putTenantConfig({ leagues: next }), 'Could not create league').then(
+      (cfg) => {
+        invalidate(qk.tenant());
+        return cfg;
+      },
+    );
+  }
+  function updateLeague(key, patch) {
+    const cur = allLeagues.find((l) => l.key === key);
+    if (!cur) return Promise.resolve();
+    const merged = { ...cur, ...patch, key: cur.key }; // key is immutable
+    const next = allLeagues.map((l) => (l.key === key ? merged : l));
+    return withToast(() => api.putTenantConfig({ leagues: next }), 'Could not save league')
+      .then(() => invalidate(qk.tenant()))
+      .catch(() => {});
+  }
+  function deleteLeague(key) {
+    const next = allLeagues.filter((l) => l.key !== key);
+    return withToast(() => api.putTenantConfig({ leagues: next }), 'Could not delete league')
+      .then(() => {
+        invalidate(qk.tenant());
+        invalidate(qk.clubs());
+      })
+      .catch(() => {});
+  }
 
   return (
     <>
@@ -423,6 +458,7 @@ function AuthedApp({ tenantConfig }) {
                 {...{
                   clubs,
                   allSeries,
+                  allLeagues,
                   toastShow,
                   onboarded,
                   setOnboarded,
@@ -439,6 +475,9 @@ function AuthedApp({ tenantConfig }) {
                   duplicateSeries,
                   setReleased,
                   onCreateSeries,
+                  onCreateLeague,
+                  updateLeague,
+                  deleteLeague,
                   withToast,
                   invalidate,
                   membership,
@@ -460,6 +499,7 @@ function AuthedApp({ tenantConfig }) {
               {...{
                 clubs,
                 allSeries,
+                allLeagues,
                 toastShow,
                 onboarded,
                 setOnboarded,
@@ -476,6 +516,9 @@ function AuthedApp({ tenantConfig }) {
                 duplicateSeries,
                 setReleased,
                 onCreateSeries,
+                onCreateLeague,
+                updateLeague,
+                deleteLeague,
                 withToast,
                 invalidate,
                 membership,
@@ -503,6 +546,7 @@ function Shell({
   role,
   clubs,
   allSeries,
+  allLeagues,
   toastShow,
   onboarded,
   setOnboarded,
@@ -519,6 +563,9 @@ function Shell({
   duplicateSeries,
   setReleased,
   onCreateSeries,
+  onCreateLeague,
+  updateLeague,
+  deleteLeague,
   withToast,
   invalidate,
   membership,
