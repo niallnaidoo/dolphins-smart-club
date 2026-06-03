@@ -203,7 +203,7 @@
 
   /* ─── MAIN ─── */
   .main{padding:24px 32px 60px;overflow-x:hidden}
-  .main.fullbleed{padding:0;display:flex;flex-direction:column;height:calc(100vh - 56px);overflow:hidden}
+  .main.fullbleed{padding:28px 36px 56px;display:flex;flex-direction:column;height:calc(100dvh - 56px);overflow-y:auto;overflow-x:hidden}
   .main > *{animation:fadeUp .42s cubic-bezier(0.16,1,0.3,1) both}
 
   /* Staggered KPI entry */
@@ -1356,7 +1356,7 @@
   /* ─── ADMIN FIXTURES & VENUES ─── */
   .series-strip{
     display:grid;grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));gap:14px;
-    margin-bottom:22px;
+    margin-bottom:24px;
   }
   .series-card{
     background:var(--white);border:1px solid var(--line);border-radius:var(--radius-lg);
@@ -1396,32 +1396,35 @@
 
   .fix-header{
     background:var(--ink);color:#fff;border-radius:var(--radius-lg);
-    padding:22px 26px;margin-bottom:18px;
+    padding:26px 32px;margin-bottom:22px;
     display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;
     animation:fadeUp .42s cubic-bezier(0.16,1,0.3,1) both;
   }
   .fix-header-title{font-family:'Montserrat',sans-serif;font-size:20px;font-weight:800;letter-spacing:-0.01em}
   .fix-header-title em{color:var(--green-bright);font-style:normal;font-weight:800}
   .fix-header-sub{font-family:'Montserrat',sans-serif;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.55);margin-top:6px;font-weight:500}
-  .fix-header-aggs{display:flex;gap:24px;flex-wrap:wrap}
+  .fix-header-aggs{display:flex;gap:36px;flex-wrap:wrap}
   .fix-header-agg{display:flex;flex-direction:column;gap:3px;align-items:flex-end;text-align:right}
   .fix-header-agg-l{font-size:9.5px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.55);font-weight:600;font-family:'Montserrat',sans-serif}
   .fix-header-agg-n{font-family:'Montserrat',sans-serif;font-size:18px;font-weight:800;color:#fff;letter-spacing:-0.02em}
   .fix-header-agg-n .unit{font-size:11px;color:rgba(255,255,255,0.55);font-weight:500;letter-spacing:0;margin-left:3px}
 
   .fix-table-wrap{
-    background:var(--white);border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden;
+    background:var(--white);border:1px solid var(--line);border-radius:var(--radius-lg);
+    overflow-x:auto;overflow-y:hidden;
   }
-  .fix-table{width:100%;border-collapse:collapse;font-family:'Montserrat',sans-serif}
+  .fix-table{width:100%;min-width:720px;border-collapse:collapse;font-family:'Montserrat',sans-serif}
   .fix-table thead{background:var(--ink);color:#fff}
   .fix-table thead th{
     font-size:9.5px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;
-    padding:13px 14px;text-align:left;color:rgba(255,255,255,0.7);
+    padding:14px 18px;text-align:left;color:rgba(255,255,255,0.7);
   }
+  .fix-table th:first-child,.fix-table td:first-child{padding-left:24px}
+  .fix-table th:last-child,.fix-table td:last-child{padding-right:24px}
   .fix-table tbody tr{border-bottom:1px solid var(--line2);transition:background .1s}
   .fix-table tbody tr:last-child{border-bottom:none}
   .fix-table tbody tr:hover{background:var(--paper)}
-  .fix-table td{padding:12px 14px;font-size:12.5px;vertical-align:middle;color:var(--ink)}
+  .fix-table td{padding:15px 18px;font-size:12.5px;vertical-align:middle;color:var(--ink)}
   .fix-row-rd{
     font-family:'Montserrat',sans-serif;font-size:10px;font-weight:700;
     background:var(--paper);color:var(--ink);padding:3px 8px;border-radius:6px;
@@ -1446,7 +1449,7 @@
   .fix-row-cost .cur{font-size:10px;font-weight:700;color:var(--green-mid);margin-right:2px}
   .fix-totals{
     background:var(--paper);
-    padding:14px 18px;
+    padding:16px 24px;
     display:flex;align-items:center;justify-content:flex-end;gap:32px;
     border-top:1px solid var(--line);
     flex-wrap:wrap;
@@ -1517,9 +1520,9 @@
 
   .fix-toolbar{
     display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-    padding:14px 18px;background:var(--white);
+    padding:14px 20px;background:var(--white);
     border:1px solid var(--line);border-radius:var(--radius-lg);
-    margin-bottom:14px;
+    margin-bottom:18px;
   }
   .fix-toolbar-left{display:flex;align-items:center;gap:8px;flex:1;flex-wrap:wrap}
   .fix-toolbar-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -1528,7 +1531,7 @@
   /* Release bar — bottom-right CTA to publish fixtures to clubs */
   .fix-release-bar{
     display:flex;align-items:center;justify-content:space-between;gap:18px;
-    padding:18px 22px;margin-top:14px;
+    padding:20px 26px;margin-top:18px;
     background:var(--ink);color:#fff;border-radius:var(--radius-lg);
     flex-wrap:wrap;
     box-shadow:0 12px 36px rgba(10,15,20,0.18);
@@ -2247,7 +2250,7 @@
     .app-header select{font-size:10.5px !important;min-width:120px !important;max-width:140px !important}
 
     .main{padding:16px 14px 40px}
-    .main.fullbleed{padding:0}
+    .main.fullbleed{height:auto;overflow:visible;padding:16px 16px 40px}
     .nav{padding:8px 10px}
     .nav-item{padding:7px 11px;font-size:12px}
 
