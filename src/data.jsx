@@ -597,18 +597,36 @@ export function fixtureCost(homeClub, awayClub, costPerKm = 4.5, cars = 3) {
   return { distanceKm: km, roundTripKm, cars, costPerKm, fuelR };
 }
 
+// Resolve whether an end date should drive scheduling. Empty/absent `dateMode`
+// falls back to a format-based default: tournaments are bounded events (spread),
+// series run weekly (reference). Shared by the create form and `regenerate` so
+// the two paths can never interpret a stored series differently.
+export function resolveSpread({ dateMode, kind } = {}) {
+  return (dateMode || (kind === 'tournament' ? 'spread' : 'reference')) === 'spread';
+}
+
 // Round-robin: each team plays every other team once. Home/away alternates fairly.
-export function generateRoundRobin(teamIds, startDateISO) {
+export function generateRoundRobin(teamIds, startDateISO, options = {}) {
   if (teamIds.length < 2) return [];
   const teams = [...teamIds];
   if (teams.length % 2 === 1) teams.push(null); // bye
   const n = teams.length;
   const rounds = n - 1;
   const start = new Date(startDateISO);
+  // When an end date drives the schedule, spread rounds evenly across the
+  // [start, end] window (last round lands on the end date); otherwise fall back
+  // to one round per week. A one-day floor keeps the generator self-protecting:
+  // even if a caller passes a window too short for the round count, rounds never
+  // stack onto the same date.
+  const { endDateISO, spread } = options;
+  const end = spread && endDateISO ? new Date(endDateISO) : null;
+  const rawStep =
+    end && rounds > 1 ? (end.getTime() - start.getTime()) / (rounds - 1) : 7 * 86400000;
+  const step = Math.max(rawStep, 86400000);
   const fixtures = [];
   let fixtureId = 1;
   for (let r = 0; r < rounds; r++) {
-    const matchDate = new Date(start.getTime() + r * 7 * 86400000); // weekly rounds
+    const matchDate = new Date(start.getTime() + r * step);
     for (let i = 0; i < n / 2; i++) {
       const home = teams[i],
         away = teams[n - 1 - i];

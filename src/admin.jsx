@@ -15,6 +15,7 @@ import {
   journeyUnlocked,
   fixtureCost,
   generateRoundRobin,
+  resolveSpread,
   formatDeadlineLong,
   formatDeadlineShort,
   formatDeadlineMid,
@@ -223,11 +224,18 @@ export function AdminFixtures({
                       fontFamily: "'Montserrat',sans-serif",
                     }}
                   >
-                    {s.teams.length} teams · {s.fixtures.length} fixtures · {s.maxOvers} ov · start{' '}
+                    {s.teams.length} teams · {s.fixtures.length} fixtures · {s.maxOvers} ov ·{' '}
+                    {s.endDate ? '' : 'start '}
                     {new Date(s.startDate).toLocaleDateString('en-GB', {
                       day: 'numeric',
                       month: 'short',
                     })}
+                    {s.endDate
+                      ? ` – ${new Date(s.endDate).toLocaleDateString('en-GB', {
+                          day: 'numeric',
+                          month: 'short',
+                        })}`
+                      : ''}
                   </div>
                   <div className="series-card-meta">
                     <div className="series-card-stat">
@@ -388,7 +396,10 @@ export function FixtureTable({
   function regenerate() {
     onUpdateSeries(series.id, (s) => ({
       ...s,
-      fixtures: generateRoundRobin(s.teams, s.startDate),
+      fixtures: generateRoundRobin(s.teams, s.startDate, {
+        endDateISO: s.endDate,
+        spread: resolveSpread(s),
+      }),
     }));
     setConfirm(null);
     toast?.(`${series.name} · fixtures regenerated`);
@@ -863,6 +874,8 @@ export function CreateSeriesForm({ clubs, onCreate, onClose, allLeagues = [] }) 
     leagueKey: '', // dropdown: pick a league → auto-fills name + teams
     name: '',
     startDate: '',
+    endDate: '', // optional; blank keeps the original weekly schedule
+    dateMode: '', // '' = smart default by kind · 'spread' | 'reference'
     kind: 'series', // "series" or "tournament"
     bulkSend: true, // tick to bulk-send fixtures to stakeholders on create
     divisions: false,
@@ -944,20 +957,35 @@ export function CreateSeriesForm({ clubs, onCreate, onClose, allLeagues = [] }) 
     }));
   }
 
-  const canCreate = d.name && d.startDate && d.teams.length >= 2;
+  // End date is optional. When set, the admin picks whether it drives the
+  // schedule ('spread') or is reference-only; with no explicit pick we default
+  // by format (see resolveSpread — shared with regenerate so they never drift).
+  const spread = resolveSpread(d);
+  const roundsNeeded = d.teams.length % 2 === 0 ? d.teams.length - 1 : d.teams.length;
+  const windowDays = d.endDate
+    ? Math.round((new Date(d.endDate) - new Date(d.startDate)) / 86400000)
+    : null;
+  const endBeforeStart = !!d.endDate && d.endDate < d.startDate;
+  // Spreading needs at least one day per round after the first.
+  const windowTooShort = !!d.endDate && spread && windowDays < roundsNeeded - 1;
+  const canCreate =
+    d.name && d.startDate && d.teams.length >= 2 && !endBeforeStart && !windowTooShort;
 
   function submit() {
     if (!canCreate) return;
     const series = {
       id: 's-' + Date.now(),
       ...d,
+      // Persist the *resolved* mode (not the raw '' default) only when an end
+      // date exists, so regenerate reproduces the schedule the admin confirmed.
+      dateMode: d.endDate ? (spread ? 'spread' : 'reference') : undefined,
       tags: d.tags
         ? d.tags
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean)
         : [],
-      fixtures: generateRoundRobin(d.teams, d.startDate),
+      fixtures: generateRoundRobin(d.teams, d.startDate, { endDateISO: d.endDate, spread }),
     };
     onCreate(series);
     onClose();
@@ -999,6 +1027,33 @@ export function CreateSeriesForm({ clubs, onCreate, onClose, allLeagues = [] }) 
         </div>
         <div className="cs-row-input">
           <input type="date" value={d.startDate} onChange={(e) => u('startDate', e.target.value)} />
+        </div>
+      </div>
+      <div className="cs-row">
+        <div className="cs-row-label">End Date</div>
+        <div className="cs-row-input">
+          <input
+            type="date"
+            value={d.endDate}
+            min={d.startDate}
+            onChange={(e) => u('endDate', e.target.value)}
+          />
+          {d.endDate ? (
+            <div style={{ marginTop: 8 }}>
+              <Choice
+                value={spread ? 'Spread fixtures across window' : 'Reference only'}
+                onChange={(v) =>
+                  u('dateMode', v === 'Spread fixtures across window' ? 'spread' : 'reference')
+                }
+                options={['Spread fixtures across window', 'Reference only']}
+              />
+              <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 6 }}>
+                {spread
+                  ? 'Rounds are distributed evenly between the start and end date — best for a tournament that runs over a fixed period.'
+                  : 'Fixtures keep the weekly cadence; the end date is saved for display only.'}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
       <div className="cs-row">
@@ -1455,12 +1510,24 @@ export function CreateSeriesForm({ clubs, onCreate, onClose, allLeagues = [] }) 
           }}
         >
           {canCreate
-            ? `Ready · ${d.kind === 'tournament' ? 'tournament' : 'series'} · ${(d.teams.length * (d.teams.length - 1)) / 2} round-robin fixtures from ${d.startDate}${d.bulkSend ? ' · fixtures will be bulk-sent to stakeholders' : ''}`
-            : !d.leagueKey
+            ? `Ready · ${d.kind === 'tournament' ? 'tournament' : 'series'} · ${(d.teams.length * (d.teams.length - 1)) / 2} round-robin fixtures · ${
+                d.endDate && spread
+                  ? `spread from ${d.startDate} to ${d.endDate}`
+                  : d.endDate
+                    ? `weekly from ${d.startDate} · ends ${d.endDate}`
+                    : `weekly from ${d.startDate}`
+              }${d.bulkSend ? ' · fixtures will be bulk-sent to stakeholders' : ''}`
+            : !d.leagueKey || !d.name
               ? 'Pick a league / division to auto-populate teams'
               : !d.startDate
                 ? 'Add a start date'
-                : 'At least 2 registered teams are required'}
+                : d.teams.length < 2
+                  ? 'At least 2 registered teams are required'
+                  : endBeforeStart
+                    ? 'End date must be on or after the start date'
+                    : windowTooShort
+                      ? `Window too short — ${roundsNeeded} rounds need at least ${roundsNeeded - 1} days between start and end (your window is ${windowDays})`
+                      : 'Complete the form to continue'}
         </div>
         <div className="row" style={{ gap: 8 }}>
           <Btn tone="outline" onClick={onClose}>

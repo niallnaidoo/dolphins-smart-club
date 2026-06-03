@@ -144,6 +144,8 @@ export interface Series {
   id: string;
   name: string;
   startDate: string;
+  endDate?: string; // optional; when set, may drive scheduling (see dateMode)
+  dateMode?: 'spread' | 'reference'; // how endDate is used: spread rounds vs display only
   teams: string[];
   fixtures: unknown[];
   released: boolean;
