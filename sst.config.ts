@@ -85,6 +85,22 @@ export default $config({
       },
     });
 
+    // ── Outbound messaging secrets (onboarding invites) ──
+    // Reused from the medicoach account: the verified SES identity (eu-west-1) and the
+    // Meta WhatsApp Cloud API credentials. Defaulted to '' so the stack still deploys
+    // before they're set — the API's notify module dry-runs while any of these is empty
+    // (see packages/api/src/notify). Set real values with `sst secret set` only after
+    // SES production access is granted; until then email to unverified clubs is rejected.
+    // ⚠️ POPIA: these route chair PII to SES (Ireland) + Meta (global) — a documented
+    // cross-border transfer. See docs/guides/popia-compliance.md.
+    const fromEmail = new sst.Secret('FromEmail', '');
+    const whatsappAccessToken = new sst.Secret('WhatsappAccessToken', '');
+    const whatsappPhoneNumberId = new sst.Secret('WhatsappPhoneNumberId', '');
+    const whatsappInviteTemplate = new sst.Secret(
+      'WhatsappInviteTemplate',
+      'club_onboarding_invite',
+    );
+
     // ── API: one Hono Lambda behind a $default route ──
     // JWT is verified inside the app (aws-jwt-verify) so public routes (/tenant,
     // /register) and protected routes can coexist on one catch-all route.
@@ -93,7 +109,24 @@ export default $config({
       handler: 'packages/api/src/index.handler',
       // Linking grants IAM + Resource access. userPool link lets the API call
       // AdminCreateUser for the invite flow.
-      link: [table, uploads, userPool, userPoolClient],
+      link: [
+        table,
+        uploads,
+        userPool,
+        userPoolClient,
+        fromEmail,
+        whatsappAccessToken,
+        whatsappPhoneNumberId,
+        whatsappInviteTemplate,
+      ],
+      // SES isn't covered by `link` (it's not an SST resource), so grant it directly.
+      // SES authorizes by verified identity, not resource ARN, hence resources: ['*'].
+      // Works cross-region/same-account: this stack deploys with the medicoach profile,
+      // so the Lambda role can SendEmail for that account's eu-west-1 identity.
+      permissions: [{ actions: ['ses:SendEmail', 'ses:SendRawEmail'], resources: ['*'] }],
+      // Two external calls (SES + Meta), each with up to 3 backoff retries, can run long
+      // on a bad day; give the handler headroom over the worst case.
+      timeout: '30 seconds',
       environment: {
         USER_POOL_ID: userPool.id,
         USER_POOL_CLIENT_ID: userPoolClient.id,
@@ -103,6 +136,15 @@ export default $config({
         STAGE: $app.stage,
         // Comma-separated extra CORS origins (custom tenant domains in prod).
         ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS ?? '',
+        // Outbound messaging. SES_REGION must NOT be af-south-1 (SES unavailable there).
+        SES_REGION: 'eu-west-1',
+        FROM_EMAIL: fromEmail.value,
+        WHATSAPP_ACCESS_TOKEN: whatsappAccessToken.value,
+        WHATSAPP_PHONE_NUMBER_ID: whatsappPhoneNumberId.value,
+        WHATSAPP_INVITE_TEMPLATE: whatsappInviteTemplate.value,
+        // Force dry-run regardless of secrets (set NOTIFY_DRY_RUN=1 in the deploy env)
+        // — the verified-only/dry-run gate while awaiting SES production access.
+        NOTIFY_DRY_RUN: process.env.NOTIFY_DRY_RUN ?? '',
       },
       nodejs: { install: ['aws-jwt-verify'] },
     });

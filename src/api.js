@@ -104,6 +104,17 @@ export const markDocUploaded = (id, key, meta) =>
   request(`/clubs/${id}/docs/${key}`, { method: 'PATCH', body: meta });
 export const addClubNote = (id, text) =>
   request(`/clubs/${id}/notes`, { method: 'POST', body: { text } });
+/**
+ * Send the onboarding invite to the club's chair over the given channels
+ * (['email'] | ['whatsapp'] | both). The link is built from the caller's own origin
+ * so it stays correct per-tenant; idempotencyKey makes a lost-response retry replay
+ * instead of double-sending. Resolves to { results: [{ channel, status, error? }] }.
+ */
+export const sendClubInvite = (id, { channels, link, idempotencyKey }) =>
+  request(`/clubs/${id}/send-invite`, {
+    method: 'POST',
+    body: { channels, link, idempotencyKey },
+  });
 
 // ── Series ──
 export const getSeriesList = () => request('/series');

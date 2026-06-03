@@ -30,7 +30,15 @@ import {
 import * as repo from './repo.js';
 import { VersionConflictError } from './repo.js';
 import { validateClubPatch } from './catalogue.js';
-import type { Club, ClubSpec, Series, TenantConfig, PlayerRegistration } from './types.js';
+import { sendClubInvite, type Channel, type SendResult } from './notify/index.js';
+import type {
+  Club,
+  ClubCommEvent,
+  ClubSpec,
+  Series,
+  TenantConfig,
+  PlayerRegistration,
+} from './types.js';
 
 const s3 = new S3Client({});
 const cognito = new CognitoIdentityProviderClient({});
@@ -403,6 +411,54 @@ app.post('/clubs/:id/notes', requireAdmin, async (c) => {
   }
 });
 
+/**
+ * Send the onboarding invite to the club's chair over email and/or WhatsApp (admin).
+ * The link is built client-side from the tenant's own origin and passed in, so this
+ * stays correct for multi-tenant custom domains. Idempotency-keyed so a lost-response
+ * retry replays the prior outcome instead of double-sending. Per-channel results are
+ * recorded in the comm log and returned verbatim so the UI toast tells the truth.
+ */
+app.post('/clubs/:id/send-invite', requireAdmin, async (c) => {
+  const ra = c.get('requestAuth')!;
+  const id = c.req.param('id');
+  assertClubAccess(ra, id);
+  const { channels, link, idempotencyKey } = await c.req.json<{
+    channels?: Channel[];
+    link?: string;
+    idempotencyKey?: string;
+  }>();
+  if (!Array.isArray(channels) || channels.length === 0)
+    throw new HttpError(400, 'channels required');
+  const unknown = channels.find((ch) => ch !== 'email' && ch !== 'whatsapp');
+  if (unknown) throw new HttpError(400, `unknown channel: ${unknown}`);
+  if (!link || !/^https?:\/\//.test(link)) throw new HttpError(400, 'valid link required');
+  if (!idempotencyKey) throw new HttpError(400, 'idempotencyKey required');
+
+  const club = await repo.getClub(ra.tenant, id);
+  if (!club) throw new HttpError(404, 'club not found');
+
+  // Claim the idempotency key before sending; a prior/concurrent claim replays.
+  // `pending` distinguishes "first attempt still in flight" (no results yet) from a
+  // completed replay, so the UI can show "already sending" instead of a silent no-op.
+  const prior = await repo.claimInviteSend(ra.tenant, id, idempotencyKey, channels);
+  if (prior) return c.json({ results: prior.results, deduped: true, pending: prior.pending });
+
+  const { results } = await sendClubInvite({ club, channels, link });
+  try {
+    await repo.appendClubCommEvents(
+      ra.tenant,
+      id,
+      results.map((r) => buildCommEvent(r, ra.email, idempotencyKey)),
+    );
+  } catch (err) {
+    // The messages already went out — a comm-log write failure must not fail the
+    // request (that would invite a double-send on retry). Log and move on.
+    console.error('comm-log append failed after invite send', err);
+  }
+  await repo.completeInviteSend(ra.tenant, id, idempotencyKey, results);
+  return c.json({ results }, 201);
+});
+
 // ───────────────────────── Series ─────────────────────────
 
 app.get('/series', async (c) => {
@@ -550,6 +606,21 @@ async function applyClubPatch(
     if (err instanceof VersionConflictError) throw new HttpError(409, 'club changed; refetch');
     throw err;
   }
+}
+
+/** Map a per-channel send outcome into a comm-log event row. */
+function buildCommEvent(r: SendResult, by: string, idempotencyKey: string): ClubCommEvent {
+  return {
+    id: randomUUID(),
+    channel: r.channel,
+    to: r.to,
+    status: r.status,
+    messageId: r.messageId,
+    error: r.error,
+    at: now(),
+    by,
+    idempotencyKey,
+  };
 }
 
 function affiliationFieldsTouched(patch: Partial<Club>): boolean {

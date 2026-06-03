@@ -794,6 +794,15 @@ function Shell({
     invalidate(qk.clubs());
     return created;
   }
+  // Send the real onboarding invite (email/WhatsApp). The modal owns the per-channel
+  // toasts off the returned results, so this doesn't wrap in withToast — it just
+  // refreshes the comm log on success and lets the caller surface failures.
+  async function sendClubInvite(targetClubId, payload) {
+    const res = await api.sendClubInvite(targetClubId, payload);
+    invalidate(qk.club(targetClubId));
+    invalidate(qk.clubs());
+    return res;
+  }
   async function bulkOnboardClubs(specs) {
     if (!Array.isArray(specs) || specs.length === 0) return [];
     // The API returns { created, skipped } (per-spec, non-atomic). Surface skips.
@@ -902,6 +911,7 @@ function Shell({
             submissionDeadline={submissionDeadline}
             onOnboardClub={onboardClub}
             onBulkOnboardClubs={bulkOnboardClubs}
+            onSendInvite={sendClubInvite}
             knownClubs={tenantConfig?.knownClubs ?? []}
           />
         );
@@ -1198,10 +1208,19 @@ function Shell({
           club={activeClub}
           submissionDeadline={submissionDeadline}
           onClose={() => setShowOnboarding(false)}
-          onComplete={() => {
+          onComplete={(contact) => {
             setOnboarded((o) => ({ ...o, [clubId]: true }));
             setShowOnboarding(false);
             toastShow('Welcome, ' + activeClub.chair.split(' ')[0] + " · let's get started");
+            // Persist just the reminders opt-in (a non-affiliation field, so it's never
+            // locked). No scheduled reminders yet — this only stops dropping the choice.
+            // Best-effort: a stale-version 409 here just means the flag didn't persist, so
+            // log it (don't swallow) rather than surfacing an error toast over the welcome.
+            if (contact && !!contact.notify !== !!activeClub.remindersOptIn) {
+              updateClub({ remindersOptIn: !!contact.notify }).catch((err) =>
+                console.warn('reminders opt-in not persisted', err),
+              );
+            }
           }}
           onStart={() => gotoClubView('affiliation')}
         />

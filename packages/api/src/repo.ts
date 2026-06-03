@@ -15,6 +15,7 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import {
   clubKey,
+  clubInviteKey,
   clubGsi1,
   clubsListGsi1pk,
   seriesKey,
@@ -29,7 +30,15 @@ import {
   userGsi1,
   usersListGsi1pk,
 } from './keys.js';
-import type { Club, Series, TenantConfig, UserProfile, PlayerRegistration } from './types.js';
+import type {
+  Club,
+  ClubCommEvent,
+  SendResult,
+  Series,
+  TenantConfig,
+  UserProfile,
+  PlayerRegistration,
+} from './types.js';
 
 import { tableName } from './env.js';
 
@@ -260,6 +269,136 @@ export async function appendClubNote(
     }),
   );
   return stripKeys<Club>(res.Attributes) as Club;
+}
+
+/**
+ * Append real onboarding-invite send events to a club's comm log. Same `list_append`
+ * strategy as appendClubNote (no version guard) so concurrent appends compose. Best
+ * effort from the caller's perspective: the messages already went out before this
+ * runs, so a failure here must not be treated as a send failure.
+ */
+export async function appendClubCommEvents(
+  tenant: string,
+  clubId: string,
+  events: ClubCommEvent[],
+): Promise<Club> {
+  if (events.length === 0) return (await getClub(tenant, clubId)) as Club;
+  const stampedBy = events[events.length - 1].by;
+  const stampedAt = events[events.length - 1].at;
+  const res = await ddb.send(
+    new UpdateCommand({
+      TableName: TABLE,
+      Key: clubKey(tenant, clubId),
+      UpdateExpression:
+        'SET commLog = list_append(if_not_exists(commLog, :empty), :new), ' +
+        'version = if_not_exists(version, :zero) + :one, changedBy = :by, changedAt = :at',
+      ConditionExpression: 'attribute_exists(pk)',
+      ExpressionAttributeValues: {
+        ':empty': [],
+        ':new': events,
+        ':zero': 0,
+        ':one': 1,
+        ':by': stampedBy,
+        ':at': stampedAt,
+      },
+      ReturnValues: 'ALL_NEW',
+    }),
+  );
+  return stripKeys<Club>(res.Attributes) as Club;
+}
+
+/** Outcome of a duplicate idempotency claim: prior results + whether the first attempt is still running. */
+export interface InviteSendReplay {
+  pending: boolean;
+  results: SendResult[];
+}
+
+/**
+ * Server-side idempotency for invite sends. Atomically claims an idempotency key by
+ * writing a marker item (separate sk in the club's collection) under
+ * `attribute_not_exists(pk)`. Returns:
+ *   - `null` when the claim succeeds → the caller proceeds to send.
+ *   - an {@link InviteSendReplay} when the key was already claimed → the caller
+ *     short-circuits. `pending` is true when the first attempt hasn't completed yet
+ *     (no results to replay), so the UI can say "already sending" rather than showing
+ *     a silent no-op.
+ * This stops a lost-response retry (or a second tab/admin) from re-sending the same
+ * keyed attempt. Each fresh admin click uses a new key, so genuine retries still send.
+ */
+export async function claimInviteSend(
+  tenant: string,
+  clubId: string,
+  idempotencyKey: string,
+  channels: string[],
+): Promise<InviteSendReplay | null> {
+  const startedAt = new Date().toISOString();
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: TABLE,
+        Item: {
+          ...clubInviteKey(tenant, clubId, idempotencyKey),
+          channels,
+          status: 'in_progress',
+          startedAt,
+        },
+        ConditionExpression: 'attribute_not_exists(pk)',
+      }),
+    );
+    return null;
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name === 'ConditionalCheckFailedException') {
+      const res = await ddb.send(
+        new GetCommand({ TableName: TABLE, Key: clubInviteKey(tenant, clubId, idempotencyKey) }),
+      );
+      const item = res.Item as { status?: string; results?: SendResult[] } | undefined;
+      return { pending: item?.status !== 'completed', results: item?.results ?? [] };
+    }
+    throw err;
+  }
+}
+
+/** Record the outcome on the idempotency marker so a replay returns the same results. */
+export async function completeInviteSend(
+  tenant: string,
+  clubId: string,
+  idempotencyKey: string,
+  results: SendResult[],
+): Promise<void> {
+  await ddb.send(
+    new UpdateCommand({
+      TableName: TABLE,
+      Key: clubInviteKey(tenant, clubId, idempotencyKey),
+      UpdateExpression: 'SET #r = :r, #s = :done, completedAt = :at',
+      ExpressionAttributeNames: { '#r': 'results', '#s': 'status' },
+      ExpressionAttributeValues: {
+        ':r': results,
+        ':done': 'completed',
+        ':at': new Date().toISOString(),
+      },
+    }),
+  );
+}
+
+/**
+ * Keys of all invite-idempotency markers for a club (sk begins `INVITE#`). These items
+ * carry recipient contact in their stored results, so tenant/cohort erasure must delete
+ * them too — they're not reachable via the gsi1 club listing that the erase paths use.
+ */
+async function listClubInviteKeys(
+  tenant: string,
+  clubId: string,
+): Promise<Array<{ pk: string; sk: string }>> {
+  const { pk } = clubKey(tenant, clubId);
+  const res = await ddb.send(
+    new QueryCommand({
+      TableName: TABLE,
+      KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
+      ExpressionAttributeValues: { ':p': pk, ':s': 'INVITE#' },
+      ProjectionExpression: 'pk, sk',
+    }),
+  );
+  return (res.Items ?? []).map((i) => ({ pk: i.pk as string, sk: i.sk as string }));
 }
 
 // ── Series ──
@@ -533,6 +672,8 @@ export async function eraseTenantData(tenant: string): Promise<number> {
     keys.push(clubKey(tenant, club.id));
     const players = await listPlayers(tenant, club.id);
     for (const p of players) keys.push(playerKey(tenant, club.id, p.naturalKey));
+    // Invite markers aren't in the gsi1 listing — enumerate + delete them explicitly.
+    for (const k of await listClubInviteKeys(tenant, club.id)) keys.push(k);
   }
   for (const s of await listSeries(tenant)) keys.push(seriesKey(tenant, s.id));
   for (const u of await listTenantUsers(tenant)) keys.push(userTenantMarkerKey(u.sub, tenant));
@@ -554,6 +695,7 @@ export async function clearCohort(tenant: string): Promise<number> {
     for (const p of await listPlayers(tenant, club.id)) {
       keys.push(playerKey(tenant, club.id, p.naturalKey));
     }
+    for (const k of await listClubInviteKeys(tenant, club.id)) keys.push(k);
   }
   for (const s of await listSeries(tenant)) keys.push(seriesKey(tenant, s.id));
 

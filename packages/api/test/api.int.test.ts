@@ -352,3 +352,195 @@ describe('PATCH /clubs/:id — chair contact (repair existing clubs)', () => {
     assert.equal(res.status, 409);
   });
 });
+
+describe('POST /clubs/:id/send-invite', () => {
+  // FROM_EMAIL / WHATSAPP_* are unset in the test env, so notify/ runs in dry-run:
+  // sends "succeed" with synthetic ids and no real SES/Meta calls are made.
+  const base = (id: string, exco?: Record<string, unknown>) => ({
+    id,
+    name: `${id} CC`,
+    district: 'Test District',
+    sub: 's',
+    chair: 'Chair',
+    affiliation: 'not_started' as const,
+    paid: false,
+    cqi: 0,
+    docs: {},
+    players: 0,
+    teams: 0,
+    women: 0,
+    juniors: 0,
+    color: '#123456',
+    ground: {},
+    leagues: [],
+    version: 1,
+    ...(exco ? { exco } : {}),
+  });
+
+  before(async () => {
+    await repo.createClub(
+      'dolphins',
+      base('invitee', {
+        chair: { name: 'Carlton', email: 'carlton@invitee.co.za', cell: '0768563601' },
+      }),
+    );
+    await repo.createClub('dolphins', base('nocontact'));
+  });
+
+  const send = (id: string, body: unknown, auth = ADMIN) =>
+    app.request(`/clubs/${id}/send-invite`, {
+      method: 'POST',
+      headers: headers(auth),
+      body: JSON.stringify(body),
+    });
+
+  const valid = {
+    channels: ['email', 'whatsapp'],
+    link: 'https://x.test/club/invitee',
+    idempotencyKey: 'k1',
+  };
+
+  test('dry-run sends both channels and records the comm log', async () => {
+    const res = await send('invitee', valid);
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as { results: { channel: string; status: string }[] };
+    assert.equal(body.results.length, 2);
+    assert.ok(body.results.every((r) => r.status === 'sent'));
+    const club = await repo.getClub('dolphins', 'invitee');
+    assert.equal(club?.commLog?.length, 2);
+  });
+
+  test('same idempotency key replays without re-sending or re-logging', async () => {
+    const res = await send('invitee', valid); // same key 'k1'
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { deduped?: boolean; results: unknown[] };
+    assert.equal(body.deduped, true);
+    const club = await repo.getClub('dolphins', 'invitee');
+    assert.equal(club?.commLog?.length, 2, 'no extra comm-log entries on replay');
+  });
+
+  test('missing chair contact yields skipped (not failed) per channel', async () => {
+    const res = await send('nocontact', {
+      channels: ['email', 'whatsapp'],
+      link: 'https://x.test/club/nocontact',
+      idempotencyKey: 'k-nocontact',
+    });
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as { results: { status: string; error?: string }[] };
+    assert.ok(body.results.every((r) => r.status === 'skipped'));
+    assert.ok(body.results.every((r) => !!r.error));
+  });
+
+  test('empty channels is rejected (400)', async () => {
+    const res = await send('invitee', {
+      channels: [],
+      link: 'https://x.test',
+      idempotencyKey: 'k2',
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('unknown channel is rejected (400)', async () => {
+    const res = await send('invitee', {
+      channels: ['sms'],
+      link: 'https://x.test',
+      idempotencyKey: 'k3',
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('non-http link is rejected (400)', async () => {
+    const res = await send('invitee', {
+      channels: ['email'],
+      link: 'javascript:alert(1)',
+      idempotencyKey: 'k4',
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('missing idempotencyKey is rejected (400)', async () => {
+    const res = await send('invitee', { channels: ['email'], link: 'https://x.test' });
+    assert.equal(res.status, 400);
+  });
+
+  test('club rep is forbidden (403)', async () => {
+    const res = await send('invitee', valid, REP);
+    assert.equal(res.status, 403);
+  });
+
+  test('unknown club yields 404', async () => {
+    const res = await send('ghost', { ...valid, idempotencyKey: 'k5' });
+    assert.equal(res.status, 404);
+  });
+});
+
+describe('eraseTenantData removes INVITE# idempotency markers', () => {
+  // Regression guard: markers carry recipient contact and aren't in the gsi1 club
+  // listing, so erasure must enumerate them explicitly (repo.listClubInviteKeys).
+  test('a marker is gone after tenant erasure (key reclaims fresh)', async () => {
+    // No tenant config needed — erasure + claim work on keys directly.
+    await repo.createClub('erasetest', {
+      id: 'ec',
+      name: 'Erase CC',
+      district: 'Test District',
+      sub: 's',
+      chair: 'Chair',
+      affiliation: 'not_started' as const,
+      paid: false,
+      cqi: 0,
+      docs: {},
+      players: 0,
+      teams: 0,
+      women: 0,
+      juniors: 0,
+      color: '#123456',
+      ground: {},
+      leagues: [],
+      version: 1,
+    });
+
+    // Claim creates the marker; a second claim of the same key sees it (replay).
+    assert.equal(await repo.claimInviteSend('erasetest', 'ec', 'kE', ['email']), null);
+    const replay = await repo.claimInviteSend('erasetest', 'ec', 'kE', ['email']);
+    assert.ok(replay, 'marker should exist before erasure (replay, not fresh claim)');
+
+    await repo.eraseTenantData('erasetest');
+
+    // After erasure the marker is gone, so the same key claims fresh (returns null).
+    assert.equal(
+      await repo.claimInviteSend('erasetest', 'ec', 'kE', ['email']),
+      null,
+      'marker should have been deleted by eraseTenantData',
+    );
+  });
+
+  test('clearCohort also removes markers (and its CONFIG/USER guard tolerates INVITE# keys)', async () => {
+    await repo.createClub('cohorttest', {
+      id: 'cc',
+      name: 'Cohort CC',
+      district: 'Test District',
+      sub: 's',
+      chair: 'Chair',
+      affiliation: 'not_started' as const,
+      paid: false,
+      cqi: 0,
+      docs: {},
+      players: 0,
+      teams: 0,
+      women: 0,
+      juniors: 0,
+      color: '#123456',
+      ground: {},
+      leagues: [],
+      version: 1,
+    });
+    assert.equal(await repo.claimInviteSend('cohorttest', 'cc', 'kC', ['whatsapp']), null);
+    // Must not throw on the INVITE# key (the guard only rejects CONFIG / USER#).
+    await repo.clearCohort('cohorttest');
+    assert.equal(
+      await repo.claimInviteSend('cohorttest', 'cc', 'kC', ['whatsapp']),
+      null,
+      'marker should have been deleted by clearCohort',
+    );
+  });
+});

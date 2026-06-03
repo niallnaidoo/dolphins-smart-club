@@ -24,7 +24,8 @@ export function Onboarding({ club, onClose, onComplete, onStart, submissionDeadl
   function next() {
     if (step < totalSteps) setStep(step + 1);
     else {
-      onComplete();
+      // Hand the verified contact up so the reminders opt-in is persisted (no cron yet).
+      onComplete(contact);
       onStart && onStart();
     }
   }

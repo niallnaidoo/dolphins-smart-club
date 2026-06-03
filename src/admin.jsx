@@ -2307,6 +2307,7 @@ export function AdminClubsList({
   submissionDeadline,
   onOnboardClub,
   onBulkOnboardClubs,
+  onSendInvite,
   knownClubs = [],
 }) {
   const [q, setQ] = useStateA('');
@@ -2503,6 +2504,7 @@ export function AdminClubsList({
           onClose={() => setShowOnboard(false)}
           onOnboard={onOnboardClub}
           onBulkOnboard={onBulkOnboardClubs}
+          onSendInvite={onSendInvite}
           toast={toast}
         />
       )}
@@ -2515,7 +2517,15 @@ export function AdminClubsList({
    accidentally double-onboard. No match → form (chair, email, cell, district).
    Step 2: switches to the share view with the deep link + Copy / Email / WhatsApp.
    The chair's email and cell are pre-filled into the share affordances. */
-function OnboardNewClubModal({ clubs, knownClubs = [], onClose, onOnboard, onBulkOnboard, toast }) {
+function OnboardNewClubModal({
+  clubs,
+  knownClubs = [],
+  onClose,
+  onOnboard,
+  onBulkOnboard,
+  onSendInvite,
+  toast,
+}) {
   const [query, setQuery] = useStateA('');
   const [chair, setChair] = useStateA('');
   const [chairEmail, setChairEmail] = useStateA('');
@@ -2525,6 +2535,7 @@ function OnboardNewClubModal({ clubs, knownClubs = [], onClose, onOnboard, onBul
   const [bulkCreated, setBulkCreated] = useStateA(null); // array of created clubs after bulk onboard
   const [selectedKeys, setSelectedKeys] = useStateA(new Set()); // checkbox state, keyed by known-club name
   const [copied, setCopied] = useStateA(false);
+  const [sending, setSending] = useStateA(null); // null | 'email' | 'whatsapp' | 'email+whatsapp'
   const [autoFilled, setAutoFilled] = useStateA(null); // null | club name auto-filled from
 
   function toggleSelect(name) {
@@ -2899,21 +2910,61 @@ function OnboardNewClubModal({ clubs, knownClubs = [], onClose, onOnboard, onBul
   if (createdClub) {
     const wa = waNumber(createdClub.exco?.chair?.cell);
     const chairEmailValue = createdClub.exco?.chair?.email || '';
+    const hasEmail = EMAIL_RE.test(chairEmailValue);
+    const hasCell = wa.length >= 11; // ZA E.164 is 27 + 9 digits
+    const chLabel = (ch) => (ch === 'email' ? 'email' : 'WhatsApp');
+    // Manual fallbacks — only used if the admin prefers to send from their own client.
     const mailtoUrl = `mailto:${chairEmailValue}?subject=${encodeURIComponent(`Welcome to Dolphins Pipeline · ${createdClub.name}`)}&body=${encodeURIComponent(emailBody)}`;
     const waUrl = wa
       ? `https://wa.me/${wa}?text=${encodeURIComponent(waText)}`
       : `https://wa.me/?text=${encodeURIComponent(waText)}`;
-    // One click fires both: hand the mail client the mailto AND open the wa.me tab.
-    const sendBoth = () => {
-      // wa.me first in a new tab so the popup doesn't get blocked behind the mailto handoff
+    // Real send via the API. Each click uses a fresh idempotency key (the busy state
+    // blocks rapid double-clicks; a same-key replay only guards a lost response). The
+    // toast reflects the actual per-channel results — no more optimistic "Sent".
+    const doSend = async (channels) => {
+      if (sending || !onSendInvite) return;
+      const avail = channels.filter((ch) => (ch === 'email' ? hasEmail : hasCell));
+      if (avail.length === 0) {
+        toast && toast('No valid chair contact on file for that channel');
+        return;
+      }
+      setSending(avail.join('+'));
       try {
-        window.open(waUrl, '_blank', 'noopener,noreferrer');
-      } catch {}
-      // mailto follows — the OS hands this to the mail client without nuking the new tab
-      try {
-        window.location.href = mailtoUrl;
-      } catch {}
-      toast && toast(`Sent to ${createdClub.chair.split(' ')[0]} via email & WhatsApp`);
+        const key =
+          (typeof crypto !== 'undefined' && crypto.randomUUID && crypto.randomUUID()) ||
+          `inv-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const res = await onSendInvite(createdClub.id, {
+          channels: avail,
+          link: url,
+          idempotencyKey: key,
+        });
+        const results = (res && res.results) || [];
+        // A concurrent duplicate that's still sending replays with no results — say so
+        // rather than showing nothing.
+        if (res && res.deduped && res.pending && results.length === 0) {
+          toast && toast('That invite is already sending — check the communication log.');
+          return;
+        }
+        const sent = results.filter((r) => r.status === 'sent');
+        const notSent = results.filter((r) => r.status !== 'sent');
+        if (sent.length) {
+          const who = createdClub.chair ? createdClub.chair.split(' ')[0] : 'the chair';
+          toast &&
+            toast(`Invite sent to ${who} via ${sent.map((r) => chLabel(r.channel)).join(' & ')}`);
+        }
+        // Surface every channel that didn't send (not just the first) so a both-failed
+        // send can't read as a partial success.
+        if (notSent.length) {
+          const detail = notSent
+            .map((r) => `${chLabel(r.channel)} ${r.status} (${r.error || 'could not send'})`)
+            .join('; ');
+          toast && toast(`Invite not sent — ${detail}`);
+        }
+      } catch (err) {
+        toast && toast(`Could not send invite: ${(err && err.message) || 'error'}`);
+      } finally {
+        setSending(null);
+      }
     };
     return createPortal(
       <div
@@ -2976,14 +3027,15 @@ function OnboardNewClubModal({ clubs, knownClubs = [], onClose, onOnboard, onBul
               </div>
             </div>
 
-            {/* Primary one-click send: fires email + WhatsApp together */}
+            {/* Primary one-click send: fires email + WhatsApp together (real API send) */}
             <Btn
               tone="teal"
               icon={Icon.Mail}
-              onClick={sendBoth}
+              onClick={() => doSend(['email', 'whatsapp'])}
+              disabled={!!sending || (!hasEmail && !hasCell)}
               style={{ width: '100%', justifyContent: 'center', marginBottom: 8 }}
             >
-              Send via Email + WhatsApp
+              {sending === 'email+whatsapp' ? 'Sending…' : 'Send via Email + WhatsApp'}
             </Btn>
 
             <div
@@ -2991,7 +3043,7 @@ function OnboardNewClubModal({ clubs, knownClubs = [], onClose, onOnboard, onBul
                 display: 'grid',
                 gridTemplateColumns: 'repeat(3, 1fr)',
                 gap: 8,
-                marginBottom: 14,
+                marginBottom: 10,
               }}
             >
               <Btn
@@ -3001,34 +3053,42 @@ function OnboardNewClubModal({ clubs, knownClubs = [], onClose, onOnboard, onBul
               >
                 {copied ? 'Copied' : 'Copy link'}
               </Btn>
-              <a
-                href={mailtoUrl}
-                className="btn btn-outline"
-                style={{
-                  textDecoration: 'none',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 6,
-                }}
+              <Btn
+                tone="outline"
+                icon={Icon.Mail}
+                onClick={() => doSend(['email'])}
+                disabled={!!sending || !hasEmail}
+                title={hasEmail ? undefined : 'No valid chair email on file'}
               >
-                <Icon.Mail /> Email only
-              </a>
+                {sending === 'email' ? 'Sending…' : 'Email only'}
+              </Btn>
+              <Btn
+                tone="outline"
+                icon={Icon.Arrow}
+                onClick={() => doSend(['whatsapp'])}
+                disabled={!!sending || !hasCell}
+                title={hasCell ? undefined : 'No valid chair cell on file'}
+              >
+                {sending === 'whatsapp' ? 'Sending…' : 'WhatsApp only'}
+              </Btn>
+            </div>
+
+            {/* Manual fallback — open a pre-filled draft in your own client instead. */}
+            <div style={{ fontSize: 11, color: 'var(--muted-2)', marginBottom: 14 }}>
+              Prefer to send it yourself?{' '}
+              <a href={mailtoUrl} style={{ color: 'var(--muted)', textDecoration: 'underline' }}>
+                open an email draft
+              </a>{' '}
+              or{' '}
               <a
                 href={waUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="btn btn-outline"
-                style={{
-                  textDecoration: 'none',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 6,
-                }}
+                style={{ color: 'var(--muted)', textDecoration: 'underline' }}
               >
-                <Icon.Arrow /> WhatsApp only
+                open WhatsApp
               </a>
+              .
             </div>
 
             <div
@@ -4833,16 +4893,31 @@ export function AdminClubDetail({
           <Card title="Communication log">
             <div className="stack" style={{ gap: 8 }}>
               {(() => {
-                // Real, user-inputted communication: admin-added notes (newest first).
-                const notes = [...(club.notes || [])].reverse().map((n) => ({
-                  tone: 'navy',
-                  t: n.text,
-                  d: `${new Date(n.at).toLocaleDateString('en-GB', {
+                const fmtDate = (iso) =>
+                  new Date(iso).toLocaleDateString('en-GB', {
                     day: 'numeric',
                     month: 'short',
                     year: 'numeric',
-                  })} · ${n.author}`,
+                  });
+                // Real communication: admin-added notes + actual invite sends, merged
+                // newest-first by timestamp.
+                const noteItems = (club.notes || []).map((n) => ({
+                  tone: 'navy',
+                  t: n.text,
+                  d: `${fmtDate(n.at)} · ${n.author}`,
+                  _at: n.at,
                 }));
+                const sendItems = (club.commLog || []).map((e) => ({
+                  tone: e.status === 'sent' ? 'teal' : 'gold',
+                  t: `Onboarding invite ${e.status} · ${e.channel === 'email' ? 'Email' : 'WhatsApp'}${
+                    e.to ? ` → ${e.to}` : ''
+                  }${e.error ? ` (${e.error})` : ''}`,
+                  d: `${fmtDate(e.at)} · ${e.by}`,
+                  _at: e.at,
+                }));
+                const notes = [...noteItems, ...sendItems].sort((a, b) =>
+                  a._at < b._at ? 1 : a._at > b._at ? -1 : 0,
+                );
                 // Seeded illustrative events are demo-only — real clubs show just their notes.
                 const demoEvents = club.demo
                   ? [

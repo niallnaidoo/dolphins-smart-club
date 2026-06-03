@@ -23,6 +23,20 @@ export const clubKey = (tenant: string, clubId: string) => ({
   sk: 'META',
 });
 
+/**
+ * Idempotency marker for an admin "send invite" click. Lives in the club's item
+ * collection (same pk as the club META, distinct sk) so it's tenant-isolated, but it
+ * has no gsi1 entry, so it never surfaces in getClub/listClubs (sk='META' / gsi1).
+ * Because the marker stores recipient contact in its results, tenant/cohort erasure
+ * must enumerate it explicitly via `listClubInviteKeys` (a `begins_with(sk,'INVITE#')`
+ * query) — the gsi1-based erase set would otherwise miss it. The `attribute_not_exists`
+ * claim on this key is the server-side double-send guard.
+ */
+export const clubInviteKey = (tenant: string, clubId: string, idempotencyKey: string) => ({
+  pk: `${tenantPrefix(tenant)}#CLUB#${clubId}`,
+  sk: `INVITE#${idempotencyKey}`,
+});
+
 /** gsi1 attributes that make a club listable within its tenant. */
 export const clubGsi1 = (tenant: string, name: string) => ({
   gsi1pk: `${tenantPrefix(tenant)}#TYPE#CLUB`,

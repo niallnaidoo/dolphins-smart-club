@@ -13,6 +13,40 @@ CloudFront (static assets + the branding edge function) is the only global compo
 holds no personal information. Residency was the reason AWS af-south-1 was chosen — see
 [ADR 0001](../architecture/0001-aws-native-dynamodb.md).
 
+### Cross-border transfer (outbound messaging)
+
+One flow is a **deliberate, documented exception** to the residency rule: the onboarding
+**invite** to a club chairperson. When an admin sends it (`POST /clubs/:id/send-invite`,
+`packages/api/src/notify/`), the chair's **name, email and cell** are transmitted to:
+
+- **Amazon SES in `eu-west-1` (Ireland)** for the email — SES is not available in af-south-1,
+  so email cannot be sent from the residency region at all; and
+- **Meta Platforms (WhatsApp Cloud API, global/US)** for the WhatsApp message — an inherently
+  global processor.
+
+This is a cross-border transfer of personal information under **POPIA s72**. Basis and controls:
+
+- **Lawful basis:** operational communication necessary to deliver the service the club is
+  being onboarded into (the chair provides these details for exactly this purpose). Confirm
+  the s72 ground (consent / necessity for the contract) with counsel before enabling real
+  sends.
+- **Data minimisation:** only the three contact fields and a link leave the region — no player
+  or minor data is ever sent through this path.
+- **Auditability:** every send is recorded in the club's `commLog` (channel, recipient,
+  status, timestamp, actor) so transfers are traceable. The per-send idempotency markers
+  (`INVITE#<key>` items) also hold the recipient; both the `commLog` and the markers are
+  deleted by tenant/cohort erasure (`repo.eraseTenantData` enumerates the markers
+  explicitly — they're not in the club listing index).
+- **Sub-processors:** AWS (SES, Ireland) and Meta Platforms (WhatsApp). Add both to the
+  processor register / DPA set.
+- **Gate:** the path runs in dry-run until SES production access is granted and the secrets are
+  set (`FROM_EMAIL`, `WHATSAPP_*`), so nothing leaves the region until this is signed off.
+
+**Residency-improving follow-up:** a Dolphins-owned SES identity + WhatsApp Business account
+do not change the regions involved (SES still can't run in af-south-1; WhatsApp is still
+global), so the long-term option for strict residency is a South-Africa-resident messaging
+provider. Tracked as tech debt.
+
 ## Lawful processing & consent
 
 - **Players** register via a public link. The registration captures consent at submission

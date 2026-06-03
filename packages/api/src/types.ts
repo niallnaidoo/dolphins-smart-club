@@ -84,6 +84,10 @@ export interface Club {
   coaches?: unknown[];
   /** Admin communication-log notes, appended newest-last via list_append. */
   notes?: { id: string; text: string; author: string; at: string }[];
+  /** Real onboarding-invite send events (email/WhatsApp), appended via list_append. */
+  commLog?: ClubCommEvent[];
+  /** Whether the chair opted into deadline reminders during onboarding (no cron yet). */
+  remindersOptIn?: boolean;
   playerRegLink?: { token: string; createdAt: string };
   /** Marks a club loaded from the demo snapshot; gates illustrative-only UI (e.g. seeded comm-log events). */
   demo?: boolean;
@@ -92,6 +96,36 @@ export interface Club {
   version: number;
   changedBy?: string;
   changedAt?: string;
+}
+
+/** Outbound invite channels. */
+export type Channel = 'email' | 'whatsapp';
+
+/** Per-channel outcome of an invite send (returned to the client + stored on the marker). */
+export interface SendResult {
+  channel: Channel;
+  status: 'sent' | 'failed' | 'skipped';
+  /** Resolved recipient (email address or E.164 cell) the send targeted. */
+  to: string;
+  messageId?: string;
+  error?: string;
+}
+
+/** One real outbound onboarding-invite send, recorded in the club's comm log. */
+export interface ClubCommEvent {
+  id: string;
+  channel: 'email' | 'whatsapp';
+  /** Resolved recipient (email address or E.164 cell) the send targeted. */
+  to: string;
+  status: 'sent' | 'failed' | 'skipped';
+  /** Provider message id when sent (SES MessageId / Meta message id). */
+  messageId?: string;
+  /** Reason when not sent (validation skip or provider error). */
+  error?: string;
+  at: string;
+  by: string;
+  /** Ties the event back to the idempotency-keyed send attempt. */
+  idempotencyKey: string;
 }
 
 /** Onboard payload: a Club plus the flat chair contact fields the admin form sends. */
