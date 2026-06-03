@@ -24,7 +24,7 @@ import {
   slugifyLeagueKey,
   OVERARCHING_DISTRICT,
 } from './leagues.js';
-import { exportRowsToXlsx, exportSheetsToXlsx, clubExportRow } from './exportXlsx.js';
+import { exportRowsToXlsx, clubExportRow } from './exportXlsx.js';
 import { openBccReminder } from './mailto.js';
 import { EMAIL_RE } from './api.js';
 import { parseSupport } from './support.js';
@@ -4370,6 +4370,7 @@ export function AdminClubDetail({
   const [showLinkModal, setShowLinkModal] = useStateA(false);
   const [showInvite, setShowInvite] = useStateA(false);
   const [showCqi, setShowCqi] = useStateA(false);
+  const [showAffiliation, setShowAffiliation] = useStateA(false);
   const [showCompliant, setShowCompliant] = useStateA(false);
   const [showChairEdit, setShowChairEdit] = useStateA(false);
   const [noteText, setNoteText] = useStateA('');
@@ -4412,75 +4413,6 @@ export function AdminClubDetail({
     window.location.href = `mailto:${e}?subject=${encodeURIComponent(
       `${club.name} — Smart Club Integration`,
     )}`;
-  }
-  // Export the persisted affiliation form as a multi-sheet .xlsx (no PDF).
-  function downloadAffiliation() {
-    const ex = club.exco || {};
-    const roleRow = (label, m) =>
-      m
-        ? {
-            Role: label,
-            Name: m.name || '',
-            Email: m.email || '',
-            Cell: m.cell || '',
-            Gender: m.gender || '',
-            Race: m.race || '',
-          }
-        : null;
-    const excoRows = [
-      roleRow('Chairperson', ex.chair),
-      roleRow('Secretary', ex.sec),
-      roleRow('Treasurer', ex.tre),
-      roleRow('Vice-chair', ex.vc),
-      ...(Array.isArray(ex.additionalMembers)
-        ? ex.additionalMembers.map((m) => roleRow('Member', m))
-        : []),
-    ].filter(Boolean);
-    const leagueRows = (club.leagues || []).map((k) => ({
-      Key: k,
-      League: allLeagues.find((l) => l.key === k)?.label || k,
-    }));
-    const coachRows = (club.coaches || []).map((c) => ({
-      Name: c.name || '',
-      Email: c.email || '',
-      Cell: c.cell || '',
-      Level: c.level || '',
-      Teams: Array.isArray(c.teams) ? c.teams.join(', ') : '',
-    }));
-    const slug =
-      club.id ||
-      club.name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '');
-    exportSheetsToXlsx(`${slug}-affiliation.xlsx`, [
-      {
-        name: 'Club',
-        rows: [
-          {
-            Name: club.name,
-            District: club.district,
-            'Sub-union': club.sub,
-            Chairperson: club.chair,
-            Paid: club.paid ? 'Yes' : 'No',
-            Affiliation: club.affiliation,
-          },
-        ],
-      },
-      { name: 'Exco', rows: excoRows },
-      { name: 'Leagues', rows: leagueRows },
-      { name: 'Coaches', rows: coachRows },
-      {
-        name: 'Ground',
-        rows: [
-          {
-            Venue: club.ground?.venue || '',
-            Address: club.ground?.address || '',
-            Suburb: club.ground?.suburb || '',
-          },
-        ],
-      },
-    ]).catch(() => toast?.('Export failed — please retry'));
   }
   function submitNote() {
     const t = noteText.trim();
@@ -5007,8 +4939,8 @@ export function AdminClubDetail({
               >
                 View submitted CQI form
               </Btn>
-              <Btn tone="outline" icon={Icon.Download} onClick={downloadAffiliation}>
-                Download affiliation form
+              <Btn tone="outline" icon={Icon.Eye} onClick={() => setShowAffiliation(true)}>
+                View affiliation form
               </Btn>
               <Btn tone="outline" icon={Icon.Shield} onClick={() => setShowCompliant(true)}>
                 Mark as compliant
@@ -5035,6 +4967,13 @@ export function AdminClubDetail({
         />
       )}
       {showCqi && <CqiViewModal club={club} onClose={() => setShowCqi(false)} />}
+      {showAffiliation && (
+        <AffiliationViewModal
+          club={club}
+          allLeagues={allLeagues}
+          onClose={() => setShowAffiliation(false)}
+        />
+      )}
       {showCompliant && (
         <ConfirmModal
           title="Mark all documents compliant?"
@@ -5174,6 +5113,200 @@ function CqiViewModal({ club, onClose }) {
               ))}
             </div>
           )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/* ─── AffiliationViewModal — read-only view of a club's affiliation form ─── */
+function AffiliationViewModal({ club, allLeagues, onClose }) {
+  const ex = club.exco || {};
+  // Pull the four named office-bearers plus any additional members into one list,
+  // dropping unset roles so an awaiting club doesn't show empty officer blocks.
+  const members = [
+    ['Chairperson', ex.chair],
+    ['Secretary', ex.sec],
+    ['Treasurer', ex.tre],
+    ['Vice-chair', ex.vc],
+    ...(Array.isArray(ex.additionalMembers) ? ex.additionalMembers.map((m) => ['Member', m]) : []),
+  ].filter(([, m]) => m);
+  const leagues = club.leagues || [];
+  const coaches = club.coaches || [];
+  // Distinguish "form not yet submitted" from "submitted, but this club genuinely
+  // registered none." Empty Leagues/Coaches under an "Affiliated" status is a real
+  // answer, not a pending one — saying "Not yet submitted" there would contradict
+  // the status pill above it.
+  const submitted =
+    members.length > 0 ||
+    leagues.length > 0 ||
+    coaches.length > 0 ||
+    club.affiliation === 'complete' ||
+    club.affiliation === 'in_progress';
+  const emptyText = submitted ? 'None recorded' : 'Not yet submitted';
+
+  const SectionTitle = ({ children }) => (
+    <div
+      style={{
+        fontSize: 11,
+        textTransform: 'uppercase',
+        letterSpacing: '0.08em',
+        color: 'var(--muted-2)',
+        marginBottom: 6,
+        fontWeight: 700,
+      }}
+    >
+      {children}
+    </div>
+  );
+  const Row = ({ label, value }) => (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        gap: 12,
+        fontSize: 12.5,
+        padding: '4px 0',
+        borderBottom: '1px solid var(--line2)',
+      }}
+    >
+      <span style={{ color: 'var(--muted)', flexShrink: 0 }}>{label}</span>
+      <span
+        style={{
+          color: 'var(--ink)',
+          fontWeight: 600,
+          textAlign: 'right',
+          wordBreak: 'break-word',
+          minWidth: 0,
+        }}
+      >
+        {value == null || value === '' ? '—' : value}
+      </span>
+    </div>
+  );
+  // An empty collection renders one muted line; the wording reflects whether the
+  // form has been submitted yet (see `emptyText` above).
+  const Empty = () => (
+    <div style={{ fontSize: 12.5, padding: '4px 0', color: 'var(--muted)' }}>{emptyText}</div>
+  );
+
+  return createPortal(
+    <div className="task-modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="task-modal" style={{ maxWidth: 620 }}>
+        <div className="task-modal-head">
+          <div className="task-modal-head-text">
+            <div className="task-modal-head-eyebrow">Affiliation · {club.name}</div>
+            <div className="task-modal-head-title">
+              Affiliation <em>form</em>
+            </div>
+          </div>
+          <button className="task-modal-close" onClick={onClose} title="Close">
+            <Icon.X />
+          </button>
+        </div>
+        <div className="task-modal-body">
+          <div className="stack" style={{ gap: 16 }}>
+            {/* Club */}
+            <div>
+              <SectionTitle>Club</SectionTitle>
+              <div className="stack" style={{ gap: 4 }}>
+                <Row label="Name" value={club.name} />
+                <Row label="District" value={club.district} />
+                <Row label="Sub-union" value={club.sub} />
+                <Row label="Chairperson" value={club.chair} />
+                <Row label="Paid" value={club.paid ? 'Yes' : 'No'} />
+                <Row label="Status" value={affPill(club.affiliation)} />
+              </div>
+            </div>
+
+            {/* Exco */}
+            <div>
+              <SectionTitle>Exco</SectionTitle>
+              {members.length === 0 ? (
+                <Empty />
+              ) : (
+                <div className="stack" style={{ gap: 12 }}>
+                  {members.map(([role, m], i) => (
+                    <div key={`${role}-${i}`}>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 700,
+                          color: 'var(--ink)',
+                          marginBottom: 2,
+                        }}
+                      >
+                        {role}
+                      </div>
+                      <Row label="Name" value={m.name} />
+                      <Row label="Email" value={m.email} />
+                      <Row label="Cell" value={m.cell} />
+                      <Row label="Gender" value={m.gender} />
+                      <Row label="Race" value={m.race} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Leagues */}
+            <div>
+              <SectionTitle>Leagues</SectionTitle>
+              {leagues.length === 0 ? (
+                <Empty />
+              ) : (
+                <div className="stack" style={{ gap: 4 }}>
+                  {leagues.map((k) => (
+                    <Row
+                      key={k}
+                      label={allLeagues.find((l) => l.key === k)?.label || k}
+                      value="Registered"
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Coaches */}
+            <div>
+              <SectionTitle>Coaches</SectionTitle>
+              {coaches.length === 0 ? (
+                <Empty />
+              ) : (
+                <div className="stack" style={{ gap: 12 }}>
+                  {coaches.map((c, i) => (
+                    <div key={i}>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 700,
+                          color: 'var(--ink)',
+                          marginBottom: 2,
+                        }}
+                      >
+                        {c.name || 'Coach'}
+                      </div>
+                      <Row label="Email" value={c.email} />
+                      <Row label="Cell" value={c.cell} />
+                      <Row label="Level" value={c.level} />
+                      <Row label="Teams" value={Array.isArray(c.teams) ? c.teams.join(', ') : ''} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Ground */}
+            <div>
+              <SectionTitle>Ground</SectionTitle>
+              <div className="stack" style={{ gap: 4 }}>
+                <Row label="Venue" value={club.ground?.venue} />
+                <Row label="Address" value={club.ground?.address} />
+                <Row label="Suburb" value={club.ground?.suburb} />
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>,
