@@ -601,7 +601,11 @@ export function useToast() {
     timer.current = setTimeout(clear, act ? 6000 : 2400);
   }
   const node = msg ? (
+    // role=status + aria-live so the message — and any Undo action — is announced
+    // to screen-reader / keyboard users before the toast auto-dismisses.
     <div
+      role="status"
+      aria-live="polite"
       className={`toast show ${tone}`}
       style={{
         position: 'fixed',
@@ -624,6 +628,9 @@ export function useToast() {
       {action && (
         <button
           type="button"
+          // Clear THIS toast first, then run the handler — which may itself raise a
+          // new toast (e.g. Undo → reciprocal Undo). React batches both state
+          // updates in this handler, so the new toast wins cleanly.
           onClick={() => {
             clear();
             action.onClick && action.onClick();

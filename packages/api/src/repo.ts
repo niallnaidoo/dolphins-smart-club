@@ -185,6 +185,11 @@ export async function updateClub(
   // Honor a client-supplied expected version (true optimistic concurrency);
   // fall back to the current version for callers that don't send one.
   const expectedVersion = patch.version ?? current.version ?? 0;
+  // Shallow merge: a patch key (e.g. `docMeta`) REPLACES the current value
+  // wholesale, it is not deep-merged per sub-key. The client's reversible
+  // "Mark as compliant" revert relies on this — it omits a doc key from the
+  // docMeta it sends to remove an override. Deep-merging here would resurrect
+  // those removed keys and silently break revert.
   const next: Club = {
     ...current,
     ...patch,

@@ -19,7 +19,13 @@ import { setActiveTenant } from './api.js';
 import { AuthProvider, useAuth, membershipFor } from './auth.jsx';
 import { Login } from './Login.jsx';
 import { RegisterPage } from './RegisterPage.jsx';
-import { REQUIRED_DOCS, SUBMISSION_DEADLINE_DEFAULT, docCompletion } from './data.jsx';
+import {
+  REQUIRED_DOCS,
+  SUBMISSION_DEADLINE_DEFAULT,
+  docCompletion,
+  computeMarkCompliance,
+  computeRevertCompliance,
+} from './data.jsx';
 import { exportRowsToXlsx } from './exportXlsx.js';
 import { openBccReminder } from './mailto.js';
 import {
@@ -689,59 +695,52 @@ function Shell({
       return updated;
     });
   }
-  // Mark `keys` compliant. Preserves the original "set all four true" behaviour;
-  // only docs WITHOUT an uploaded file get a {markedCompliant} sentinel, and real
-  // uploads (objectKey) are left untouched. `flipped` = docs that were previously
-  // Missing — exactly the set a matching Undo should revert.
+  // Mark `keys` compliant, then offer an Undo that reverts exactly the docs this
+  // call flipped. The Undo closure binds the server-returned `updated` club so it
+  // carries the correct (incremented) version — never the stale `activeClub`.
+  // Doc/meta computation lives in computeMarkCompliance (data.jsx) so it's tested.
   function markComplianceFor(club, keys) {
     if (!club) return Promise.resolve(club);
-    const docs = { ...club.docs };
-    const docMeta = { ...(club.docMeta ?? {}) };
-    const at = new Date().toISOString();
-    const flipped = [];
-    for (const k of keys) {
-      if (club.docMeta?.[k]?.objectKey) continue; // real upload → leave as-is
-      if (!club.docs?.[k]) flipped.push(k); // was Missing → track for Undo
-      docs[k] = true;
-      docMeta[k] = { markedCompliant: true, at };
+    const { docs, docMeta, flipped } = computeMarkCompliance(club, keys, new Date().toISOString());
+    // Nothing was Missing → every requested doc is already compliant (upload or
+    // existing override). Skip the no-op version-bumping write; just confirm.
+    if (!flipped.length) {
+      toastShow('All documents already compliant');
+      return Promise.resolve(club);
     }
-    return patchClubAt(club.version, { docs, docMeta })
-      .then((updated) => {
-        if (flipped.length)
+    return (
+      patchClubAt(club.version, { docs, docMeta })
+        .then((updated) => {
           toastShow('Marked compliant', 'ok', {
             label: 'Undo',
-            onClick: () => revertComplianceFor(updated ?? activeClub, flipped),
+            onClick: () => revertComplianceFor(updated, flipped),
           });
-        return updated;
-      })
-      .catch(() => {});
+          return updated;
+        })
+        // withToast already surfaced the error toast and re-threw; swallow here only
+        // to avoid an unhandled rejection. No Undo is offered on a failed write.
+        .catch(() => undefined)
+    );
   }
-  // Revert ONLY override-only docs (markedCompliant && no uploaded file), computed
-  // against the freshest known club. Relies on repo.updateClub replacing docMeta
-  // wholesale (shallow merge), so a deleted key does not resurrect server-side.
+  // Revert override-only docs (markedCompliant && no uploaded file); uploads are
+  // structurally untouchable. Relies on repo.updateClub replacing docMeta wholesale
+  // (shallow merge), so a deleted key does not resurrect server-side.
   function revertComplianceFor(club, keys) {
     if (!club) return Promise.resolve(club);
-    const docs = { ...club.docs };
-    const docMeta = { ...(club.docMeta ?? {}) };
-    const reverted = [];
-    for (const k of keys) {
-      const m = docMeta[k];
-      if (m && m.markedCompliant && !m.objectKey) {
-        docs[k] = false;
-        delete docMeta[k];
-        reverted.push(k);
-      }
-    }
+    const { docs, docMeta, reverted } = computeRevertCompliance(club, keys);
     if (!reverted.length) return Promise.resolve(club);
-    return patchClubAt(club.version, { docs, docMeta })
-      .then((updated) => {
-        toastShow('Compliance override removed', 'ok', {
-          label: 'Undo',
-          onClick: () => markComplianceFor(updated ?? activeClub, reverted),
-        });
-        return updated;
-      })
-      .catch(() => {});
+    return (
+      patchClubAt(club.version, { docs, docMeta })
+        .then((updated) => {
+          toastShow('Compliance override removed', 'ok', {
+            label: 'Undo',
+            onClick: () => markComplianceFor(updated, reverted),
+          });
+          return updated;
+        })
+        // withToast owns the user-facing error; swallow to avoid an unhandled rejection.
+        .catch(() => undefined)
+    );
   }
   // Admin appends a note to the active club's communication log (server-side
   // list_append, so concurrent notes don't clobber each other).
