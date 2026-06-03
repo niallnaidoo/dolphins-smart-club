@@ -3873,6 +3873,90 @@ function PlayerRegLinkModal({ club, onClose, onRegenerate, toast }) {
   );
 }
 
+/* ─── ClubLeaguesEditor — admin assigns a club's leagues; one save, not one-per-toggle ─── */
+function ClubLeaguesEditor({ club, allLeagues, onSave }) {
+  const opts = leagueOptionsForDistrict(allLeagues, club.district);
+  const initial = Array.isArray(club.leagues) ? club.leagues : [];
+  const [sel, setSel] = useStateA(initial);
+  const [busy, setBusy] = useStateA(false);
+  // Re-sync local selection when the club's leagues change (e.g. after a save refetch).
+  useEffectA(() => {
+    setSel(Array.isArray(club.leagues) ? club.leagues : []);
+  }, [club.leagues]);
+
+  const orphans = sel.filter((k) => !opts.some((o) => o.key === k));
+  const dirty = sel.length !== initial.length || sel.some((k) => !initial.includes(k));
+  const toggle = (key) =>
+    setSel((s) => (s.includes(key) ? s.filter((k) => k !== key) : [...s, key]));
+  const chip = (on, orphan) => ({
+    padding: '7px 13px',
+    borderRadius: 99,
+    cursor: 'pointer',
+    fontFamily: "'Montserrat',sans-serif",
+    fontSize: 12,
+    fontWeight: 600,
+    transition: 'all .14s ease',
+    border: orphan
+      ? '1px dashed var(--muted-3)'
+      : on
+        ? '1px solid var(--green)'
+        : '1px solid var(--line)',
+    background: on ? 'var(--green-pale)' : 'var(--white)',
+    color: orphan ? 'var(--muted)' : on ? 'var(--green)' : 'var(--ink)',
+  });
+
+  if (opts.length === 0 && orphans.length === 0)
+    return (
+      <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.5 }}>
+        No leagues for {club.district} yet — create them on the Leagues page first.
+      </div>
+    );
+
+  function save() {
+    if (!dirty || busy) return;
+    setBusy(true);
+    Promise.resolve(onSave?.(sel)).finally(() => setBusy(false));
+  }
+
+  return (
+    <>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {opts.map((L) => (
+          <button
+            key={L.key}
+            type="button"
+            onClick={() => toggle(L.key)}
+            style={chip(sel.includes(L.key), false)}
+          >
+            {L.label}
+          </button>
+        ))}
+        {orphans.map((k) => (
+          <button
+            key={k}
+            type="button"
+            title="No longer in the catalogue — click to remove"
+            onClick={() => toggle(k)}
+            style={chip(false, true)}
+          >
+            {k} ✕
+          </button>
+        ))}
+      </div>
+      {dirty && (
+        <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
+          <Btn tone="ghost" size="sm" onClick={() => setSel(initial)} disabled={busy}>
+            Reset
+          </Btn>
+          <Btn tone="teal" size="sm" icon={Icon.Check} onClick={save} disabled={busy}>
+            {busy ? 'Saving…' : 'Save leagues'}
+          </Btn>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function AdminClubDetail({
   club,
   gotoList,
@@ -4271,67 +4355,7 @@ export function AdminClubDetail({
           </Card>
 
           <Card title="Leagues" sub="Competitions this club is registered for">
-            {(() => {
-              const opts = leagueOptionsForDistrict(allLeagues, club.district);
-              const current = Array.isArray(club.leagues) ? club.leagues : [];
-              const orphans = current.filter((k) => !opts.some((o) => o.key === k));
-              const toggle = (key) => {
-                const next = current.includes(key)
-                  ? current.filter((k) => k !== key)
-                  : [...current, key];
-                onSetLeagues?.(next);
-              };
-              const chip = (on, orphan) => ({
-                padding: '7px 13px',
-                borderRadius: 99,
-                cursor: 'pointer',
-                fontFamily: "'Montserrat',sans-serif",
-                fontSize: 12,
-                fontWeight: 600,
-                transition: 'all .14s ease',
-                border: orphan
-                  ? '1px dashed var(--muted-3)'
-                  : on
-                    ? '1px solid var(--green)'
-                    : '1px solid var(--line)',
-                background: on ? 'var(--green-pale)' : 'var(--white)',
-                color: orphan ? 'var(--muted)' : on ? 'var(--green)' : 'var(--ink)',
-              });
-              if (opts.length === 0 && orphans.length === 0)
-                return (
-                  <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.5 }}>
-                    No leagues for {club.district} yet — create them on the Leagues page first.
-                  </div>
-                );
-              return (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {opts.map((L) => {
-                    const on = current.includes(L.key);
-                    return (
-                      <button
-                        key={L.key}
-                        type="button"
-                        onClick={() => toggle(L.key)}
-                        style={chip(on, false)}
-                      >
-                        {L.label}
-                      </button>
-                    );
-                  })}
-                  {orphans.map((k) => (
-                    <button
-                      key={k}
-                      type="button"
-                      title="No longer in the catalogue — click to remove"
-                      onClick={() => toggle(k)}
-                      style={chip(false, true)}
-                    >
-                      {k} ✕
-                    </button>
-                  ))}
-                </div>
-              );
-            })()}
+            <ClubLeaguesEditor club={club} allLeagues={allLeagues} onSave={onSetLeagues} />
           </Card>
 
           <Card title="Communication log">

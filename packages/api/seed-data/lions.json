@@ -5,7 +5,7 @@
     {
       "id": "ukzn",
       "name": "UKZN CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "EMCU",
       "chair": "Ashraf Ganie",
       "affiliation": "complete",
@@ -32,7 +32,7 @@
     {
       "id": "clares",
       "name": "Clares CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "EMCU",
       "chair": "Rajin Ramsaroop",
       "affiliation": "complete",
@@ -59,7 +59,7 @@
     {
       "id": "chatsworth",
       "name": "Chatsworth Sporting CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "EMCU",
       "chair": "Jason Sathiaseelan",
       "affiliation": "complete",
@@ -86,7 +86,7 @@
     {
       "id": "umlazi",
       "name": "Umlazi CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "EMCU",
       "chair": "Simphiwe Shangase",
       "affiliation": "complete",
@@ -113,7 +113,7 @@
     {
       "id": "crusaders",
       "name": "Crusaders CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "EMCU",
       "chair": "Duncun Miller",
       "affiliation": "complete",
@@ -140,7 +140,7 @@
     {
       "id": "berea",
       "name": "Berea Rovers CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "EMCU",
       "chair": "Wayne Scott",
       "affiliation": "in_progress",
@@ -167,7 +167,7 @@
     {
       "id": "rhythm",
       "name": "Rhythm DHSOB CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "EMCU",
       "chair": "Mags Reddy",
       "affiliation": "complete",
@@ -194,7 +194,7 @@
     {
       "id": "warriors",
       "name": "African Warriors CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "EMCU",
       "chair": "Knowledge Vilakazi",
       "affiliation": "complete",
@@ -221,7 +221,7 @@
     {
       "id": "phoenix",
       "name": "Phoenix CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "EMCU",
       "chair": "Bradley Chetty",
       "affiliation": "not_started",
@@ -248,7 +248,7 @@
     {
       "id": "verulam",
       "name": "Verulam CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "Verulam",
       "chair": "Kugan Subrayen",
       "affiliation": "in_progress",
@@ -275,7 +275,7 @@
     {
       "id": "harlequins",
       "name": "Harlequins CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "EMCU",
       "chair": "Eric Cavanagh",
       "affiliation": "complete",
@@ -302,7 +302,7 @@
     {
       "id": "spartan",
       "name": "Spartan Sporting CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "EMCU",
       "chair": "Shafee Ayob",
       "affiliation": "complete",
@@ -356,7 +356,7 @@
     {
       "id": "tongaat",
       "name": "Tongaat CC",
-      "district": "Ethekwini Metro CU",
+      "district": "Ethekwini Metro Cricket Union",
       "sub": "Tongaat",
       "chair": "Praven Govender",
       "affiliation": "not_started",

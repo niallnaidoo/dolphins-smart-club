@@ -48,117 +48,10 @@ export const DISTRICTS = [
   'Illembe Cricket District',
 ];
 
-/* ─── Static league catalogue — SEED-AUTHORING ONLY (no client runtime use) ───
-   Leagues are now admin-managed per-tenant config (TenantConfig.leagues), read via
-   src/leagues.js helpers. The arrays below are retained only as the source the demo
-   seed (packages/api/seed-data/dolphins.json) was authored from. DISTRICTS stays live. */
-
-/* ─── Cross-district overarching leagues (V3) ───
-   These appear in every district's picker, alongside the district-specific
-   division catalogue. The V3 brief reintroduces these as overarching options. */
-export const CROSS_DISTRICT_LEAGUES = [
-  { key: 'premier', label: 'Premier League', group: 'Overarching Leagues' },
-  { key: 'promotion', label: 'Promotion League', group: 'Overarching Leagues' },
-  { key: 'premierWomen', label: "Premier Women's League", group: 'Overarching Leagues' },
-  { key: 'veterans', label: 'Veterans League', group: 'Overarching Leagues' },
-];
-
-/* ─── District-aware league catalogue (Smart Club Integration V2) ───
-   Each entry is a selectable league for the club affiliation form. Where the
-   union runs streams (e.g. EMCU Division 3 · Stream 1 / 2) each stream is its
-   own entry so the registered "league" is unambiguous downstream.
-   Juniors that get grouped by numbers carry a `note` describing the rule. */
-export const LEAGUE_OPTIONS_BY_DISTRICT = {
-  'Ethekwini Metro Cricket Union': [
-    { key: 'emcuD1', label: 'EMCU Division 1', group: 'EMCU Divisions' },
-    { key: 'emcuD2', label: 'EMCU Division 2', group: 'EMCU Divisions' },
-    { key: 'emcuD3_s1', label: 'EMCU Division 3 · Stream 1', group: 'EMCU Divisions' },
-    { key: 'emcuD3_s2', label: 'EMCU Division 3 · Stream 2', group: 'EMCU Divisions' },
-    { key: 'emcuD4_s1', label: 'EMCU Division 4 · Stream 1', group: 'EMCU Divisions' },
-    { key: 'emcuD4_s2', label: 'EMCU Division 4 · Stream 2', group: 'EMCU Divisions' },
-    { key: 'emcuD5_s1', label: 'EMCU Division 5 · Stream 1', group: 'EMCU Divisions' },
-    { key: 'emcuD5_s2', label: 'EMCU Division 5 · Stream 2', group: 'EMCU Divisions' },
-    {
-      key: 'emcuU11',
-      label: 'Under 11',
-      group: 'Juniors',
-      note: 'Group placement (1-4) depends on registered numbers; the union assigns the group.',
-    },
-    {
-      key: 'emcuU13',
-      label: 'Under 13',
-      group: 'Juniors',
-      note: 'Group placement (1-4) depends on registered numbers; the union assigns the group.',
-    },
-  ],
-  'Umkhanyakude Cricket District': [
-    { key: 'kcSat', label: 'KZN SU King Cetshwayo Saturday League', group: 'King Cetshwayo' },
-    { key: 'kcD1', label: 'KZN SU King Cetshwayo Division 1', group: 'King Cetshwayo' },
-    { key: 'kcWebber', label: 'KZN SU King Cetshwayo Webber Cup', group: 'King Cetshwayo' },
-  ],
-  KCCD: [
-    { key: 'kcSat', label: 'KZN SU King Cetshwayo Saturday League', group: 'King Cetshwayo' },
-    { key: 'kcD1', label: 'KZN SU King Cetshwayo Division 1', group: 'King Cetshwayo' },
-    { key: 'kcWebber', label: 'KZN SU King Cetshwayo Webber Cup', group: 'King Cetshwayo' },
-  ],
-  'Ugu Cricket District': [
-    { key: 'snT20', label: 'KZN SU Southern Natal T20', group: 'Southern Natal' },
-    { key: 'sn30', label: 'KZN SU Southern Natal 30 Overs', group: 'Southern Natal' },
-    { key: 'snAutumn100', label: 'KZN SU Southern Natal Autumn 100', group: 'Southern Natal' },
-    { key: 'umzT20', label: 'KZN SU Umzinto T20', group: 'Umzinto' },
-    { key: 'umz100', label: 'KZN SU Umzinto 100', group: 'Umzinto' },
-    { key: 'umzLeague30', label: 'KZN SU Umzinto League 30 Overs', group: 'Umzinto' },
-    { key: 'uguU11', label: 'Under 11', group: 'Juniors' },
-    { key: 'uguU13', label: 'Under 13', group: 'Juniors' },
-    { key: 'uguU15', label: 'Under 15', group: 'Juniors' },
-  ],
-  'Illembe Cricket District': [
-    { key: 'ilembeA30', label: 'KZN SU ILEMBE Senior 30 overs League A', group: 'Ilembe Senior' },
-    { key: 'ilembeBT20', label: 'KZN SU ILEMBE Senior T20 League B', group: 'Ilembe Senior' },
-  ],
-};
-
-// Flatten all league options (deduped by key) for the admin series-creation
-// dropdown and the cross-reference helpers below. Cross-district leagues come
-// first so the dropdown surfaces the overarching options at the top.
-export const LEAGUE_OPTIONS = (() => {
-  const seen = {};
-  const out = [];
-  CROSS_DISTRICT_LEAGUES.forEach((o) => {
-    if (seen[o.key]) return;
-    seen[o.key] = true;
-    out.push({ ...o, district: 'All districts' });
-  });
-  Object.entries(LEAGUE_OPTIONS_BY_DISTRICT).forEach(([district, opts]) => {
-    opts.forEach((o) => {
-      if (seen[o.key]) return;
-      seen[o.key] = true;
-      out.push({ ...o, district });
-    });
-  });
-  return out;
-})();
-
-export const LEAGUES = LEAGUE_OPTIONS.map((L) => L.label);
-
-export const LEAGUE_LABEL_BY_KEY = LEAGUE_OPTIONS.reduce((acc, L) => {
-  acc[L.key] = L.label;
-  return acc;
-}, {});
-export const LEAGUE_KEY_BY_LABEL = LEAGUE_OPTIONS.reduce((acc, L) => {
-  acc[L.label] = L.key;
-  return acc;
-}, {});
-
-// Helper: return options for a given district label, prepending the overarching
-// cross-district leagues so they're available in every district picker (V3).
-// Falls back to EMCU (the most-populated district) if the district isn't in the catalogue.
-export function leagueOptionsForDistrict(district) {
-  const districtSpecific =
-    LEAGUE_OPTIONS_BY_DISTRICT[district] ||
-    LEAGUE_OPTIONS_BY_DISTRICT['Ethekwini Metro Cricket Union'];
-  return [...CROSS_DISTRICT_LEAGUES, ...districtSpecific];
-}
+/* Leagues are admin-managed per-tenant config now (TenantConfig.leagues), read on the
+   client via src/leagues.js helpers. The former static catalogue was removed from this
+   client bundle; its content lives in packages/api/seed-data/<tenant>.json as the demo
+   seed (see git history for the original arrays). DISTRICTS above stays live. */
 
 export const COACHING_LEVELS = ['Level 1', 'Level 2', 'Level 3', 'Level 4'];
 
@@ -188,7 +81,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'ukzn',
     name: 'UKZN CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Ashraf Ganie',
     affiliation: 'complete',
@@ -205,7 +98,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'clares',
     name: 'Clares CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Rajin Ramsaroop',
     affiliation: 'complete',
@@ -222,7 +115,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'chatsworth',
     name: 'Chatsworth Sporting CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Jason Sathiaseelan',
     affiliation: 'complete',
@@ -244,7 +137,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'umlazi',
     name: 'Umlazi CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Simphiwe Shangase',
     affiliation: 'complete',
@@ -261,7 +154,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'crusaders',
     name: 'Crusaders CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Duncun Miller',
     affiliation: 'complete',
@@ -278,7 +171,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'berea',
     name: 'Berea Rovers CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Wayne Scott',
     affiliation: 'in_progress',
@@ -295,7 +188,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'rhythm',
     name: 'Rhythm DHSOB CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Mags Reddy',
     affiliation: 'complete',
@@ -312,7 +205,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'warriors',
     name: 'African Warriors CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Knowledge Vilakazi',
     affiliation: 'complete',
@@ -329,7 +222,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'phoenix',
     name: 'Phoenix CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Bradley Chetty',
     affiliation: 'not_started',
@@ -346,7 +239,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'verulam',
     name: 'Verulam CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Kugan Subrayen',
     affiliation: 'in_progress',
@@ -363,7 +256,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'harlequins',
     name: 'Harlequins CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Eric Cavanagh',
     affiliation: 'complete',
@@ -380,7 +273,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'spartan',
     name: 'Spartan Sporting CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Shafee Ayob',
     affiliation: 'complete',
@@ -414,7 +307,7 @@ export const SAMPLE_CLUBS = [
   {
     id: 'tongaat',
     name: 'Tongaat CC',
-    district: 'Ethekwini Metro CU',
+    district: 'Ethekwini Metro Cricket Union',
     sub: 'EMCU',
     chair: 'Praven Govender',
     affiliation: 'not_started',

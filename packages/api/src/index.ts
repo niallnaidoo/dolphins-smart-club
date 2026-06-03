@@ -451,6 +451,8 @@ app.put('/tenant/config', requireAdmin, async (c) => {
   if (patch.leagues !== undefined) {
     const keys = patch.leagues.map((l) => l.key);
     if (keys.some((k) => !k)) throw new HttpError(400, 'every league needs a key');
+    if (patch.leagues.some((l) => !l.label?.trim()))
+      throw new HttpError(400, 'every league needs a label');
     if (new Set(keys).size !== keys.length) throw new HttpError(409, 'duplicate league key');
   }
   const next = { ...current, ...patch, tenant };
