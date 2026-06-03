@@ -71,14 +71,14 @@ async function main(): Promise<void> {
   const demo = process.env.SEED_DEMO === '1';
   const { seedTenantConfig, seedDemoData, SEED_TENANTS } = await import('../seed-core.js');
   for (const t of SEED_TENANTS) {
-    await seedTenantConfig(t);
+    const leagues = await seedTenantConfig(t);
     if (demo) {
-      const { clubs, series, leagues } = await seedDemoData(t);
+      const { clubs, series } = await seedDemoData(t);
       console.log(
-        `· provisioned ${t} + demo: ${clubs} clubs, ${series} series, ${leagues} leagues`,
+        `· provisioned ${t} + demo: ${clubs} clubs, ${series} series (${leagues} leagues)`,
       );
     } else {
-      console.log(`· provisioned ${t} (blank)`);
+      console.log(`· provisioned ${t} (blank, ${leagues} leagues)`);
     }
   }
 

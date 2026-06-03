@@ -64,31 +64,35 @@ function loadSnapshot(tenant: string): Snapshot {
 }
 
 /**
- * Provision a tenant: write only its config (branding + deadline). The cohort
- * starts BLANK — real unions onboard their own clubs/series. `knownClubs` is
- * empty (no hardcoded onboarding suggestions).
+ * Provision a tenant: write its config (branding + deadline + league catalogue).
+ * The COHORT (clubs/series) starts BLANK — real unions onboard their own. But the
+ * league catalogue is real, union-specific REFERENCE data, so it's provisioned here
+ * (from the tenant's snapshot) and ships in production; tenants without a defined
+ * catalogue (snapshot `leagues: []`) start empty for the admin to build. `knownClubs`
+ * is empty (no hardcoded onboarding suggestions). Returns the # of leagues seeded.
  */
-export async function seedTenantConfig(tenant: string): Promise<void> {
+export async function seedTenantConfig(tenant: string): Promise<number> {
   const branding = BRANDING[tenant];
   if (!branding) throw new Error(`no branding for tenant "${tenant}"`);
   const snap = loadSnapshot(tenant);
+  const leagues = snap.leagues ?? [];
   const config: TenantConfig = {
     tenant,
     branding,
     submissionDeadline: snap.submissionDeadline,
     knownClubs: [],
-    leagues: [],
+    leagues,
   };
   await repo.putTenantConfig(config);
+  return leagues.length;
 }
 
 /**
- * Opt-in demo data: load the snapshot's sample clubs + series into a tenant
- * (for local dev / set demo accounts). Provisioning (config) must run first.
+ * Opt-in demo COHORT data: load the snapshot's sample clubs + series into a tenant
+ * (for local dev / set demo accounts). Provisioning (config, incl. leagues) must run
+ * first. Leagues are NOT demo data — they're provisioned in seedTenantConfig.
  */
-export async function seedDemoData(
-  tenant: string,
-): Promise<{ clubs: number; series: number; leagues: number }> {
+export async function seedDemoData(tenant: string): Promise<{ clubs: number; series: number }> {
   const snap = loadSnapshot(tenant);
   for (const club of snap.clubs) {
     await repo.putClub(tenant, { ...club, version: 1 });
@@ -96,11 +100,5 @@ export async function seedDemoData(
   for (const series of snap.series) {
     await repo.putSeries(tenant, { ...series, version: 1 });
   }
-  // Leagues live in tenant config — patch the catalogue onto the (already provisioned) config.
-  const leagues = snap.leagues ?? [];
-  if (leagues.length) {
-    const config = await repo.getTenantConfig(tenant);
-    if (config) await repo.putTenantConfig({ ...config, leagues });
-  }
-  return { clubs: snap.clubs.length, series: snap.series.length, leagues: leagues.length };
+  return { clubs: snap.clubs.length, series: snap.series.length };
 }

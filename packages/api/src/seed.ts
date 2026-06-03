@@ -21,14 +21,14 @@ async function main(): Promise<void> {
       console.warn(`no branding for tenant "${t}", skipping`);
       continue;
     }
-    await seedTenantConfig(t);
+    const leagues = await seedTenantConfig(t);
     if (demo) {
-      const { clubs, series, leagues } = await seedDemoData(t);
+      const { clubs, series } = await seedDemoData(t);
       console.log(
-        `provisioned ${t} + demo data: ${clubs} clubs, ${series} series, ${leagues} leagues`,
+        `provisioned ${t} + demo data: ${clubs} clubs, ${series} series (${leagues} leagues)`,
       );
     } else {
-      console.log(`provisioned ${t} (blank cohort)`);
+      console.log(`provisioned ${t} (blank cohort, ${leagues} leagues)`);
     }
   }
   console.log('seed complete');
