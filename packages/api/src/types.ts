@@ -82,6 +82,8 @@ export interface Club {
   leagues: string[];
   exco?: Record<string, unknown>;
   coaches?: unknown[];
+  /** Admin communication-log notes, appended newest-last via list_append. */
+  notes?: { id: string; text: string; author: string; at: string }[];
   playerRegLink?: { token: string; createdAt: string };
   onboardedAt?: string;
   /** Optimistic-concurrency version + audit trail. */

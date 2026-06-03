@@ -76,8 +76,13 @@ async function request(path, { method = 'GET', body, auth = true, query } = {}) 
 }
 
 // ── Tenant config ──
+// Email validation — kept identical to the backend EMAIL_RE (index.ts) so a value
+// that passes the form can't be rejected by the API.
+export const EMAIL_RE = /^[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}$/;
 export const getTenant = () => request('/tenant', { auth: false });
 export const putTenantConfig = (patch) => request('/tenant/config', { method: 'PUT', body: patch });
+export const putSupportContact = ({ name, email }) =>
+  request('/tenant/support', { method: 'PUT', body: { name, email } });
 
 // ── Current user ──
 export const getMe = () => request('/me');
@@ -97,6 +102,8 @@ export const getDocUploadUrl = (id, key) =>
   request(`/clubs/${id}/docs/${key}/upload-url`, { method: 'POST' });
 export const markDocUploaded = (id, key, meta) =>
   request(`/clubs/${id}/docs/${key}`, { method: 'PATCH', body: meta });
+export const addClubNote = (id, text) =>
+  request(`/clubs/${id}/notes`, { method: 'POST', body: { text } });
 
 // ── Series ──
 export const getSeriesList = () => request('/series');

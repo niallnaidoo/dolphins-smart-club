@@ -91,6 +91,25 @@ export async function putTenantConfig(config: TenantConfig): Promise<void> {
   );
 }
 
+/**
+ * Update only the support-contact copy slot. Uses a targeted UpdateExpression
+ * (not a whole-config read-modify-write) so it physically cannot clobber a
+ * concurrent leagues/deadline write — TenantConfig has no version guard.
+ * Throws ConditionalCheckFailedException if the config row doesn't exist.
+ */
+export async function updateSupportCopy(tenant: string, support: string): Promise<void> {
+  await ddb.send(
+    new UpdateCommand({
+      TableName: TABLE,
+      Key: tenantConfigKey(tenant),
+      UpdateExpression: 'SET #b.#c.#s = :v',
+      ConditionExpression: 'attribute_exists(pk)',
+      ExpressionAttributeNames: { '#b': 'branding', '#c': 'copy', '#s': 'support' },
+      ExpressionAttributeValues: { ':v': support },
+    }),
+  );
+}
+
 // ── Clubs ──
 
 export async function listClubs(tenant: string): Promise<Club[]> {
@@ -190,6 +209,40 @@ export async function updateClub(
     throw err;
   }
   return next;
+}
+
+/**
+ * Append a note to a club's communication log. Uses a DynamoDB `list_append`
+ * UpdateExpression (not read-modify-write) so concurrent note posts compose
+ * instead of clobbering each other — there is no version guard precisely so two
+ * simultaneous appends both land. The version still bumps for audit/OCC of other
+ * writers. Guards on row existence (handler does the 404 with a clearer message).
+ */
+export async function appendClubNote(
+  tenant: string,
+  clubId: string,
+  note: { id: string; text: string; author: string; at: string },
+): Promise<Club> {
+  const res = await ddb.send(
+    new UpdateCommand({
+      TableName: TABLE,
+      Key: clubKey(tenant, clubId),
+      UpdateExpression:
+        'SET notes = list_append(if_not_exists(notes, :empty), :new), ' +
+        'version = if_not_exists(version, :zero) + :one, changedBy = :by, changedAt = :at',
+      ConditionExpression: 'attribute_exists(pk)',
+      ExpressionAttributeValues: {
+        ':empty': [],
+        ':new': [note],
+        ':zero': 0,
+        ':one': 1,
+        ':by': note.author,
+        ':at': note.at,
+      },
+      ReturnValues: 'ALL_NEW',
+    }),
+  );
+  return stripKeys<Club>(res.Attributes) as Club;
 }
 
 // ── Series ──

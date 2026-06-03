@@ -188,6 +188,7 @@ app.use('/clubs', authenticate, requireTenantMembership);
 app.use('/series/*', authenticate, requireTenantMembership);
 app.use('/series', authenticate, requireTenantMembership);
 app.use('/tenant/config', authenticate, requireTenantMembership);
+app.use('/tenant/support', authenticate, requireTenantMembership);
 app.use('/admin/*', authenticate, requireTenantMembership, requireAdmin);
 
 // ───────────────────────── Clubs ─────────────────────────
@@ -383,6 +384,25 @@ app.patch('/clubs/:id/paid', requireAdmin, async (c) => {
   return c.json(withPlayerCount(updated));
 });
 
+/** Append a note to the club's communication log (admin only) — audited. */
+app.post('/clubs/:id/notes', requireAdmin, async (c) => {
+  const ra = c.get('requestAuth')!;
+  const id = c.req.param('id');
+  const { text } = await c.req.json<{ text?: string }>();
+  if (!text || !text.trim()) throw new HttpError(400, 'note text required');
+  const note = { id: randomUUID(), text: text.trim(), author: ra.email, at: now() };
+  try {
+    // appendClubNote's ConditionExpression (attribute_exists) is the existence
+    // check — no separate read, so there's no delete-race window.
+    const updated = await repo.appendClubNote(ra.tenant, id, note);
+    return c.json(withPlayerCount(updated));
+  } catch (err) {
+    if ((err as { name?: string }).name === 'ConditionalCheckFailedException')
+      throw new HttpError(404, 'club not found');
+    throw err;
+  }
+});
+
 // ───────────────────────── Series ─────────────────────────
 
 app.get('/series', async (c) => {
@@ -441,6 +461,10 @@ app.post('/series/:id/duplicate', requireAdmin, async (c) => {
 
 // ───────────────────── Tenant config + users (admin) ─────────────────────
 
+// Anchored + TLD-required: blocks whitespace/newlines, so the validated value is
+// safe to splice into a mailto: link downstream. Kept identical to api.js EMAIL_RE.
+const EMAIL_RE = /^[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}$/;
+
 app.put('/tenant/config', requireAdmin, async (c) => {
   const { tenant } = c.get('requestAuth')!;
   const patch = await c.req.json<Partial<TenantConfig>>();
@@ -458,6 +482,31 @@ app.put('/tenant/config', requireAdmin, async (c) => {
   const next = { ...current, ...patch, tenant };
   await repo.putTenantConfig(next);
   return c.json(next);
+});
+
+/**
+ * Update the union support contact (admin only, like the rest of tenant config).
+ * Validates name + email, recombines into the "Name · email" string the UI parses,
+ * and writes only that one copy slot (repo.updateSupportCopy) so it can't clobber a
+ * concurrent leagues/deadline write.
+ */
+app.put('/tenant/support', requireAdmin, async (c) => {
+  const { tenant } = c.get('requestAuth')!;
+  const { name, email } = await c.req.json<{ name?: string; email?: string }>();
+  const officeName = (name ?? '').trim().replace(/·/g, '').trim();
+  const addr = (email ?? '').trim();
+  if (!officeName) throw new HttpError(400, 'office name required');
+  if (!EMAIL_RE.test(addr)) throw new HttpError(400, 'valid email required');
+  const support = `${officeName} · ${addr}`;
+  try {
+    await repo.updateSupportCopy(tenant, support);
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name === 'ConditionalCheckFailedException') {
+      throw new HttpError(404, 'tenant not found');
+    }
+    throw err;
+  }
+  return c.json({ support });
 });
 
 /** Invite a user (admin): create the Cognito account + USER# membership record. */

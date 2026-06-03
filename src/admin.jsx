@@ -24,7 +24,10 @@ import {
   slugifyLeagueKey,
   OVERARCHING_DISTRICT,
 } from './leagues.js';
-import { exportRowsToXlsx, clubExportRow } from './exportXlsx.js';
+import { exportRowsToXlsx, exportSheetsToXlsx, clubExportRow } from './exportXlsx.js';
+import { openBccReminder } from './mailto.js';
+import { EMAIL_RE } from './api.js';
+import { parseSupport } from './support.js';
 import {
   Icon,
   Pill,
@@ -76,6 +79,45 @@ export function AdminFixtures({
     return { totalKm, totalCost };
   };
 
+  // Export the active series' fixtures to .xlsx. Clubs without geocoded grounds
+  // can't have distance/travel computed (haversine returns 0) — emit '—' rather
+  // than a misleading 0.
+  function exportSchedule() {
+    if (!active) return toast?.('No series to export');
+    const rows = active.fixtures.map((f) => {
+      const home = clubBy(f.home),
+        away = clubBy(f.away);
+      const hasGeo =
+        home?.ground?.lat != null &&
+        home?.ground?.lon != null &&
+        away?.ground?.lat != null &&
+        away?.ground?.lon != null;
+      const cost =
+        home && away ? fixtureCost(home, away, active.costPerKm, active.carsPerAwayTrip) : null;
+      return {
+        Round: f.round,
+        Date: new Date(f.date).toLocaleDateString('en-GB', {
+          weekday: 'short',
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        }),
+        Home: home?.name || 'TBD',
+        Venue: f.venueOverride || home?.ground?.venue || '—',
+        Suburb: home?.ground?.suburb || '',
+        Away: away?.name || 'TBD',
+        'Distance (km)': hasGeo && cost ? Number(cost.distanceKm.toFixed(1)) : '—',
+        'Travel (R)': hasGeo && cost ? Math.round(cost.fuelR) : '—',
+        Status: f.status || 'scheduled',
+      };
+    });
+    const fname = `${active.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')}-schedule.xlsx`;
+    exportRowsToXlsx(fname, 'Schedule', rows).catch(() => toast?.('Export failed — please retry'));
+  }
+
   // Shared release/recall confirmation builders — used by header, card, and bottom bar
   function askRelease(s) {
     setConfirm({
@@ -116,7 +158,7 @@ export function AdminFixtures({
           </p>
         </div>
         <div className="ph-actions">
-          <Btn tone="outline" icon={Icon.Download} size="sm">
+          <Btn tone="outline" icon={Icon.Download} size="sm" onClick={exportSchedule}>
             Export schedule
           </Btn>
           <Btn tone="outline" icon={Icon.Plus} size="sm" onClick={onCreateSeries}>
@@ -1715,11 +1757,26 @@ export function AdminDashboard({
   toast,
   submissionDeadline,
   onUpdateDeadline,
+  support,
+  onUpdateSupport,
 }) {
   const stats = cohortStats(clubs);
   const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
   const notify = (m) => (toast ? toast(m, 'warn') : null);
   const [showEditDeadline, setShowEditDeadline] = useStateA(false);
+  const [showEditSupport, setShowEditSupport] = useStateA(false);
+
+  // Open a bcc mail draft to the chairs of every club still missing a submission
+  // (unpaid, no CQI, or any compliance doc outstanding).
+  function remindBulk() {
+    const behind = (c) => !c.paid || c.cqi === 0 || !Object.values(c.docs).every(Boolean);
+    openBccReminder({
+      emails: clubs.filter(behind).map((c) => c.exco?.chair?.email),
+      subject: 'Smart Club Integration — outstanding submissions',
+      toast,
+      emptyMessage: 'All clubs are up to date',
+    });
+  }
 
   // Blank tenant: show the onboarding empty state instead of a 0-of-0 dashboard.
   if (clubs.length === 0) return <EmptyCohort onOnboard={gotoList} />;
@@ -1833,14 +1890,7 @@ export function AdminDashboard({
           >
             Export cohort report
           </Btn>
-          <Btn
-            tone="ink"
-            icon={Icon.Mail}
-            size="sm"
-            onClick={() =>
-              notify('Bulk reminder coming soon — will email all clubs missing submissions.')
-            }
-          >
+          <Btn tone="ink" icon={Icon.Mail} size="sm" onClick={remindBulk}>
             Send bulk reminder
           </Btn>
         </div>
@@ -1856,7 +1906,10 @@ export function AdminDashboard({
           upload required compliance documents, and submit the CQI form.{' '}
           <span className="days">{daysLabel}</span>.
         </div>
-        <div className="deadline-cta">
+        <div className="deadline-cta" style={{ display: 'flex', gap: 8 }}>
+          <Btn tone="outline" size="sm" icon={Icon.Mail} onClick={() => setShowEditSupport(true)}>
+            Support contact
+          </Btn>
           <Btn tone="outline" size="sm" icon={Icon.Form} onClick={() => setShowEditDeadline(true)}>
             Edit deadline
           </Btn>
@@ -2093,6 +2146,14 @@ export function AdminDashboard({
           defaultISO={SUBMISSION_DEADLINE_DEFAULT}
           onClose={() => setShowEditDeadline(false)}
           onSave={(iso) => onUpdateDeadline && onUpdateDeadline(iso)}
+          toast={toast}
+        />
+      )}
+      {showEditSupport && (
+        <EditSupportContactModal
+          current={support}
+          onClose={() => setShowEditSupport(false)}
+          onSave={(c) => onUpdateSupport && onUpdateSupport(c)}
           toast={toast}
         />
       )}
@@ -3600,6 +3661,144 @@ function EditDeadlineModal({ currentISO, defaultISO, onClose, onSave, toast }) {
   );
 }
 
+/* ─── EditSupportContactModal — admin edits the union support contact ───
+   Two fields (office name + email), recombined into the "Name · email" string
+   on save. The change applies across the whole system (help modal + every
+   "email the union" button) for both admin and club logins once /tenant
+   refetches. Admin-only, like every other tenant-wide setting. */
+function EditSupportContactModal({ current, onClose, onSave, toast }) {
+  const init = parseSupport(current);
+  const [name, setName] = useStateA(init.name === 'Union office' ? '' : init.name);
+  const [email, setEmail] = useStateA(init.email);
+  const [busy, setBusy] = useStateA(false);
+  const cleanName = name.trim().replace(/·/g, '').trim();
+  const cleanEmail = email.trim();
+  const emailOk = EMAIL_RE.test(cleanEmail);
+  const canSave = !!cleanName && emailOk && !busy;
+
+  function save() {
+    if (!canSave) return;
+    setBusy(true);
+    Promise.resolve(onSave && onSave({ name: cleanName, email: cleanEmail }))
+      .then(() => {
+        toast && toast(`Support contact updated · ${cleanEmail}`);
+        onClose && onClose();
+      })
+      .catch(() => setBusy(false));
+  }
+
+  return createPortal(
+    <div className="task-modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="task-modal narrow" style={{ maxWidth: 520 }}>
+        <div className="task-modal-head">
+          <div className="task-modal-head-text">
+            <div className="task-modal-head-eyebrow">Org settings</div>
+            <div className="task-modal-head-title">
+              Edit <em>support contact</em>
+            </div>
+          </div>
+          <button className="task-modal-close" onClick={onClose} title="Close">
+            <Icon.X />
+          </button>
+        </div>
+        <div className="task-modal-body">
+          <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--muted)', lineHeight: 1.5 }}>
+            The union office name and email shown in the Need Help panel and behind every “Contact
+            union” button. Updates apply across the whole portal for every club.
+          </p>
+
+          <div className="field">
+            <div className="field-label">
+              Office name <span className="req">*</span>
+            </div>
+            <input
+              className="field-input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Cricket Services"
+              autoFocus
+            />
+          </div>
+
+          <div className="field" style={{ marginTop: 12 }}>
+            <div className="field-label">
+              Support email <span className="req">*</span>
+            </div>
+            <input
+              type="email"
+              className="field-input"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="support@union.co.za"
+            />
+            {cleanEmail && !emailOk && (
+              <div style={{ fontSize: 12, color: 'var(--coral)', marginTop: 6 }}>
+                Enter a valid email address.
+              </div>
+            )}
+          </div>
+
+          <div
+            style={{
+              background: 'var(--paper)',
+              border: '1px solid var(--line)',
+              borderRadius: 10,
+              padding: '12px 14px',
+              marginTop: 14,
+              marginBottom: 18,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10.5,
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+                color: 'var(--muted-2)',
+                fontFamily: "'Montserrat',sans-serif",
+                fontWeight: 700,
+                marginBottom: 4,
+              }}
+            >
+              Preview
+            </div>
+            <div
+              style={{
+                fontFamily: "'Montserrat',sans-serif",
+                fontSize: 15,
+                fontWeight: 700,
+                color: 'var(--ink)',
+              }}
+            >
+              {cleanName || '—'}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
+              {cleanEmail || 'support@…'}
+            </div>
+          </div>
+
+          <div
+            className="row"
+            style={{
+              justifyContent: 'flex-end',
+              gap: 8,
+              paddingTop: 6,
+              borderTop: '1px solid var(--line)',
+            }}
+          >
+            <Btn tone="outline" onClick={onClose}>
+              Cancel
+            </Btn>
+            <Btn tone="teal" icon={Icon.Check} disabled={!canSave} onClick={save}>
+              Save contact
+            </Btn>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 /* ─── PlayerRegLinkModal — V3 future feature, brought forward ───
    Admin generates a per-club registration link, copies / shares it, or
    regenerates it (invalidating the previous token). When a player opens the
@@ -3980,10 +4179,15 @@ export function AdminClubDetail({
   toast,
   allLeagues = [],
   onSetLeagues,
+  onMarkCompliant,
+  onAddNote,
 }) {
   // Hooks must run unconditionally — keep state before any early return.
   const [showLinkModal, setShowLinkModal] = useStateA(false);
   const [showInvite, setShowInvite] = useStateA(false);
+  const [showCqi, setShowCqi] = useStateA(false);
+  const [showCompliant, setShowCompliant] = useStateA(false);
+  const [noteText, setNoteText] = useStateA('');
   if (!club) return null;
   const dc = docCompletion(club);
   const op = overallProgress(club);
@@ -4010,6 +4214,92 @@ export function AdminClubDetail({
     if (!onSetPaid) return;
     onSetPaid(club.id, !club.paid);
     toast && toast(club.paid ? 'Marked as unpaid' : 'Marked as paid');
+  }
+  function emailChair() {
+    const e = club.exco?.chair?.email;
+    if (!e) return toast?.('No chairperson email on file');
+    window.location.href = `mailto:${e}?subject=${encodeURIComponent(
+      `${club.name} — Smart Club Integration`,
+    )}`;
+  }
+  // Export the persisted affiliation form as a multi-sheet .xlsx (no PDF).
+  function downloadAffiliation() {
+    const ex = club.exco || {};
+    const roleRow = (label, m) =>
+      m
+        ? {
+            Role: label,
+            Name: m.name || '',
+            Email: m.email || '',
+            Cell: m.cell || '',
+            Gender: m.gender || '',
+            Race: m.race || '',
+          }
+        : null;
+    const excoRows = [
+      roleRow('Chairperson', ex.chair),
+      roleRow('Secretary', ex.sec),
+      roleRow('Treasurer', ex.tre),
+      roleRow('Vice-chair', ex.vc),
+      ...(Array.isArray(ex.additionalMembers)
+        ? ex.additionalMembers.map((m) => roleRow('Member', m))
+        : []),
+    ].filter(Boolean);
+    const leagueRows = (club.leagues || []).map((k) => ({
+      Key: k,
+      League: allLeagues.find((l) => l.key === k)?.label || k,
+    }));
+    const coachRows = (club.coaches || []).map((c) => ({
+      Name: c.name || '',
+      Email: c.email || '',
+      Cell: c.cell || '',
+      Level: c.level || '',
+      Teams: Array.isArray(c.teams) ? c.teams.join(', ') : '',
+    }));
+    const slug =
+      club.id ||
+      club.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+    exportSheetsToXlsx(`${slug}-affiliation.xlsx`, [
+      {
+        name: 'Club',
+        rows: [
+          {
+            Name: club.name,
+            District: club.district,
+            'Sub-union': club.sub,
+            Chairperson: club.chair,
+            Paid: club.paid ? 'Yes' : 'No',
+            Affiliation: club.affiliation,
+          },
+        ],
+      },
+      { name: 'Exco', rows: excoRows },
+      { name: 'Leagues', rows: leagueRows },
+      { name: 'Coaches', rows: coachRows },
+      {
+        name: 'Ground',
+        rows: [
+          {
+            Venue: club.ground?.venue || '',
+            Address: club.ground?.address || '',
+            Suburb: club.ground?.suburb || '',
+          },
+        ],
+      },
+    ]).catch(() => toast?.('Export failed — please retry'));
+  }
+  function submitNote() {
+    const t = noteText.trim();
+    if (!t || !onAddNote) return;
+    onAddNote(t)
+      .then(() => {
+        setNoteText('');
+        toast?.('Note added');
+      })
+      .catch(() => {});
   }
 
   const phases = [
@@ -4082,7 +4372,7 @@ export function AdminClubDetail({
           </div>
         </div>
         <div className="ph-actions">
-          <Btn tone="outline" icon={Icon.Mail} size="sm">
+          <Btn tone="outline" icon={Icon.Mail} size="sm" onClick={emailChair}>
             Email chairperson
           </Btn>
           <Btn
@@ -4258,14 +4548,25 @@ export function AdminClubDetail({
           <Card
             title="Compliance documents"
             sub="Cricket Services 2026/27 club requirements upload"
-            action={
-              <Btn tone="outline" size="sm" icon={Icon.Download}>
-                Download bundle
-              </Btn>
-            }
           >
             {REQUIRED_DOCS.map((d) => {
               const up = club.docs[d.key];
+              // Real uploads carry docMeta with an objectKey; an admin "Mark as
+              // compliant" override sets the flag true with a markedCompliant
+              // sentinel (no file). Never fabricate a filename for the latter.
+              const meta = club.docMeta?.[d.key];
+              const real = !!(meta && meta.objectKey);
+              const override = up && !real;
+              const fileName = real ? String(meta.objectKey).split('/').pop() : null;
+              const uploadedDate =
+                real && meta.uploadedAt
+                  ? new Date(meta.uploadedAt).toLocaleDateString('en-GB', {
+                      day: 'numeric',
+                      month: 'short',
+                      year: 'numeric',
+                    })
+                  : null;
+              const sizeMB = real && meta.size ? `${(meta.size / 1e6).toFixed(1)} MB` : null;
               return (
                 <div key={d.key} className={`doc-row ${up ? 'uploaded' : ''}`}>
                   <div className="doc-icon">
@@ -4277,14 +4578,18 @@ export function AdminClubDetail({
                       {!up && <span className="doc-required-tag">Required</span>}
                     </div>
                     <div className="doc-meta">
-                      {up
-                        ? `${d.key}_2026.pdf · uploaded 14 May 2026 · 1.2 MB`
-                        : 'Not yet uploaded · awaiting club'}
+                      {real
+                        ? [fileName, uploadedDate && `uploaded ${uploadedDate}`, sizeMB]
+                            .filter(Boolean)
+                            .join(' · ')
+                        : override
+                          ? 'Marked compliant — no file on record'
+                          : 'Not yet uploaded · awaiting club'}
                     </div>
                   </div>
                   {up ? (
-                    <Pill tone="teal" dot>
-                      Approved
+                    <Pill tone={override ? 'gold' : 'teal'} dot>
+                      {override ? 'Override' : 'Approved'}
                     </Pill>
                   ) : (
                     <Pill tone="coral" dot>
@@ -4375,6 +4680,16 @@ export function AdminClubDetail({
           <Card title="Communication log">
             <div className="stack" style={{ gap: 8 }}>
               {[
+                // Admin-added notes (newest first), then the seeded system events.
+                ...[...(club.notes || [])].reverse().map((n) => ({
+                  tone: 'navy',
+                  t: n.text,
+                  d: `${new Date(n.at).toLocaleDateString('en-GB', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                  })} · ${n.author}`,
+                })),
                 { tone: 'teal', t: 'Affiliation invitation sent', d: '03 May 2026 · auto-system' },
                 { tone: 'navy', t: 'Login link emailed to chair', d: '05 May 2026' },
                 { tone: 'gold', t: 'Reminder — CQI form pending', d: '15 May 2026' },
@@ -4414,14 +4729,19 @@ export function AdminClubDetail({
                   </div>
                 ))}
             </div>
-            <Btn
-              tone="outline"
-              size="sm"
-              icon={Icon.Plus}
-              style={{ width: '100%', marginTop: 10, justifyContent: 'center' }}
-            >
-              New note / reminder
-            </Btn>
+            <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+              <input
+                className="field-input"
+                placeholder="New note / reminder…"
+                value={noteText}
+                onChange={(e) => setNoteText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && submitNote()}
+                style={{ flex: 1, fontSize: 13 }}
+              />
+              <Btn tone="outline" size="sm" icon={Icon.Plus} onClick={submitNote}>
+                Add
+              </Btn>
+            </div>
           </Card>
 
           <Card title="Quick actions">
@@ -4429,13 +4749,19 @@ export function AdminClubDetail({
               <Btn tone="ink" icon={Icon.Mail} onClick={() => setShowInvite(true)}>
                 Invite club rep
               </Btn>
-              <Btn tone="outline" icon={Icon.Eye}>
+              <Btn
+                tone="outline"
+                icon={Icon.Eye}
+                onClick={() =>
+                  club.cqi === 0 ? toast?.('No CQI form submitted yet') : setShowCqi(true)
+                }
+              >
                 View submitted CQI form
               </Btn>
-              <Btn tone="outline" icon={Icon.Download}>
+              <Btn tone="outline" icon={Icon.Download} onClick={downloadAffiliation}>
                 Download affiliation form
               </Btn>
-              <Btn tone="outline" icon={Icon.Shield}>
+              <Btn tone="outline" icon={Icon.Shield} onClick={() => setShowCompliant(true)}>
                 Mark as compliant
               </Btn>
             </div>
@@ -4459,7 +4785,142 @@ export function AdminClubDetail({
           toast={toast}
         />
       )}
+      {showCqi && <CqiViewModal club={club} onClose={() => setShowCqi(false)} />}
+      {showCompliant && (
+        <ConfirmModal
+          title="Mark all documents compliant?"
+          body="This overrides the four compliance documents as present for this club — without an uploaded file on record. Use only when you've verified compliance offline."
+          confirmLabel="Mark compliant"
+          onConfirm={() => {
+            setShowCompliant(false);
+            onMarkCompliant && onMarkCompliant();
+          }}
+          onClose={() => setShowCompliant(false)}
+        />
+      )}
     </div>
+  );
+}
+
+/* ─── ConfirmModal — lightweight confirm dialog matching the task-modal styling ─── */
+function ConfirmModal({ title, body, confirmLabel = 'Confirm', onConfirm, onClose }) {
+  return createPortal(
+    <div className="task-modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="task-modal narrow" style={{ maxWidth: 440 }}>
+        <div className="task-modal-head">
+          <div className="task-modal-head-text">
+            <div className="task-modal-head-title">{title}</div>
+          </div>
+          <button className="task-modal-close" onClick={onClose} title="Close">
+            <Icon.X />
+          </button>
+        </div>
+        <div className="task-modal-body">
+          <p style={{ fontSize: 13.5, color: 'var(--ink)', lineHeight: 1.55, margin: 0 }}>{body}</p>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
+            <Btn tone="outline" size="sm" onClick={onClose}>
+              Cancel
+            </Btn>
+            <Btn tone="ink" size="sm" onClick={onConfirm}>
+              {confirmLabel}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/* ─── CqiViewModal — read-only view of a club's submitted CQI self-assessment ─── */
+function CqiViewModal({ club, onClose }) {
+  const answers = club.cqiAnswers || {};
+  const band = cqiBand(club.cqi);
+  // Legacy/seeded clubs can carry a score with no itemised answers (answer capture
+  // post-dates them). Show an honest empty state instead of a grid of dashes.
+  const hasAnswers = Object.keys(answers).length > 0;
+  // Render each answer by its question kind so booleans, counts, percentages,
+  // choices and money all read correctly (iterate the structure, not the answers,
+  // so nothing is orphaned).
+  const fmt = (q) => {
+    const v = answers[q.key];
+    if (v == null || v === '') return '—';
+    if (q.kind === 'yn') return v ? 'Yes' : 'No';
+    if (q.kind === 'pct') return `${v}%`;
+    if (q.kind === 'money') return `${q.currency || 'R'} ${Number(v).toLocaleString()}`;
+    return String(v);
+  };
+  return createPortal(
+    <div className="task-modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="task-modal" style={{ maxWidth: 620 }}>
+        <div className="task-modal-head">
+          <div className="task-modal-head-text">
+            <div className="task-modal-head-eyebrow">Submitted CQI · {club.name}</div>
+            <div className="task-modal-head-title">
+              CQI <em>self-assessment</em> · {band.label}
+            </div>
+          </div>
+          <button className="task-modal-close" onClick={onClose} title="Close">
+            <Icon.X />
+          </button>
+        </div>
+        <div className="task-modal-body">
+          {!hasAnswers ? (
+            <div style={{ textAlign: 'center', padding: '28px 8px', color: 'var(--muted)' }}>
+              <p style={{ fontSize: 14, color: 'var(--ink)', margin: 0 }}>
+                Score on record: <strong>{band.label}</strong>
+              </p>
+              <p style={{ fontSize: 12.5, marginTop: 8, lineHeight: 1.5 }}>
+                This club&apos;s CQI score was recorded before itemised answers were captured, so
+                there are no per-question responses to display.
+              </p>
+            </div>
+          ) : (
+            <div className="stack" style={{ gap: 16 }}>
+              {CQI_STRUCTURE.map((cat) => (
+                <div key={cat.key}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.08em',
+                      color: 'var(--muted-2)',
+                      marginBottom: 6,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {cat.title}
+                  </div>
+                  <div className="stack" style={{ gap: 4 }}>
+                    {cat.questions.map((q) => (
+                      <div
+                        key={q.key}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          gap: 12,
+                          fontSize: 12.5,
+                          padding: '4px 0',
+                          borderBottom: '1px solid var(--line2)',
+                        }}
+                      >
+                        <span style={{ color: 'var(--muted)' }}>{q.label}</span>
+                        <span
+                          style={{ color: 'var(--ink)', fontWeight: 600, whiteSpace: 'nowrap' }}
+                        >
+                          {fmt(q)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 

@@ -20,6 +20,8 @@ import { AuthProvider, useAuth, membershipFor } from './auth.jsx';
 import { Login } from './Login.jsx';
 import { RegisterPage } from './RegisterPage.jsx';
 import { REQUIRED_DOCS, SUBMISSION_DEADLINE_DEFAULT, docCompletion } from './data.jsx';
+import { exportRowsToXlsx } from './exportXlsx.js';
+import { openBccReminder } from './mailto.js';
 import {
   Icon,
   Pill,
@@ -41,6 +43,7 @@ import {
   LeagueForm,
   CreateSeriesForm,
 } from './admin.jsx';
+import { parseSupport } from './support.js';
 import { ClubHome, AffiliationForm, DocumentsView, CQIView, ClubFixturesView } from './club.jsx';
 import { Onboarding } from './onboarding.jsx';
 
@@ -51,14 +54,10 @@ setActiveTenant(TENANT_SLUG);
 /* ─── HelpModal — support guidance + union office contacts ─── */
 function HelpModal({ onClose, support }) {
   useEscapeClose(onClose);
+  // parseSupport (admin.jsx) is the single source of truth for splitting the
+  // "Name · email" support string — same logic the edit modal uses.
   const contacts = support
-    ? [
-        {
-          name: support.split('·')[0]?.trim() || 'Union office',
-          role: 'Union office',
-          email: (support.match(/[\w.+-]+@[\w.-]+/) || [''])[0],
-        },
-      ]
+    ? [{ ...parseSupport(support), role: 'Union office' }]
     : [{ name: 'Union office', role: 'Support', email: '' }];
   return createPortal(
     <div className="task-modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -395,6 +394,11 @@ function AuthedApp({ tenantConfig }) {
       .then(() => invalidate(qk.tenant()))
       .catch(() => {});
   }
+  function setSupportContact({ name, email }) {
+    return withToast(() => api.putSupportContact({ name, email }), 'Could not save support contact')
+      .then(() => invalidate(qk.tenant()))
+      .catch(() => {});
+  }
   function setOnboarded(updater) {
     const next = typeof updater === 'function' ? updater(onboarded) : updater;
     api
@@ -476,6 +480,7 @@ function AuthedApp({ tenantConfig }) {
                   setShowHelp,
                   submissionDeadline,
                   setSubmissionDeadline,
+                  setSupportContact,
                   updateSeries,
                   deleteSeries,
                   duplicateSeries,
@@ -519,6 +524,7 @@ function AuthedApp({ tenantConfig }) {
                 setShowHelp,
                 submissionDeadline,
                 setSubmissionDeadline,
+                setSupportContact,
                 updateSeries,
                 deleteSeries,
                 duplicateSeries,
@@ -568,6 +574,7 @@ function Shell({
   setShowHelp,
   submissionDeadline,
   setSubmissionDeadline,
+  setSupportContact,
   updateSeries,
   deleteSeries,
   duplicateSeries,
@@ -659,6 +666,14 @@ function Shell({
       () => api.patchClub(clubId, { ...updates, version: activeClub?.version }),
       'Could not save changes',
     ).then(() => {
+      invalidate(qk.club(clubId));
+      invalidate(qk.clubs());
+    });
+  }
+  // Admin appends a note to the active club's communication log (server-side
+  // list_append, so concurrent notes don't clobber each other).
+  function addNote(text) {
+    return withToast(() => api.addClubNote(clubId, text), 'Could not save note').then(() => {
       invalidate(qk.club(clubId));
       invalidate(qk.clubs());
     });
@@ -802,6 +817,8 @@ function Shell({
             toast={toastShow}
             submissionDeadline={submissionDeadline}
             onUpdateDeadline={setSubmissionDeadline}
+            support={branding?.copy?.support}
+            onUpdateSupport={setSupportContact}
           />
         );
       if (view === 'clubs_list')
@@ -827,6 +844,22 @@ function Shell({
             toast={toastShow}
             allLeagues={allLeagues}
             onSetLeagues={(keys) => updateClub({ leagues: keys }).catch(() => {})}
+            onAddNote={addNote}
+            onMarkCompliant={() =>
+              updateClub({
+                docs: { constitution: true, agm: true, financials: true, exco: true },
+                docMeta: {
+                  ...(activeClub?.docMeta ?? {}),
+                  ...Object.fromEntries(
+                    ['constitution', 'agm', 'financials', 'exco']
+                      .filter((k) => !activeClub?.docMeta?.[k]?.objectKey)
+                      .map((k) => [k, { markedCompliant: true, at: new Date().toISOString() }]),
+                  ),
+                },
+              })
+                .then(() => toastShow('Marked compliant'))
+                .catch(() => {})
+            }
           />
         );
       if (view === 'affiliations')
@@ -836,6 +869,7 @@ function Shell({
             kind="affiliation"
             gotoClub={setActiveClub}
             onOnboard={() => gotoAdminView('clubs_list')}
+            toast={toastShow}
           />
         );
       if (view === 'documents')
@@ -845,6 +879,7 @@ function Shell({
             kind="docs"
             gotoClub={setActiveClub}
             onOnboard={() => gotoAdminView('clubs_list')}
+            toast={toastShow}
           />
         );
       if (view === 'cqi_admin')
@@ -854,6 +889,7 @@ function Shell({
             kind="cqi"
             gotoClub={setActiveClub}
             onOnboard={() => gotoAdminView('clubs_list')}
+            toast={toastShow}
           />
         );
       if (view === 'leagues')
@@ -1221,7 +1257,7 @@ function Shell({
 }
 
 /* ─── Filtered admin views (Affiliation / Docs / CQI) ─── */
-function AdminFiltered({ clubs, kind, gotoClub, onOnboard }) {
+function AdminFiltered({ clubs, kind, gotoClub, onOnboard, toast }) {
   const titles = {
     affiliation: {
       t: 'Affiliation tracker',
@@ -1248,6 +1284,65 @@ function AdminFiltered({ clubs, kind, gotoClub, onOnboard }) {
     },
   }[kind];
 
+  // "Outstanding" depends on the tracker: unpaid (affiliation), any missing doc
+  // (docs), or no CQI submission (cqi).
+  const isOutstanding = (c) =>
+    kind === 'affiliation'
+      ? !c.paid
+      : kind === 'docs'
+        ? !Object.values(c.docs).every(Boolean)
+        : c.cqi === 0;
+
+  function remindOutstanding() {
+    openBccReminder({
+      emails: clubs.filter(isOutstanding).map((c) => c.exco?.chair?.email),
+      subject: {
+        affiliation: '2026/27 affiliation outstanding — please complete',
+        docs: 'Compliance documents outstanding — please upload',
+        cqi: 'CQI self-assessment outstanding — please submit',
+      }[kind],
+      toast,
+      emptyMessage: 'No outstanding clubs with a chairperson email on file',
+    });
+  }
+
+  function exportTracker() {
+    const rows = clubs.map((c) => {
+      const base = { Club: c.name, Chair: c.chair };
+      if (kind === 'affiliation')
+        return {
+          ...base,
+          Status: c.affiliation,
+          Payment: c.paid ? 'Submitted' : 'Outstanding',
+          Submitted: c.paid
+            ? 'Paid'
+            : c.affiliation === 'complete'
+              ? 'Submitted'
+              : c.affiliation === 'in_progress'
+                ? 'Draft saved'
+                : '—',
+        };
+      if (kind === 'docs')
+        return {
+          ...base,
+          ...Object.fromEntries(
+            REQUIRED_DOCS.map((d) => [d.name, c.docs[d.key] ? 'Uploaded' : 'Missing']),
+          ),
+          'Progress %': docCompletion(c),
+        };
+      return {
+        ...base,
+        Score: c.cqi > 0 ? c.cqi : '—',
+        Band: cqiBand(c.cqi).label,
+        Submitted: c.cqi > 0 ? 'Submitted' : '—',
+        Players: c.players || '—',
+      };
+    });
+    exportRowsToXlsx(`${kind}-tracker.xlsx`, titles.crumb, rows).catch(() =>
+      toast?.('Export failed — please retry'),
+    );
+  }
+
   return (
     <div>
       <div className="page-head">
@@ -1257,10 +1352,10 @@ function AdminFiltered({ clubs, kind, gotoClub, onOnboard }) {
           <p className="ph-desc">{titles.desc}</p>
         </div>
         <div className="ph-actions">
-          <Btn tone="outline" size="sm" icon={Icon.Mail}>
+          <Btn tone="outline" size="sm" icon={Icon.Mail} onClick={remindOutstanding}>
             Send reminder to outstanding
           </Btn>
-          <Btn tone="ink" size="sm" icon={Icon.Download}>
+          <Btn tone="ink" size="sm" icon={Icon.Download} onClick={exportTracker}>
             Export
           </Btn>
         </div>
