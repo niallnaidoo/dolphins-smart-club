@@ -37,6 +37,8 @@ import {
   AdminClubsList,
   AdminClubDetail,
   AdminFixtures,
+  AdminLeagues,
+  LeagueForm,
   CreateSeriesForm,
 } from './admin.jsx';
 import { ClubHome, AffiliationForm, DocumentsView, CQIView, ClubFixturesView } from './club.jsx';
@@ -254,6 +256,8 @@ function AuthedApp({ tenantConfig }) {
   const [toastShow, toastNode] = useToast();
   const [showOnboarding, setShowOnboarding] = useStateApp(false);
   const [showCreateSeries, setShowCreateSeries] = useStateApp(false);
+  // null = closed; {} = create; a league object = edit
+  const [showLeagueForm, setShowLeagueForm] = useStateApp(null);
   const [showHelp, setShowHelp] = useStateApp(false);
 
   const membership = membershipFor(memberships, TENANT_SLUG);
@@ -466,6 +470,8 @@ function AuthedApp({ tenantConfig }) {
                   setShowOnboarding,
                   showCreateSeries,
                   setShowCreateSeries,
+                  showLeagueForm,
+                  setShowLeagueForm,
                   showHelp,
                   setShowHelp,
                   submissionDeadline,
@@ -507,6 +513,8 @@ function AuthedApp({ tenantConfig }) {
                 setShowOnboarding,
                 showCreateSeries,
                 setShowCreateSeries,
+                showLeagueForm,
+                setShowLeagueForm,
                 showHelp,
                 setShowHelp,
                 submissionDeadline,
@@ -554,6 +562,8 @@ function Shell({
   setShowOnboarding,
   showCreateSeries,
   setShowCreateSeries,
+  showLeagueForm,
+  setShowLeagueForm,
   showHelp,
   setShowHelp,
   submissionDeadline,
@@ -733,6 +743,7 @@ function Shell({
       num: clubs.filter((c) => c.cqi > 0).length + '/' + clubs.length,
       dot: 'gold',
     },
+    { v: 'leagues', label: 'Leagues', icon: Icon.Shield, num: allLeagues.length },
     { v: 'fixtures', label: 'Fixtures & Venues', icon: Icon.Field, dot: 'teal' },
   ];
 
@@ -837,6 +848,17 @@ function Shell({
             kind="cqi"
             gotoClub={setActiveClub}
             onOnboard={() => gotoAdminView('clubs_list')}
+          />
+        );
+      if (view === 'leagues')
+        return (
+          <AdminLeagues
+            allLeagues={allLeagues}
+            clubs={clubs}
+            onCreate={() => setShowLeagueForm({})}
+            onEdit={(L) => setShowLeagueForm(L)}
+            onDeleteLeague={deleteLeague}
+            toast={toastShow}
           />
         );
       if (view === 'fixtures')
@@ -1122,6 +1144,33 @@ function Shell({
         </TaskModal>
       )}
 
+      {role === 'admin' && showLeagueForm && (
+        <TaskModal
+          eyebrow="Catalogue · Cricket Services"
+          narrow
+          title={
+            showLeagueForm.key ? (
+              <>
+                Edit <em>league</em>
+              </>
+            ) : (
+              <>
+                Create a <em>league</em>
+              </>
+            )
+          }
+          onClose={() => setShowLeagueForm(null)}
+        >
+          <LeagueForm
+            league={showLeagueForm.key ? showLeagueForm : null}
+            allLeagues={allLeagues}
+            onCreate={onCreateLeague}
+            onUpdate={updateLeague}
+            onClose={() => setShowLeagueForm(null)}
+            toast={toastShow}
+          />
+        </TaskModal>
+      )}
       {role === 'admin' && showCreateSeries && (
         <TaskModal
           eyebrow="Fixtures · Cricket Services"

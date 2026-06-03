@@ -17,7 +17,12 @@ import {
   formatDeadlineMid,
   daysUntil,
 } from './data.jsx';
-import { optionsGroupedByGroup, findByKey } from './leagues.js';
+import {
+  optionsGroupedByGroup,
+  findByKey,
+  slugifyLeagueKey,
+  OVERARCHING_DISTRICT,
+} from './leagues.js';
 import {
   Icon,
   Pill,
@@ -1444,6 +1449,258 @@ function EmptyCohort({ onOnboard }) {
           </Btn>
         }
       />
+    </div>
+  );
+}
+
+/* ─── AdminLeagues — manage the tenant league catalogue clubs opt into ─── */
+export function AdminLeagues({ allLeagues, clubs, onCreate, onEdit, onDeleteLeague, toast }) {
+  const [confirm, setConfirm] = useStateA(null);
+  const countFor = (key) =>
+    clubs.filter((c) => Array.isArray(c.leagues) && c.leagues.includes(key)).length;
+
+  function askDelete(L) {
+    const n = countFor(L.key);
+    setConfirm({
+      title: `Delete “${L.label}”?`,
+      body:
+        n > 0
+          ? `${n} club${n === 1 ? ' is' : 's are'} registered for this league. Deleting it won't change their records, but it disappears from the affiliation picker and fixture filters.`
+          : 'This league will be removed from the affiliation picker and fixture filters.',
+      onYes: () => {
+        onDeleteLeague(L.key);
+        setConfirm(null);
+        toast?.(`${L.label} · deleted`);
+      },
+    });
+  }
+
+  return (
+    <div>
+      <div className="page-head">
+        <div className="ph-left">
+          <div className="ph-crumb">Dolphins · Admin Console / Leagues</div>
+          <h1 className="ph-title">
+            League <em>catalogue</em>
+          </h1>
+          <p className="ph-desc">
+            Create the leagues &amp; divisions clubs opt into during affiliation — fixtures are then
+            generated per league. Set these up before inviting clubs so they can register.
+          </p>
+        </div>
+        <div className="ph-actions">
+          <Btn tone="teal" icon={Icon.Plus} size="sm" onClick={onCreate}>
+            Create league
+          </Btn>
+        </div>
+      </div>
+
+      {allLeagues.length === 0 ? (
+        <EmptyState
+          icon={Icon.Shield}
+          title="No leagues yet"
+          sub="Create your first league so clubs can register for it during affiliation and admins can build fixtures."
+          action={
+            <Btn tone="teal" icon={Icon.Plus} onClick={onCreate}>
+              Create your first league
+            </Btn>
+          }
+        />
+      ) : (
+        <div className="tbl-w">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>League</th>
+                <th>District</th>
+                <th>Group</th>
+                <th>Clubs registered</th>
+                <th style={{ width: 130 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {allLeagues.map((L) => (
+                <tr key={L.key}>
+                  <td>
+                    <span style={{ fontWeight: 700 }}>{L.label}</span>
+                  </td>
+                  <td>
+                    <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>{L.district}</span>
+                  </td>
+                  <td>
+                    <Pill tone="muted">{L.group}</Pill>
+                  </td>
+                  <td>
+                    <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700 }}>
+                      {countFor(L.key)}
+                    </span>
+                  </td>
+                  <td>
+                    <div className="row" style={{ gap: 6, justifyContent: 'flex-end' }}>
+                      <Btn tone="outline" size="sm" onClick={() => onEdit(L)}>
+                        Edit
+                      </Btn>
+                      <Btn tone="ghost" size="sm" onClick={() => askDelete(L)}>
+                        Delete
+                      </Btn>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {confirm &&
+        createPortal(
+          <div
+            className="fix-confirm"
+            onClick={(e) => e.target === e.currentTarget && setConfirm(null)}
+          >
+            <div className="fix-confirm-box">
+              <div className="fix-confirm-icon danger">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M12 2L22 21H2L12 2z"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M12 9v5M12 17v.5"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </div>
+              <div className="fix-confirm-title">{confirm.title}</div>
+              <div className="fix-confirm-body">{confirm.body}</div>
+              <div className="fix-confirm-actions">
+                <Btn tone="outline" onClick={() => setConfirm(null)}>
+                  Cancel
+                </Btn>
+                <Btn tone="ink" onClick={confirm.onYes}>
+                  Yes, delete
+                </Btn>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
+}
+
+/* ─── LeagueForm — create/edit a league (rendered inside a TaskModal) ─── */
+export function LeagueForm({ league, allLeagues, onCreate, onUpdate, onClose, toast }) {
+  const editing = !!league;
+  const [label, setLabel] = useStateA(league?.label || '');
+  const [group, setGroup] = useStateA(league?.group || 'Overarching Leagues');
+  const [district, setDistrict] = useStateA(league?.district || OVERARCHING_DISTRICT);
+  const [note, setNote] = useStateA(league?.note || '');
+  const [busy, setBusy] = useStateA(false);
+
+  // Key is the immutable matching token. New leagues slug it from the name; edits keep it.
+  const key = editing ? league.key : slugifyLeagueKey(label);
+  const dupKey = !editing && !!key && allLeagues.some((l) => l.key === key);
+  const canSave = label.trim() && group.trim() && key && !dupKey && !busy;
+
+  function submit() {
+    if (!canSave) return;
+    setBusy(true);
+    const patch = {
+      label: label.trim(),
+      group: group.trim(),
+      district,
+      note: note.trim() || undefined,
+    };
+    const p = editing ? onUpdate(league.key, patch) : onCreate({ key, ...patch });
+    Promise.resolve(p)
+      .then(() => {
+        toast?.(editing ? `${label} · updated` : `${label} · created`);
+        onClose();
+      })
+      .catch(() => {})
+      .finally(() => setBusy(false));
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 14 }}>
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)', lineHeight: 1.5 }}>
+        {editing
+          ? 'Edit this league. Its key is fixed — clubs are matched to it by key.'
+          : 'Name the league, choose the district it belongs to, and group it for the picker.'}
+      </p>
+      <div className="field">
+        <div className="field-label">
+          League name <span className="req">*</span>
+        </div>
+        <input
+          className="field-input"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="e.g. EMCU Division 1"
+          autoFocus
+        />
+        {key && (
+          <div
+            style={{ fontSize: 11, color: dupKey ? 'var(--coral)' : 'var(--muted)', marginTop: 4 }}
+          >
+            {dupKey
+              ? 'A league with this name already exists.'
+              : `Key: ${key}${editing ? ' (fixed)' : ''}`}
+          </div>
+        )}
+      </div>
+      <div className="field-grid-2">
+        <div className="field">
+          <div className="field-label">
+            District <span className="req">*</span>
+          </div>
+          <select
+            className="field-select"
+            value={district}
+            onChange={(e) => setDistrict(e.target.value)}
+          >
+            <option value={OVERARCHING_DISTRICT}>{OVERARCHING_DISTRICT}</option>
+            {DISTRICTS.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <div className="field-label">
+            Group <span className="req">*</span>
+          </div>
+          <input
+            className="field-input"
+            value={group}
+            onChange={(e) => setGroup(e.target.value)}
+            placeholder="e.g. EMCU Divisions"
+          />
+        </div>
+      </div>
+      <div className="field">
+        <div className="field-label">Note (optional)</div>
+        <input
+          className="field-input"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Shown under the league in the picker"
+        />
+      </div>
+      <div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
+        <Btn tone="outline" onClick={onClose}>
+          Cancel
+        </Btn>
+        <Btn tone="teal" icon={Icon.Check} disabled={!canSave} onClick={submit}>
+          {busy ? 'Saving…' : editing ? 'Save league' : 'Create league'}
+        </Btn>
+      </div>
     </div>
   );
 }
