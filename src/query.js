@@ -26,4 +26,5 @@ export const qk = {
   clubs: () => ['clubs', t()],
   club: (id) => ['club', t(), id],
   series: () => ['series', t()],
+  users: () => ['users', t()],
 };

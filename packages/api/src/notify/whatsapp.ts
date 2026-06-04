@@ -26,6 +26,13 @@ const TEMPLATE_LANG = process.env.WHATSAPP_INVITE_TEMPLATE_LANG ?? 'en';
 // year with no re-approval. See the plan appendix for the template to create.
 const FIXTURES_TEMPLATE = process.env.WHATSAPP_FIXTURES_TEMPLATE ?? 'club_fixtures_released';
 const FIXTURES_TEMPLATE_LANG = process.env.WHATSAPP_FIXTURES_TEMPLATE_LANG ?? 'en';
+// Staff (admin/rep) invite template. The approved invite template's {{2}} is approved
+// by Meta as "club name", so reusing it for an org name is a semantic/policy mismatch;
+// a DEDICATED approved staff template is the correct production step (see runbook). We
+// default to the invite template so dev dry-run works out of the box, and send {{1}}
+// staff name, {{2}} org name, {{3}} the sign-in link (same body slots as the invite).
+const STAFF_TEMPLATE = process.env.WHATSAPP_STAFF_TEMPLATE ?? TEMPLATE;
+const STAFF_TEMPLATE_LANG = process.env.WHATSAPP_STAFF_TEMPLATE_LANG ?? TEMPLATE_LANG;
 const GRAPH_VERSION = 'v22.0';
 export const WHATSAPP_DRY_RUN = process.env.NOTIFY_DRY_RUN === '1' || !TOKEN || !PHONE_NUMBER_ID;
 
@@ -139,6 +146,36 @@ export async function sendInviteWhatsApp(
       { type: 'text', text: link },
     ],
     `invite for ${clubName}`,
+  );
+}
+
+export interface StaffInviteWhatsAppInput {
+  to: string; // already E.164 (see toE164)
+  name: string;
+  orgName: string;
+  link: string;
+}
+
+/**
+ * Staff (admin/rep) invite heads-up. Uses STAFF_TEMPLATE (defaults to the invite
+ * template for dev) — {{1}} staff name, {{2}} org name, {{3}} sign-in link. Email is
+ * the primary staff channel; WhatsApp is best-effort. See STAFF_TEMPLATE note above
+ * re: a dedicated approved template before any real production staff send.
+ */
+export async function sendStaffInviteWhatsApp(
+  input: StaffInviteWhatsAppInput,
+): Promise<{ messageId: string }> {
+  const { to, name, orgName, link } = input;
+  return sendTemplate(
+    to,
+    STAFF_TEMPLATE,
+    STAFF_TEMPLATE_LANG,
+    [
+      { type: 'text', text: name || 'there' },
+      { type: 'text', text: orgName },
+      { type: 'text', text: link },
+    ],
+    `staff invite for ${orgName}`,
   );
 }
 

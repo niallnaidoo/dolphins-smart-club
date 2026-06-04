@@ -90,6 +90,67 @@ export async function sendInviteEmail(input: InviteEmailInput): Promise<{ messag
   return { messageId: res.MessageId ?? '' };
 }
 
+export interface StaffInviteEmailInput {
+  to: string;
+  name: string;
+  /** The union/tenant display name, e.g. "Dolphins Pipeline". */
+  orgName: string;
+  link: string;
+}
+
+/**
+ * Generic "you've been added to {orgName}" email for a staff (admin/rep) invite — no
+ * club-specific copy, unlike sendInviteEmail. Same SES/dry-run path. The link is the
+ * app sign-in URL (validated by the caller).
+ */
+export async function sendStaffInviteEmail(
+  input: StaffInviteEmailInput,
+): Promise<{ messageId: string }> {
+  const { to, name, orgName, link } = input;
+  const subject = `You've been added to ${orgName}`;
+  const greetName = name || 'there';
+
+  const text =
+    `Hi ${greetName},\n\n` +
+    `You've been given access to ${orgName} on the Smart Club platform.\n\n` +
+    `Sign in here to get started:\n\n${link}\n\n` +
+    `You'll sign in with a one-time code sent to this email address — no password to remember.\n\n` +
+    `See you inside,\nThe ${orgName} office`;
+
+  const safeName = escapeHtml(greetName);
+  const safeOrg = escapeHtml(orgName);
+  const safeLink = escapeHtml(link);
+  const html =
+    `<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1B2A4A;line-height:1.55;font-size:15px">` +
+    `<p>Hi ${safeName},</p>` +
+    `<p>You've been given access to <strong>${safeOrg}</strong> on the Smart Club platform.</p>` +
+    `<p>Sign in here to get started:</p>` +
+    `<p><a href="${safeLink}" style="color:#1D9E75;font-weight:600">${safeLink}</a></p>` +
+    `<p>You'll sign in with a one-time code sent to this email address — no password to remember.</p>` +
+    `<p>See you inside,<br/>The ${safeOrg} office</p>` +
+    `</div>`;
+
+  if (EMAIL_DRY_RUN) {
+    console.log(`[notify:email dry-run] would send staff invite to ${to} for ${orgName}`);
+    return { messageId: `dry-run-${randomUUID()}` };
+  }
+
+  const res = await ses!.send(
+    new SendEmailCommand({
+      Source: FROM_EMAIL!,
+      Destination: { ToAddresses: [to] },
+      Message: {
+        Subject: { Data: subject, Charset: 'UTF-8' },
+        Body: {
+          Html: { Data: html, Charset: 'UTF-8' },
+          Text: { Data: text, Charset: 'UTF-8' },
+        },
+      },
+    }),
+  );
+  return { messageId: res.MessageId ?? '' };
+}
+
 export interface FixturesEmailInput {
   to: string;
   playerName: string;

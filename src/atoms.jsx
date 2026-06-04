@@ -218,6 +218,23 @@ export const Icon = {
       <path d="M8 4.5V8l2.5 1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
     </svg>
   ),
+  Users: () => (
+    <svg viewBox="0 0 16 16" fill="none">
+      <circle cx="6" cy="5.5" r="2.5" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M1.5 13.5c.4-2.2 2.3-3.4 4.5-3.4s4.1 1.2 4.5 3.4"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <path
+        d="M11 4.2a2.2 2.2 0 010 4.2M12.5 13.5c-.2-1.6-1-2.7-2.2-3.3"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  ),
 };
 
 /* ─── Atoms ─── */

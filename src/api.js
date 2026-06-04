@@ -141,7 +141,17 @@ export const deleteSeriesReq = (id) => request(`/series/${id}`, { method: 'DELET
 export const duplicateSeriesReq = (id) => request(`/series/${id}/duplicate`, { method: 'POST' });
 
 // ── Users (admin) ──
+// List every tenant user with role, club scope and sign-in status.
+export const getUsers = () => request('/admin/users');
+/**
+ * Provision an admin/rep for this tenant. The body carries { email, role, clubIds?, channels?,
+ * link? } — channels selects email/WhatsApp sends and link is the tenant-origin login URL used
+ * in the notification (and echoed back). Resolves to { sub, email, loginUrl, results? }.
+ */
 export const inviteUser = (body) => request('/admin/users', { method: 'POST', body });
+export const patchUser = (sub, body) => request(`/admin/users/${sub}`, { method: 'PATCH', body });
+export const removeUser = (sub) => request(`/admin/users/${sub}`, { method: 'DELETE' });
+export const resendInvite = (sub) => request(`/admin/users/${sub}/resend`, { method: 'POST' });
 
 // ── Public registration ──
 export const getRegistration = (clubId, token) =>

@@ -12,6 +12,7 @@ import {
   QueryCommand,
   DeleteCommand,
   BatchWriteCommand,
+  TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
   clubKey,
@@ -64,6 +65,18 @@ export class VersionConflictError extends Error {
   constructor() {
     super('version conflict');
     this.name = 'VersionConflictError';
+  }
+}
+
+/**
+ * Thrown when a transactional admin-decrement (demote/remove) would leave a tenant
+ * with zero admins — the CONFIG `adminCount > 1` condition failed. Handlers map this
+ * to HTTP 409 "cannot remove the last admin".
+ */
+export class LastAdminError extends Error {
+  constructor() {
+    super('cannot remove the last admin');
+    this.name = 'LastAdminError';
   }
 }
 
@@ -596,21 +609,13 @@ export async function getUser(sub: string): Promise<UserProfile | null> {
 }
 
 /**
- * Upsert a user: the META item (memberships = source of truth) plus one
- * tenant-marker item per membership so the user is listable under EVERY tenant
- * they belong to. Reconciles markers: removes markers for tenants no longer in
- * `memberships`, adds markers for new ones.
+ * Reconcile the per-membership TENANT# marker items against a user's current
+ * memberships: upsert a marker for every membership (refreshing a changed
+ * role/email), delete markers for revoked memberships. Best-effort and idempotent —
+ * re-converges on the next call, so a partial failure self-heals. Shared by
+ * `putUser` and the transactional admin-delta write so both keep markers in sync.
  */
-export async function putUser(user: UserProfile): Promise<void> {
-  await ddb.send(
-    new PutCommand({
-      TableName: TABLE,
-      // META item carries memberships; no gsi1 (markers do the indexing).
-      Item: { ...userKey(user.sub), ...user },
-    }),
-  );
-
-  // Existing markers for this user.
+async function reconcileUserMarkers(user: UserProfile): Promise<void> {
   const existing = await ddb.send(
     new QueryCommand({
       TableName: TABLE,
@@ -621,8 +626,6 @@ export async function putUser(user: UserProfile): Promise<void> {
   const wanted = new Set(user.memberships.map((m) => m.tenantId));
   const have = new Set((existing.Items ?? []).map((i) => String(i.sk).slice('TENANT#'.length)));
 
-  // Markers are best-effort reconciled here and re-converged on the next putUser
-  // (e.g. a /me save), so a partial failure self-heals.
   const writes: Promise<unknown>[] = [];
   // Upsert a marker for every current membership — unconditionally, so a changed
   // role/email on an existing membership refreshes the marker (not just new ones).
@@ -655,9 +658,255 @@ export async function putUser(user: UserProfile): Promise<void> {
   await Promise.all(writes);
 }
 
-/** Delete a user's META record (their Cognito account is removed separately). */
+/**
+ * Upsert a user: the META item (memberships = source of truth) plus one
+ * tenant-marker item per membership so the user is listable under EVERY tenant
+ * they belong to. Reconciles markers: removes markers for tenants no longer in
+ * `memberships`, adds markers for new ones.
+ */
+export async function putUser(user: UserProfile): Promise<void> {
+  await ddb.send(
+    new PutCommand({
+      TableName: TABLE,
+      // META item carries memberships; no gsi1 (markers do the indexing).
+      Item: { ...userKey(user.sub), ...user },
+    }),
+  );
+  await reconcileUserMarkers(user);
+}
+
+/**
+ * Stamp the user's first-ever sign-in. Writes `lastLoginAt` on the USER# META item
+ * exactly ONCE per lifetime via `attribute_not_exists(lastLoginAt)` — subsequent
+ * token refreshes hit the condition and no-op. Best-effort: swallows the conditional
+ * failure AND every other error, because the caller (PreTokenGen) must never let a
+ * failed write block token issuance / sign-in. Returns nothing.
+ */
+export async function stampFirstLogin(sub: string): Promise<void> {
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: TABLE,
+        Key: userKey(sub),
+        UpdateExpression: 'SET lastLoginAt = :now',
+        // Once-per-lifetime: only the first sign-in (no lastLoginAt yet) writes.
+        // attribute_exists(pk) keeps us from materializing a bare USER# row for a
+        // user with no DynamoDB profile (e.g. a token minted before provisioning).
+        ConditionExpression: 'attribute_exists(pk) AND attribute_not_exists(lastLoginAt)',
+        ExpressionAttributeValues: { ':now': new Date().toISOString() },
+      }),
+    );
+  } catch {
+    // Expected on every refresh after the first sign-in (condition fails), and we
+    // additionally swallow ALL errors: a sign-in must never break on this best-effort
+    // status stamp. Not logged — the condition failure is the common, benign case.
+  }
+}
+
+/**
+ * Count a tenant's admins from the AUTHORITATIVE source (each user's `memberships`,
+ * never the possibly-stale marker `role`) and write it to CONFIG.adminCount. Used to
+ * lazily backfill the counter on legacy tenants before the lockout guard runs, and as
+ * a repair. Returns the freshly-counted value.
+ */
+export async function recountAdmins(tenant: string): Promise<number> {
+  const roster = await listTenantUsers(tenant);
+  const profiles = await Promise.all(roster.map((u) => getUser(u.sub)));
+  const count = profiles.filter((p) =>
+    p?.memberships.some((m) => m.tenantId === tenant && m.role === 'admin'),
+  ).length;
+  await ddb.send(
+    new UpdateCommand({
+      TableName: TABLE,
+      Key: tenantConfigKey(tenant),
+      UpdateExpression: 'SET adminCount = :n',
+      ExpressionAttributeValues: { ':n': count },
+    }),
+  );
+  return count;
+}
+
+/**
+ * Conditionally decrement CONFIG.adminCount by one, refusing to drop below one admin
+ * (the same `adminCount > 1` guard the transactional path uses). Used for a FULL
+ * offboard DELETE, where the user's META item is deleted (not written) so there's no
+ * user write to bundle into a transaction — the count is the only thing to adjust here.
+ * Throws {@link LastAdminError} when it would remove the last admin.
+ */
+export async function decrementAdminCount(tenant: string): Promise<void> {
+  await guardedConfigUpdate(tenant, {
+    UpdateExpression: 'ADD adminCount :neg',
+    ConditionExpression: 'adminCount > :one',
+    ExpressionAttributeValues: { ':neg': -1, ':one': 1 },
+  });
+}
+
+/**
+ * Write a user's META item and adjust the tenant's CONFIG.adminCount ATOMICALLY in a
+ * single TransactWriteItems, then reconcile the user's TENANT# markers.
+ *
+ * `adminDelta` is +1 (invite-as-admin / promote rep→admin), -1 (demote admin→rep /
+ * remove an admin), or 0 (no role-tier change). For a -1 the CONFIG update carries
+ * `ConditionExpression: adminCount > :one`, so the transaction is REJECTED — and the
+ * user write rolled back — when it would drop the tenant to zero admins, surfacing as
+ * {@link LastAdminError}. This makes the last-admin lockout race-free (no TOCTOU on a
+ * point-in-time count). For +1/-1 the CONFIG must already carry adminCount; callers
+ * backfill via recountAdmins first when it's absent (a legacy tenant).
+ *
+ * Markers are reconciled AFTER the transaction (they're a derived index, not part of
+ * the atomic invariant) — same best-effort, self-healing reconciliation putUser uses.
+ */
+export async function writeUserWithAdminDelta(
+  user: UserProfile,
+  tenant: string,
+  adminDelta: -1 | 0 | 1,
+): Promise<void> {
+  if (adminDelta === 0) {
+    await putUser(user);
+    return;
+  }
+  const configUpdate: AdminCountUpdate =
+    adminDelta === 1
+      ? {
+          UpdateExpression: 'ADD adminCount :one',
+          ExpressionAttributeValues: { ':one': 1 },
+        }
+      : {
+          // Decrement guarded: refuse to go below one admin (last-admin lockout).
+          UpdateExpression: 'ADD adminCount :neg',
+          ConditionExpression: 'adminCount > :one',
+          ExpressionAttributeValues: { ':neg': -1, ':one': 1 },
+        };
+
+  if (localEndpoint) {
+    // Local DynamoDB (dynalite) has no TransactWriteItems support. Fall back to the
+    // CONFIG update FIRST (its ConditionExpression still enforces the last-admin guard
+    // on a decrement), then the user write. Not atomic — a crash between the two can
+    // drift adminCount — but recountAdmins repairs it and this path is OFFLINE/TEST
+    // only (production always has the real endpoint → the transaction below).
+    await guardedConfigUpdate(tenant, configUpdate);
+    await putUser(user);
+    return;
+  }
+
+  try {
+    await ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: TABLE,
+              Item: { ...userKey(user.sub), ...user },
+            },
+          },
+          {
+            Update: {
+              TableName: TABLE,
+              Key: tenantConfigKey(tenant),
+              ...configUpdate,
+            },
+          },
+        ],
+      }),
+    );
+  } catch (err: unknown) {
+    const name = (err as { name?: string }).name;
+    // A guarded decrement that hit the floor cancels the whole transaction (so the
+    // user write is rolled back too) — surface it as the typed last-admin error.
+    if (name === 'ConditionalCheckFailedException' || name === 'TransactionCanceledException') {
+      throw new LastAdminError();
+    }
+    throw err;
+  }
+  await reconcileUserMarkers(user);
+}
+
+/**
+ * Apply a (possibly conditional) adminCount UpdateCommand to CONFIG, mapping a failed
+ * `adminCount > 1` decrement guard to {@link LastAdminError}. Shared by the
+ * dynalite fallback in writeUserWithAdminDelta and by decrementAdminCount.
+ */
+interface AdminCountUpdate {
+  UpdateExpression: string;
+  ConditionExpression?: string;
+  ExpressionAttributeValues: Record<string, number>;
+}
+
+async function guardedConfigUpdate(tenant: string, update: AdminCountUpdate): Promise<void> {
+  try {
+    await ddb.send(
+      new UpdateCommand({ TableName: TABLE, Key: tenantConfigKey(tenant), ...update }),
+    );
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name === 'ConditionalCheckFailedException') {
+      throw new LastAdminError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Prune one orphaned admin membership (a membership whose Cognito user is gone). The
+ * caller passes `user` with this tenant's membership ALREADY removed; this writes that
+ * META + `ADD adminCount -1` ATOMICALLY, then reconciles markers.
+ *
+ * UNLIKE the guarded decrement this is UNCONDITIONAL — removing a phantom admin must
+ * always succeed (a tenant whose only "admin" was a phantom is already locked out, and
+ * we still want the counter to reflect zero real admins). Using an `ADD` delta (never a
+ * recompute-SET) keeps it race-free with concurrent invite/promote/remove; a double-prune
+ * from two concurrent reconciles only drifts the counter LOW — the safe direction — and is
+ * repaired by the next backfill. It NEVER deletes the user, so a multi-tenant user keeps
+ * their other memberships; an emptied META item is harmless (no markers ⇒ unlistable) and
+ * the reconcile CLI fully removes it.
+ */
+export async function pruneAdminMembership(user: UserProfile, tenant: string): Promise<void> {
+  const decrement: AdminCountUpdate = {
+    UpdateExpression: 'ADD adminCount :neg',
+    ExpressionAttributeValues: { ':neg': -1 },
+  };
+  if (localEndpoint) {
+    // dynalite has no TransactWriteItems — same non-atomic offline fallback shape as
+    // writeUserWithAdminDelta (test/offline only; production uses the transaction below).
+    await ddb.send(
+      new UpdateCommand({ TableName: TABLE, Key: tenantConfigKey(tenant), ...decrement }),
+    );
+    await putUser(user);
+    return;
+  }
+  await ddb.send(
+    new TransactWriteCommand({
+      TransactItems: [
+        { Put: { TableName: TABLE, Item: { ...userKey(user.sub), ...user } } },
+        { Update: { TableName: TABLE, Key: tenantConfigKey(tenant), ...decrement } },
+      ],
+    }),
+  );
+  await reconcileUserMarkers(user);
+}
+
+/**
+ * Delete a user fully: the META record AND every TENANT# marker (so an offboarded user
+ * leaves no listable trace in any tenant). Their Cognito account is removed separately.
+ * (eraseTenantData deletes a single tenant's marker without touching META — different
+ * intent; this is the whole-user delete.)
+ */
 export async function deleteUser(sub: string): Promise<void> {
-  await ddb.send(new DeleteCommand({ TableName: TABLE, Key: userKey(sub) }));
+  const markers = await ddb.send(
+    new QueryCommand({
+      TableName: TABLE,
+      KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
+      ExpressionAttributeValues: { ':p': userKey(sub).pk, ':s': 'TENANT#' },
+      ProjectionExpression: 'pk, sk',
+    }),
+  );
+  await Promise.all([
+    ddb.send(new DeleteCommand({ TableName: TABLE, Key: userKey(sub) })),
+    ...(markers.Items ?? []).map((i) =>
+      ddb.send(
+        new DeleteCommand({ TableName: TABLE, Key: { pk: i.pk as string, sk: i.sk as string } }),
+      ),
+    ),
+  ]);
 }
 
 /** List a tenant's users for offboarding/erasure (via the marker items). */

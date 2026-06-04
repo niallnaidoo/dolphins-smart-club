@@ -11,6 +11,7 @@
  * See docs/architecture/0004 and docs/api/.
  */
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { cors } from 'hono/cors';
 import { handle } from 'hono/aws-lambda';
 import { randomUUID } from 'node:crypto';
@@ -22,7 +23,13 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
-import { ensurePasswordlessUser } from './cognito-users.js';
+import {
+  ensurePasswordlessUser,
+  adminGlobalSignOut,
+  adminDeleteCognitoUser,
+  cognitoUserExists,
+} from './cognito-users.js';
+import { reconcileTenantAdmins } from './reconcile.js';
 import {
   authenticate,
   requireTenantMembership,
@@ -33,15 +40,23 @@ import {
   type HonoEnv,
 } from './auth.js';
 import * as repo from './repo.js';
-import { VersionConflictError } from './repo.js';
+import { VersionConflictError, LastAdminError } from './repo.js';
 import { validateClubPatch } from './catalogue.js';
-import { sendClubInvite, sendClubFixtures, type Channel, type SendResult } from './notify/index.js';
+import {
+  sendClubInvite,
+  sendClubFixtures,
+  sendStaffInvite,
+  type Channel,
+  type SendResult,
+} from './notify/index.js';
 import type {
   Club,
   ClubCommEvent,
   ClubSpec,
+  Membership,
   Series,
   TenantConfig,
+  UserProfile,
   PlayerRegistration,
 } from './types.js';
 
@@ -709,26 +724,320 @@ app.put('/tenant/support', requireAdmin, async (c) => {
   return c.json({ support });
 });
 
-/** Invite a user (admin): create the Cognito account + USER# membership record. */
+/**
+ * GET /admin/users — list every user in the tenant for the Team & Access roster.
+ *
+ * Lists from the marker GSI, then ENRICHES each via getUser: the markers carry only
+ * {sub,email,role} and NOT clubIds, so a rep's club scope has no other source. This is
+ * a bounded N+1 (team-sized N) and intentional. POPIA: first endpoint to bulk-return
+ * member emails — admin-gated, consistent with the documented invite exception.
+ *
+ * Shape: [{ sub, email, role, clubIds, invitedAt, status }], status = lastLoginAt
+ * ? 'active' : 'pending'.
+ */
+app.get('/admin/users', async (c) => {
+  const ra = c.get('requestAuth')!;
+  const roster = await repo.listTenantUsers(ra.tenant);
+  const rows = await Promise.all(
+    roster.map(async (entry) => {
+      const profile = await repo.getUser(entry.sub);
+      const membership = profile?.memberships.find((m) => m.tenantId === ra.tenant);
+      return {
+        sub: entry.sub,
+        email: profile?.email ?? entry.email,
+        // Authoritative role from memberships; fall back to the marker for a half-written user.
+        role: membership?.role ?? (entry.role as 'admin' | 'rep'),
+        clubIds: membership?.clubIds ?? [],
+        invitedAt: membership?.invitedAt,
+        status: profile?.lastLoginAt ? ('active' as const) : ('pending' as const),
+      };
+    }),
+  );
+  return c.json(rows);
+});
+
+/**
+ * POST /admin/users — invite a user (admin): create the Cognito account + USER#
+ * membership record, optionally send a staff invite, and return a copyable login link.
+ *
+ * Email is normalized server-side (trim + lowercase) so the stored email / gsi1sk can't
+ * drift from the Cognito username (a casing mismatch would orphan the account on
+ * offboard). A re-invite of an ALREADY-ACTIVE user (a membership for this tenant +
+ * lastLoginAt set) is a 409, not a silent role/scope reset. Inviting an admin runs the
+ * adminCount increment in the same transaction as the user write.
+ */
 app.post('/admin/users', async (c) => {
   const ra = c.get('requestAuth')!;
-  const body = await c.req.json<{ email: string; role: 'admin' | 'rep'; clubIds?: string[] }>();
-  if (!body.email) throw new HttpError(400, 'email required');
+  const body = await c.req.json<{
+    email?: string;
+    role?: 'admin' | 'rep';
+    clubIds?: string[];
+    channels?: Channel[];
+    link?: string;
+  }>();
+  const email = (body.email ?? '').trim().toLowerCase();
+  if (!email) throw new HttpError(400, 'email required');
+  const role: 'admin' | 'rep' = body.role === 'admin' ? 'admin' : 'rep';
+  const clubIds = role === 'admin' ? [] : (body.clubIds ?? []);
+  if (role === 'rep' && clubIds.length === 0)
+    throw new HttpError(400, 'a rep must be scoped to at least one club');
+
+  // Validate the optional invite link up front (so a bad link fails before provisioning).
+  // Falls back to the request-derived app origin when no link is supplied.
+  const loginUrl = resolveLoginUrl(c, body.link);
+  if (body.channels !== undefined) validateChannels(body.channels);
+
   // Create (or reuse, for a multi-union invite) a CONFIRMED passwordless user.
-  const sub = await ensurePasswordlessUser(cognito, USER_POOL_ID, body.email);
+  const sub = await ensurePasswordlessUser(cognito, USER_POOL_ID, email);
   const existing = await repo.getUser(sub);
-  const memberships = existing?.memberships ?? [];
-  // Add/replace this tenant's membership.
-  const filtered = memberships.filter((m) => m.tenantId !== ra.tenant);
-  filtered.push({ tenantId: ra.tenant, role: body.role, clubIds: body.clubIds ?? [] });
-  await repo.putUser({
+  const others = (existing?.memberships ?? []).filter((m) => m.tenantId !== ra.tenant);
+  const prior = (existing?.memberships ?? []).find((m) => m.tenantId === ra.tenant);
+  // Re-invite of an already-active user must not silently reset their role/clubIds.
+  if (prior && existing?.lastLoginAt)
+    throw new HttpError(409, 'user already active — use resend or edit role');
+
+  const membership: Membership = {
+    tenantId: ra.tenant,
+    role,
+    clubIds,
+    // Keep the original invite stamp on a re-invite of a still-pending user.
+    invitedAt: prior?.invitedAt ?? now(),
+    invitedBy: prior?.invitedBy ?? ra.email,
+  };
+  const next: UserProfile = {
     sub,
-    email: body.email,
-    memberships: filtered,
+    email,
+    memberships: [...others, membership],
     onboardingSeen: existing?.onboardingSeen ?? {},
-  });
-  return c.json({ sub, email: body.email }, 201);
+    ...(existing?.lastLoginAt ? { lastLoginAt: existing.lastLoginAt } : {}),
+  };
+
+  // adminCount delta = the admin-tier transition for this tenant: +1 when becoming an
+  // admin, -1 when a re-invite demotes a still-pending admin to rep (else 0). The -1 case
+  // routes through the transactional guard in writeUserGuarded, so re-inviting the only
+  // admin down to rep is correctly blocked (409) instead of silently drifting the counter.
+  const wasAdmin = prior?.role === 'admin';
+  const delta: -1 | 0 | 1 =
+    role === 'admin' && !wasAdmin ? 1 : role !== 'admin' && wasAdmin ? -1 : 0;
+  await writeUserGuarded(ra.tenant, next, delta);
+
+  let results: SendResult[] | undefined;
+  if (body.channels && body.channels.length > 0) {
+    const orgName = await tenantOrgName(ra.tenant);
+    ({ results } = await sendStaffInvite({
+      email,
+      orgName,
+      channels: body.channels,
+      link: loginUrl,
+    }));
+  }
+  return c.json({ sub, email, loginUrl, ...(results ? { results } : {}) }, 201);
 });
+
+/**
+ * PATCH /admin/users/:sub — change a user's role and/or club scope within THIS tenant.
+ *
+ * Filter-then-reattach (never replace the whole memberships array — that would strip the
+ * user's access in OTHER tenants). Admins force clubIds:[]; reps must keep ≥1 club. A
+ * demote (admin→rep) goes through the transactional last-admin guard and is followed by
+ * a global sign-out so the just-demoted user can't reuse an elevated token. Returns the
+ * updated tenant row.
+ */
+app.patch('/admin/users/:sub', async (c) => {
+  const ra = c.get('requestAuth')!;
+  const sub = c.req.param('sub');
+  const body = await c.req.json<{ role?: 'admin' | 'rep'; clubIds?: string[] }>();
+
+  const profile = await repo.getUser(sub);
+  const current = profile?.memberships.find((m) => m.tenantId === ra.tenant);
+  if (!profile || !current) throw new HttpError(404, 'user not found in this tenant');
+
+  const role = body.role ?? current.role;
+  if (role !== 'admin' && role !== 'rep') throw new HttpError(400, 'invalid role');
+  const clubIds = role === 'admin' ? [] : (body.clubIds ?? current.clubIds);
+  if (role === 'rep' && clubIds.length === 0)
+    throw new HttpError(400, 'a rep must be scoped to at least one club');
+
+  const others = profile.memberships.filter((m) => m.tenantId !== ra.tenant);
+  const updated: Membership = { ...current, role, clubIds };
+  const next: UserProfile = { ...profile, memberships: [...others, updated] };
+
+  const demote = current.role === 'admin' && role === 'rep';
+  const promote = current.role === 'rep' && role === 'admin';
+  const delta: -1 | 0 | 1 = demote ? -1 : promote ? 1 : 0;
+  await writeUserGuarded(ra.tenant, next, delta);
+
+  // Kill refresh tokens after a demote so no NEW elevated token can be minted (the
+  // current one stays valid until it expires — bounded ≤ pool TTL window).
+  if (demote) await adminGlobalSignOut(cognito, USER_POOL_ID, profile.email);
+
+  return c.json({
+    sub,
+    email: profile.email,
+    role,
+    clubIds,
+    invitedAt: updated.invitedAt,
+    status: profile.lastLoginAt ? 'active' : 'pending',
+  });
+});
+
+/**
+ * DELETE /admin/users/:sub — remove a user's access to THIS tenant only.
+ *
+ * Filter-then-reattach to drop just this tenant's membership (mirrors erase-tenant): if
+ * the user has no memberships left, fully offboard (deleteUser + Cognito delete); else
+ * putUser with the rest. Removing an admin goes through the transactional last-admin
+ * guard (blocks removing the last admin, incl. yourself). Then global sign-out.
+ */
+app.delete('/admin/users/:sub', async (c) => {
+  const ra = c.get('requestAuth')!;
+  const sub = c.req.param('sub');
+
+  const profile = await repo.getUser(sub);
+  const current = profile?.memberships.find((m) => m.tenantId === ra.tenant);
+  if (!profile || !current) throw new HttpError(404, 'user not found in this tenant');
+
+  const remaining = profile.memberships.filter((m) => m.tenantId !== ra.tenant);
+  const wasAdmin = current.role === 'admin';
+
+  if (remaining.length === 0) {
+    // Full offboard. Guard the admin count BEFORE deleting so the last admin can't be
+    // removed; on success drop the META item and the Cognito account. Unlike the PATCH /
+    // partial-removal path (writeUserWithAdminDelta is one transaction), this decrement and
+    // the deleteUser are NOT atomic — if deleteUser failed after the decrement, adminCount
+    // would drift LOW, which only makes the guard stricter (never enables a lockout), so the
+    // asymmetry is the safe direction; recountAdmins repairs any drift.
+    if (wasAdmin) await guardAdminDecrement(ra.tenant);
+    await repo.deleteUser(sub);
+    await adminDeleteCognitoUser(cognito, USER_POOL_ID, profile.email);
+  } else {
+    const next: UserProfile = { ...profile, memberships: remaining };
+    await writeUserGuarded(ra.tenant, next, wasAdmin ? -1 : 0);
+  }
+  // Revoke refresh tokens so removed access can't be re-minted on the next refresh.
+  await adminGlobalSignOut(cognito, USER_POOL_ID, profile.email);
+  return c.json({ ok: true });
+});
+
+/**
+ * POST /admin/users/:sub/resend — re-send the staff invite (always allowed, even for an
+ * active user who wants a fresh link). Returns the per-channel send results.
+ */
+app.post('/admin/users/:sub/resend', async (c) => {
+  const ra = c.get('requestAuth')!;
+  const sub = c.req.param('sub');
+  const body = await c.req
+    .json<{ channels?: Channel[]; link?: string }>()
+    .catch(() => ({}) as { channels?: Channel[]; link?: string });
+
+  const profile = await repo.getUser(sub);
+  const membership = profile?.memberships.find((m) => m.tenantId === ra.tenant);
+  if (!profile || !membership) throw new HttpError(404, 'user not found in this tenant');
+
+  const channels =
+    body.channels && body.channels.length > 0 ? body.channels : (['email'] as Channel[]);
+  validateChannels(channels);
+  const loginUrl = resolveLoginUrl(c, body.link);
+  const orgName = await tenantOrgName(ra.tenant);
+  const { results } = await sendStaffInvite({
+    email: profile.email,
+    orgName,
+    channels,
+    link: loginUrl,
+  });
+  return c.json({ results });
+});
+
+// ───────────────────── User-management helpers ─────────────────────
+
+/** Reject a channels array that's empty or carries an unknown channel (400). */
+function validateChannels(channels: Channel[]): void {
+  if (!Array.isArray(channels) || channels.length === 0)
+    throw new HttpError(400, 'channels required');
+  const bad = channels.find((ch) => ch !== 'email' && ch !== 'whatsapp');
+  if (bad) throw new HttpError(400, `unknown channel: ${bad}`);
+}
+
+/**
+ * Resolve the sign-in URL an invite should carry. Prefers a client-supplied `link`
+ * (so it rides the tenant's own custom domain), validated to be http(s) on a TRUSTED
+ * app origin — so an admin can't aim an invite at a phishing domain. Falls back to the
+ * request's own Origin (or a localhost dev default) when no link is supplied.
+ */
+function resolveLoginUrl(c: Context<HonoEnv>, link?: string): string {
+  if (link) {
+    let url: URL;
+    try {
+      url = new URL(link);
+    } catch {
+      throw new HttpError(400, 'valid link required');
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:')
+      throw new HttpError(400, 'valid link required');
+    if (!originAllowed(url.origin)) throw new HttpError(400, 'link host not allowed');
+    return url.href;
+  }
+  const origin = c.req.header('origin') ?? '';
+  if (origin && originAllowed(origin)) return origin;
+  // No usable origin (e.g. a server-to-server call) — return a harmless localhost
+  // default so the response always carries a copyable link; the admin can correct it.
+  return 'http://localhost:5173';
+}
+
+/** The tenant's display name for invite copy, falling back to the slug. */
+async function tenantOrgName(tenant: string): Promise<string> {
+  const cfg = await repo.getTenantConfig(tenant);
+  return cfg?.branding?.name || cfg?.branding?.title || tenant;
+}
+
+/**
+ * Write a user with an adminCount delta, lazily backfilling CONFIG.adminCount from
+ * authoritative memberships when it's absent (legacy tenant) so the transactional
+ * guard's `adminCount > 1` condition has a real value to compare. Maps the typed
+ * last-admin rejection to a 409.
+ */
+async function writeUserGuarded(
+  tenant: string,
+  user: UserProfile,
+  delta: -1 | 0 | 1,
+): Promise<void> {
+  if (delta !== 0) await ensureAdminCount(tenant);
+  // Before a guarded decrement, prune phantom admins (membership but no Cognito user) so
+  // the floor compares against REAL admins — an orphan must not mask the last-admin guard.
+  if (delta === -1) await reconcileTenantAdmins(tenant, adminExists);
+  try {
+    await repo.writeUserWithAdminDelta(user, tenant, delta);
+  } catch (err) {
+    if (err instanceof LastAdminError) throw new HttpError(409, 'cannot remove the last admin');
+    throw err;
+  }
+}
+
+/**
+ * Guard a standalone admin decrement (used on full-offboard DELETE, where there's no
+ * user-item write to bundle into the transaction). Backfills adminCount if absent,
+ * reconciles phantom admins, then conditionally decrements; a floor hit is the 409.
+ */
+async function guardAdminDecrement(tenant: string): Promise<void> {
+  await ensureAdminCount(tenant);
+  await reconcileTenantAdmins(tenant, adminExists);
+  try {
+    await repo.decrementAdminCount(tenant);
+  } catch (err) {
+    if (err instanceof LastAdminError) throw new HttpError(409, 'cannot remove the last admin');
+    throw err;
+  }
+}
+
+/** Bound Cognito existence check passed into reconcile (stubbed offline via LOCAL_AUTH). */
+const adminExists = (email: string): Promise<boolean> =>
+  cognitoUserExists(cognito, USER_POOL_ID, email);
+
+/** Backfill CONFIG.adminCount from authoritative memberships when it's not yet set. */
+async function ensureAdminCount(tenant: string): Promise<void> {
+  const cfg = await repo.getTenantConfig(tenant);
+  if (cfg && typeof cfg.adminCount !== 'number') await repo.recountAdmins(tenant);
+}
 
 // ───────────────────────── Helpers ─────────────────────────
 

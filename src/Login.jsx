@@ -23,7 +23,9 @@ export function Login({ tenantConfig }) {
 /* ─── Cloud: passwordless email OTP ─── */
 function OtpLogin({ auth, branding }) {
   const { startSignIn, submitOtp, status } = auth;
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(
+    () => new URLSearchParams(window.location.search).get('email') ?? '',
+  );
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');

@@ -20,6 +20,7 @@ import {
   formatDeadlineShort,
   formatDeadlineMid,
   daysUntil,
+  daysAgo,
 } from './data.jsx';
 import {
   leagueOptionsForDistrict,
@@ -1543,7 +1544,7 @@ export function CreateSeriesForm({ clubs, onCreate, onClose, allLeagues = [] }) 
 }
 
 /* ─── Empty-cohort state — shown before any clubs are onboarded ─── */
-function EmptyCohort({ onOnboard }) {
+function EmptyCohort({ onOnboard, onInviteAdmin }) {
   return (
     <div style={{ padding: '8px 0' }}>
       <div className="page-head">
@@ -1561,9 +1562,16 @@ function EmptyCohort({ onOnboard }) {
         title="No clubs onboarded yet"
         sub="Add your first club to begin. You can onboard them one at a time with the chairperson's contact details and share their portal link."
         action={
-          <Btn tone="teal" icon={Icon.Plus} onClick={onOnboard}>
-            Onboard your first club
-          </Btn>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+            <Btn tone="teal" icon={Icon.Plus} onClick={onOnboard}>
+              Onboard your first club
+            </Btn>
+            {onInviteAdmin && (
+              <Btn tone="outline" icon={Icon.Mail} onClick={onInviteAdmin}>
+                Invite admin
+              </Btn>
+            )}
+          </div>
         }
       />
     </div>
@@ -1827,6 +1835,7 @@ export function AdminDashboard({
   gotoClub,
   gotoList,
   gotoAdminView,
+  onInviteAdmin,
   toast,
   submissionDeadline,
   onUpdateDeadline,
@@ -1853,7 +1862,7 @@ export function AdminDashboard({
   }
 
   // Blank tenant: show the onboarding empty state instead of a 0-of-0 dashboard.
-  if (clubs.length === 0) return <EmptyCohort onOnboard={gotoList} />;
+  if (clubs.length === 0) return <EmptyCohort onOnboard={gotoList} onInviteAdmin={onInviteAdmin} />;
 
   const deadlineLong = formatDeadlineLong(submissionDeadline);
   const deadlineMid = formatDeadlineMid(submissionDeadline);
@@ -2243,6 +2252,7 @@ export function AdminSettingsView({
   onSaveOrg,
   onUpdateDeadline,
   onUpdateSupport,
+  onManageTeam,
   toast,
 }) {
   const [name, setName] = useStateA(orgName || '');
@@ -2351,6 +2361,23 @@ export function AdminSettingsView({
             </div>
             <Btn tone="outline" size="sm" icon={Icon.Mail} onClick={() => setShowEditSupport(true)}>
               Edit contact
+            </Btn>
+          </div>
+        </Card>
+
+        <Card
+          title="Access controls"
+          sub="Invite admins and club reps, change roles and edit a rep's club scope."
+        >
+          <div style={rowStyle}>
+            <div>
+              <div style={valStyle}>Team &amp; Access</div>
+              <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+                Manage who can sign in to this union.
+              </div>
+            </div>
+            <Btn tone="outline" size="sm" icon={Icon.Users} onClick={() => onManageTeam?.()}>
+              Manage team
             </Btn>
           </div>
         </Card>
@@ -2539,11 +2566,13 @@ export function AdminClubsList({
   onOnboardClub,
   onBulkOnboardClubs,
   onSendInvite,
+  onInvite,
   knownClubs = [],
 }) {
   const [q, setQ] = useStateA('');
   const [filter, setFilter] = useStateA('all');
   const [showOnboard, setShowOnboard] = useStateA(false);
+  const [showInviteAdmin, setShowInviteAdmin] = useStateA(false);
 
   const filtered = useMemoA(() => {
     let cs = clubs;
@@ -2620,7 +2649,10 @@ export function AdminClubsList({
       </div>
 
       {clubs.length === 0 ? (
-        <EmptyCohort onOnboard={() => setShowOnboard(true)} />
+        <EmptyCohort
+          onOnboard={() => setShowOnboard(true)}
+          onInviteAdmin={onInvite ? () => setShowInviteAdmin(true) : undefined}
+        />
       ) : (
         <>
           {/* Cohort insights panel — CQI distribution, document compliance, resources required */}
@@ -2736,6 +2768,15 @@ export function AdminClubsList({
           onOnboard={onOnboardClub}
           onBulkOnboard={onBulkOnboardClubs}
           onSendInvite={onSendInvite}
+          toast={toast}
+        />
+      )}
+      {showInviteAdmin && (
+        <InviteUserModal
+          clubs={clubs}
+          presetRole="admin"
+          onClose={() => setShowInviteAdmin(false)}
+          onInvite={onInvite}
           toast={toast}
         />
       )}
@@ -5226,8 +5267,10 @@ export function AdminClubDetail({
         />
       )}
       {showInvite && (
-        <InviteRepModal
-          club={club}
+        <InviteUserModal
+          clubs={[club]}
+          presetClubId={club.id}
+          presetRole="rep"
           onClose={() => setShowInvite(false)}
           onInvite={onInvite}
           toast={toast}
@@ -5591,25 +5634,157 @@ function AffiliationViewModal({ club, allLeagues, onClose }) {
   );
 }
 
-/* ─── InviteRepModal — admin invites a rep/admin to this tenant ─── */
-function InviteRepModal({ club, onClose, onInvite, toast }) {
+/* ─── ClubMultiSelect — scrollable checkbox list of clubs (shared by invite / scope edit) ───
+   `value` is a Set of selected club ids; `onChange` receives the next Set. */
+function ClubMultiSelect({ clubs, value, onChange }) {
+  function toggle(id) {
+    const next = new Set(value);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onChange(next);
+  }
+  if (!clubs || clubs.length === 0) {
+    return (
+      <div style={{ fontSize: 12.5, color: 'var(--muted)' }}>
+        No clubs to assign yet — a rep needs at least one club. Invite an administrator instead.
+      </div>
+    );
+  }
+  return (
+    <div
+      style={{
+        maxHeight: 200,
+        overflowY: 'auto',
+        border: '1px solid var(--line)',
+        borderRadius: 10,
+        background: 'var(--white)',
+      }}
+    >
+      {clubs.map((c, i) => {
+        const checked = value.has(c.id);
+        return (
+          <label
+            key={c.id}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '10px 12px',
+              borderBottom: i < clubs.length - 1 ? '1px solid var(--line)' : 'none',
+              background: checked ? 'rgba(15,143,74,0.06)' : 'var(--white)',
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={() => toggle(c.id)}
+              style={{
+                width: 16,
+                height: 16,
+                cursor: 'pointer',
+                flexShrink: 0,
+                accentColor: 'var(--teal-deep)',
+              }}
+            />
+            <span
+              style={{
+                fontFamily: "'Montserrat',sans-serif",
+                fontSize: 13,
+                fontWeight: 600,
+                color: 'var(--ink)',
+              }}
+            >
+              {c.name}
+            </span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ─── ChannelToggles — email / WhatsApp send selection (defaults both on) ─── */
+function ChannelToggles({ value, onChange }) {
+  const opt = (key, label) => {
+    const on = value[key];
+    return (
+      <button
+        type="button"
+        onClick={() => onChange({ ...value, [key]: !on })}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '6px 12px',
+          borderRadius: 999,
+          fontSize: 12,
+          fontWeight: 700,
+          fontFamily: "'Montserrat',sans-serif",
+          cursor: 'pointer',
+          border: '1px solid ' + (on ? 'var(--green)' : 'var(--line)'),
+          background: on ? 'var(--green-pale)' : 'var(--white)',
+          color: on ? 'var(--green)' : 'var(--muted-2)',
+        }}
+      >
+        {on && <Icon.Check />}
+        {label}
+      </button>
+    );
+  };
+  return (
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      {opt('email', 'Email')}
+      {opt('whatsapp', 'WhatsApp')}
+    </div>
+  );
+}
+
+const chLabel = (ch) => (ch === 'email' ? 'email' : 'WhatsApp');
+
+/* ─── InviteUserModal — admin invites an admin/rep to this tenant ───
+   Decoupled from a single club: `clubs` feeds the rep club multi-select; `presetClubId`
+   pre-selects one club and `presetRole` seeds the role. On success it shows the real
+   outcome — a copyable login link plus per-channel send results. */
+function InviteUserModal({ clubs = [], presetClubId, presetRole, onClose, onInvite, toast }) {
+  const canRep = clubs.length > 0;
   const [email, setEmail] = useStateA('');
-  const [role, setRole] = useStateA('rep');
+  const [role, setRole] = useStateA(canRep ? presetRole || 'rep' : 'admin');
+  const [clubIds, setClubIds] = useStateA(() => new Set(presetClubId ? [presetClubId] : []));
+  const [channels, setChannels] = useStateA({ email: true, whatsapp: true });
   const [busy, setBusy] = useStateA(false);
-  const [done, setDone] = useStateA(false);
+  const [copied, setCopied] = useStateA(false);
+  // null until the account is created; then { loginUrl, results, email }.
+  const [result, setResult] = useStateA(null);
+
+  const emailValid = EMAIL_RE.test(email.trim().toLowerCase());
+  const repNeedsClub = role === 'rep' && clubIds.size === 0;
+  // No channel selected is allowed: the account is still created and the login link can be
+  // copied/shared out-of-band (the server skips sending when `channels` is omitted).
+  const canSubmit = !busy && emailValid && !repNeedsClub;
+  const chansSelected = channels.email || channels.whatsapp;
 
   async function submit() {
-    if (!email.trim() || !onInvite) return;
+    if (!canSubmit || !onInvite) return;
     setBusy(true);
     try {
-      // A rep is scoped to this club; an admin sees the whole tenant.
-      await onInvite({
-        email: email.trim().toLowerCase(),
+      const chans = ['email', 'whatsapp'].filter((c) => channels[c]);
+      const cleanEmail = email.trim().toLowerCase();
+      const link = window.location.origin + '/?email=' + encodeURIComponent(cleanEmail);
+      const res = await onInvite({
+        email: cleanEmail,
         role,
-        clubIds: role === 'rep' ? [club.id] : [],
+        clubIds: role === 'rep' ? [...clubIds] : [],
+        // Omit `channels` entirely when none are selected — the server rejects an explicit
+        // empty array but skips sending (and just returns the login link) when it's absent.
+        ...(chans.length ? { channels: chans } : {}),
+        link,
       });
-      setDone(true);
-      toast && toast(`Invite sent to ${email.trim()}`);
+      setResult({
+        loginUrl: res?.loginUrl || link,
+        results: res?.results || [],
+        email: cleanEmail,
+      });
     } catch {
       /* withToast already surfaced the error */
     } finally {
@@ -5617,14 +5792,42 @@ function InviteRepModal({ club, onClose, onInvite, toast }) {
     }
   }
 
+  function doCopy() {
+    const url = result?.loginUrl;
+    if (!url) return;
+    const ok = () => {
+      setCopied(true);
+      toast && toast('Login link copied to clipboard');
+      setTimeout(() => setCopied(false), 2200);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(ok);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        ok();
+      } catch {
+        /* clipboard unavailable */
+      }
+      ta.remove();
+    }
+  }
+
+  const presetClub = presetClubId ? clubs.find((c) => c.id === presetClubId) : null;
+  const eyebrow = presetClub ? `Invite · ${presetClub.name}` : 'Team & Access';
+
   return createPortal(
     <div className="task-modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="task-modal narrow" style={{ maxWidth: 480 }}>
         <div className="task-modal-head">
           <div className="task-modal-head-text">
-            <div className="task-modal-head-eyebrow">Invite · {club.name}</div>
+            <div className="task-modal-head-eyebrow">{eyebrow}</div>
             <div className="task-modal-head-title">
-              Invite a <em>club rep</em>
+              Invite an <em>admin or rep</em>
             </div>
           </div>
           <button className="task-modal-close" onClick={onClose} title="Close">
@@ -5632,16 +5835,56 @@ function InviteRepModal({ club, onClose, onInvite, toast }) {
           </button>
         </div>
         <div className="task-modal-body">
-          {done ? (
-            <div style={{ textAlign: 'center', padding: '18px 0' }}>
-              <p style={{ fontSize: 14, color: 'var(--ink)' }}>
-                Invite sent to <strong>{email}</strong>.
-              </p>
-              <p style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 6 }}>
-                They sign in with their email — a one-time code is sent on first login. No password
-                needed.
-              </p>
-              <div style={{ marginTop: 16 }}>
+          {result ? (
+            <div className="stack" style={{ gap: 14 }}>
+              <div>
+                <p style={{ fontSize: 14, color: 'var(--ink)', margin: 0 }}>
+                  Account created for <strong>{result.email}</strong>.
+                </p>
+                <p style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 6 }}>
+                  They sign in with their email — a one-time code is sent on first login. No
+                  password needed.
+                </p>
+              </div>
+              <div>
+                <div className="field-label" style={{ marginBottom: 4 }}>
+                  Login link
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    className="field-input"
+                    readOnly
+                    value={result.loginUrl}
+                    onFocus={(e) => e.target.select()}
+                    style={{ flex: 1, fontSize: 13 }}
+                  />
+                  <Btn tone="outline" size="sm" icon={Icon.Doc} onClick={doCopy}>
+                    {copied ? 'Copied' : 'Copy'}
+                  </Btn>
+                </div>
+              </div>
+              {result.results.length > 0 ? (
+                <div className="stack" style={{ gap: 6 }}>
+                  {result.results.map((r) => (
+                    <div
+                      key={r.channel}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}
+                    >
+                      <Pill tone={r.status === 'sent' ? 'teal' : 'gold'} dot>
+                        {chLabel(r.channel)} {r.status}
+                      </Pill>
+                      {(r.summary || r.error) && (
+                        <span style={{ color: 'var(--muted)' }}>{r.summary || r.error}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p style={{ fontSize: 12.5, color: 'var(--muted)', margin: 0 }}>
+                  Share the link above to give them access.
+                </p>
+              )}
+              <div>
                 <Btn tone="ink" size="sm" onClick={onClose}>
                   Done
                 </Btn>
@@ -5655,7 +5898,7 @@ function InviteRepModal({ club, onClose, onInvite, toast }) {
                   className="field-input"
                   type="email"
                   autoFocus
-                  placeholder="rep@club.co.za"
+                  placeholder="person@club.co.za"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   style={{ width: '100%', marginTop: 4, fontSize: 16 }}
@@ -5669,12 +5912,43 @@ function InviteRepModal({ club, onClose, onInvite, toast }) {
                   onChange={(e) => setRole(e.target.value)}
                   style={{ width: '100%', marginTop: 4 }}
                 >
-                  <option value="rep">Club rep — {club.name} only</option>
+                  <option value="rep" disabled={!canRep}>
+                    Club rep — scoped to selected clubs
+                  </option>
                   <option value="admin">Administrator — whole union</option>
                 </select>
               </label>
-              <Btn tone="teal" icon={Icon.Mail} disabled={busy || !email.trim()} onClick={submit}>
-                {busy ? 'Sending…' : 'Send invite'}
+              {!canRep && (
+                <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 6 }}>
+                  Add a club to invite reps.
+                </div>
+              )}
+              {role === 'rep' && (
+                <div>
+                  <div className="field-label" style={{ marginBottom: 4 }}>
+                    Clubs <span style={{ color: 'var(--muted-2)' }}>· select at least one</span>
+                  </div>
+                  <ClubMultiSelect clubs={clubs} value={clubIds} onChange={setClubIds} />
+                </div>
+              )}
+              <div>
+                <div className="field-label" style={{ marginBottom: 4 }}>
+                  Notify by
+                </div>
+                <ChannelToggles value={channels} onChange={setChannels} />
+                {!channels.email && !channels.whatsapp && (
+                  <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 6 }}>
+                    No channel selected — you can still share the login link after creating the
+                    account.
+                  </div>
+                )}
+              </div>
+              <Btn tone="teal" icon={Icon.Mail} disabled={!canSubmit} onClick={submit}>
+                {busy
+                  ? 'Creating…'
+                  : chansSelected
+                    ? 'Create account & send invite'
+                    : 'Create account'}
               </Btn>
             </div>
           )}
@@ -5682,5 +5956,398 @@ function InviteRepModal({ club, onClose, onInvite, toast }) {
       </div>
     </div>,
     document.body,
+  );
+}
+
+/* ─── RoleScopeModal — change a user's role, and (for reps) their club scope ───
+   `mode` is 'role' or 'clubs'. Admins always carry clubIds:[]. */
+function RoleScopeModal({ user, clubs = [], mode, lockRep, onClose, onSave, toast }) {
+  const [role, setRole] = useStateA(user.role);
+  const [clubIds, setClubIds] = useStateA(() => new Set(user.clubIds || []));
+  const [busy, setBusy] = useStateA(false);
+  const editingClubs = mode === 'clubs' || role === 'rep';
+  const repNeedsClub = role === 'rep' && clubIds.size === 0;
+  const noChange =
+    mode === 'role'
+      ? role === user.role && (role !== 'rep' || setEq(clubIds, new Set(user.clubIds || [])))
+      : setEq(clubIds, new Set(user.clubIds || []));
+  const canSave = !busy && !repNeedsClub && !noChange;
+
+  async function save() {
+    if (!canSave || !onSave) return;
+    setBusy(true);
+    try {
+      const body =
+        mode === 'role'
+          ? { role, clubIds: role === 'rep' ? [...clubIds] : [] }
+          : { clubIds: [...clubIds] };
+      await onSave(user.sub, body);
+      toast && toast(mode === 'role' ? 'Role updated' : 'Club access updated');
+      onClose();
+    } catch {
+      /* withToast already surfaced the error */
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return createPortal(
+    <div className="task-modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="task-modal narrow" style={{ maxWidth: 460 }}>
+        <div className="task-modal-head">
+          <div className="task-modal-head-text">
+            <div className="task-modal-head-eyebrow">{user.email}</div>
+            <div className="task-modal-head-title">
+              {mode === 'role' ? (
+                <>
+                  Change <em>role</em>
+                </>
+              ) : (
+                <>
+                  Edit <em>club access</em>
+                </>
+              )}
+            </div>
+          </div>
+          <button className="task-modal-close" onClick={onClose} title="Close">
+            <Icon.X />
+          </button>
+        </div>
+        <div className="task-modal-body">
+          <div className="stack" style={{ gap: 12 }}>
+            {mode === 'role' && (
+              <label style={{ fontSize: 12, color: 'var(--muted)' }}>
+                Role
+                <select
+                  className="field-select"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value)}
+                  style={{ width: '100%', marginTop: 4 }}
+                >
+                  <option value="rep" disabled={clubs.length === 0}>
+                    Club rep — scoped to selected clubs
+                  </option>
+                  <option value="admin" disabled={lockRep && user.role === 'admin'}>
+                    Administrator — whole union
+                  </option>
+                </select>
+              </label>
+            )}
+            {mode === 'role' && lockRep && user.role === 'admin' && (
+              <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>
+                This is the only administrator — they can&apos;t be demoted until another admin
+                exists.
+              </div>
+            )}
+            {editingClubs && (
+              <div>
+                <div className="field-label" style={{ marginBottom: 4 }}>
+                  Clubs <span style={{ color: 'var(--muted-2)' }}>· select at least one</span>
+                </div>
+                <ClubMultiSelect clubs={clubs} value={clubIds} onChange={setClubIds} />
+              </div>
+            )}
+            <Btn tone="teal" icon={Icon.Check} disabled={!canSave} onClick={save}>
+              {busy ? 'Saving…' : 'Save changes'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function setEq(a, b) {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
+/* ─── AdminTeamAccessView — tenant-level roster: invite, change role, edit scope, resend, remove ─── */
+export function AdminTeamAccessView({
+  users = [],
+  clubs = [],
+  onInvite,
+  onPatchUser,
+  onRemoveUser,
+  onResend,
+  currentUserEmail,
+  toast,
+}) {
+  const [showInvite, setShowInvite] = useStateA(false);
+  const [editing, setEditing] = useStateA(null); // { user, mode }
+  const [confirm, setConfirm] = useStateA(null); // { title, body, danger, onYes }
+  const [busySub, setBusySub] = useStateA(null);
+
+  const clubName = (id) => clubs.find((c) => c.id === id)?.name || id;
+  const adminCount = users.filter((u) => u.role === 'admin').length;
+  const isLastAdmin = (u) => u.role === 'admin' && adminCount <= 1;
+  const isSelf = (u) =>
+    !!currentUserEmail && u.email?.toLowerCase() === currentUserEmail.toLowerCase();
+  const fmtDate = (iso) =>
+    iso
+      ? new Date(iso).toLocaleDateString('en-ZA', {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        })
+      : '—';
+
+  async function resend(u) {
+    if (!onResend) return;
+    setBusySub(u.sub);
+    try {
+      const res = await onResend(u.sub);
+      const results = (res && res.results) || [];
+      const sent = results.filter((r) => r.status === 'sent');
+      const notSent = results.filter((r) => r.status !== 'sent');
+      if (sent.length)
+        toast && toast(`Invite re-sent via ${sent.map((r) => chLabel(r.channel)).join(' & ')}`);
+      if (notSent.length)
+        toast &&
+          toast(
+            `Some channels failed — ${notSent
+              .map((r) => `${chLabel(r.channel)} ${r.status}`)
+              .join('; ')}`,
+            'warn',
+          );
+      if (!results.length) toast && toast('Invite re-sent');
+    } catch {
+      /* withToast already surfaced the error */
+    } finally {
+      setBusySub(null);
+    }
+  }
+
+  function askRemove(u) {
+    setConfirm({
+      title: 'Remove access?',
+      body: `${u.email} will lose access to this union. This signs them out and can't be undone.`,
+      danger: true,
+      onYes: () => {
+        onRemoveUser?.(u.sub)
+          .then(() => toast && toast('Access removed'))
+          .catch(() => {});
+        setConfirm(null);
+      },
+    });
+  }
+
+  return (
+    <div>
+      <div className="page-head">
+        <div className="ph-left">
+          <div className="ph-crumb">Admin Console / Team &amp; Access</div>
+          <h1 className="ph-title">
+            Team &amp; <em>Access</em>
+          </h1>
+          <p className="ph-desc">
+            Invite administrators and club reps, manage roles and club scope, and see who
+            hasn&apos;t signed in yet.
+          </p>
+        </div>
+        <div className="ph-actions">
+          <Btn tone="ink" size="sm" icon={Icon.Mail} onClick={() => setShowInvite(true)}>
+            Invite admin / rep
+          </Btn>
+        </div>
+      </div>
+
+      {users.length === 0 ? (
+        <EmptyState
+          icon={Icon.Users}
+          title="No team members yet"
+          sub="Invite an administrator or a club rep to give them access to this union."
+          action={
+            <Btn tone="teal" icon={Icon.Mail} onClick={() => setShowInvite(true)}>
+              Invite admin / rep
+            </Btn>
+          }
+        />
+      ) : (
+        <div className="tbl-w">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Clubs</th>
+                <th>Status</th>
+                <th>Invited</th>
+                <th style={{ width: 1 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => {
+                const last = isLastAdmin(u);
+                const self = isSelf(u);
+                return (
+                  <tr key={u.sub}>
+                    <td>
+                      <span style={{ fontSize: 12.5 }}>{u.email}</span>
+                      {self && (
+                        <Pill tone="navy">
+                          <span style={{ marginLeft: 0 }}>You</span>
+                        </Pill>
+                      )}
+                    </td>
+                    <td>
+                      <Pill tone={u.role === 'admin' ? 'gold' : 'teal'}>
+                        {u.role === 'admin' ? 'Admin' : 'Club rep'}
+                      </Pill>
+                    </td>
+                    <td>
+                      {u.role === 'admin' ? (
+                        <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>Whole union</span>
+                      ) : (
+                        <span style={{ fontSize: 12 }}>
+                          {(u.clubIds || []).map(clubName).join(', ') || '—'}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      <Pill tone={u.status === 'active' ? 'teal' : 'gold'} dot>
+                        {u.status === 'active' ? 'Active' : 'Not signed in'}
+                      </Pill>
+                    </td>
+                    <td>
+                      <span
+                        style={{
+                          fontSize: 11.5,
+                          color: 'var(--muted)',
+                          fontFamily: "'Montserrat',sans-serif",
+                        }}
+                      >
+                        {fmtDate(u.invitedAt)}
+                      </span>
+                      {u.status === 'pending' &&
+                        u.invitedAt &&
+                        (() => {
+                          const age = daysAgo(u.invitedAt);
+                          if (age == null) return null;
+                          const label =
+                            age === 0
+                              ? 'invited today'
+                              : age === 1
+                                ? 'invited 1 day ago'
+                                : `invited ${age} days ago`;
+                          return (
+                            <div
+                              style={{
+                                fontSize: 10.5,
+                                color: age > 14 ? 'var(--gold)' : 'var(--muted-2)',
+                                marginTop: 2,
+                              }}
+                            >
+                              {label}
+                            </div>
+                          );
+                        })()}
+                    </td>
+                    <td style={{ textAlign: 'right', paddingRight: 14, whiteSpace: 'nowrap' }}>
+                      <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                        <Btn
+                          tone="ghost"
+                          size="sm"
+                          onClick={() => setEditing({ user: u, mode: 'role' })}
+                        >
+                          Change role
+                        </Btn>
+                        {u.role === 'rep' && (
+                          <Btn
+                            tone="ghost"
+                            size="sm"
+                            onClick={() => setEditing({ user: u, mode: 'clubs' })}
+                          >
+                            Edit clubs
+                          </Btn>
+                        )}
+                        {u.status === 'pending' && (
+                          <Btn
+                            tone="ghost"
+                            size="sm"
+                            disabled={busySub === u.sub}
+                            onClick={() => resend(u)}
+                          >
+                            {busySub === u.sub ? 'Sending…' : 'Resend'}
+                          </Btn>
+                        )}
+                        <Btn
+                          tone="outline"
+                          size="sm"
+                          disabled={last}
+                          title={last ? "Can't remove the only administrator" : undefined}
+                          onClick={() => askRemove(u)}
+                        >
+                          Remove
+                        </Btn>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {showInvite && (
+        <InviteUserModal
+          clubs={clubs}
+          onClose={() => setShowInvite(false)}
+          onInvite={onInvite}
+          toast={toast}
+        />
+      )}
+      {editing && (
+        <RoleScopeModal
+          user={editing.user}
+          clubs={clubs}
+          mode={editing.mode}
+          lockRep={isLastAdmin(editing.user)}
+          onClose={() => setEditing(null)}
+          onSave={onPatchUser}
+          toast={toast}
+        />
+      )}
+      {confirm &&
+        createPortal(
+          <div
+            className="fix-confirm"
+            onClick={(e) => e.target === e.currentTarget && setConfirm(null)}
+          >
+            <div className="fix-confirm-box">
+              <div className="fix-confirm-icon danger">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M12 2L22 21H2L12 2z"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M12 9v5M12 17v.5"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </div>
+              <div className="fix-confirm-title">{confirm.title}</div>
+              <div className="fix-confirm-body">{confirm.body}</div>
+              <div className="fix-confirm-actions">
+                <Btn tone="outline" onClick={() => setConfirm(null)}>
+                  Cancel
+                </Btn>
+                <Btn tone="ink" onClick={confirm.onYes}>
+                  Remove access
+                </Btn>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+    </div>
   );
 }

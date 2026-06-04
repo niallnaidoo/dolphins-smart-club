@@ -37,7 +37,11 @@ async function main(): Promise<void> {
     email,
     memberships,
     onboardingSeen: existing?.onboardingSeen ?? {},
+    ...(existing?.lastLoginAt ? { lastLoginAt: existing.lastLoginAt } : {}),
   });
+  // Keep the transactional last-admin counter on CONFIG consistent. Recount (rather
+  // than +1) so re-running bootstrap is idempotent and repairs a drifted/absent count.
+  await repo.recountAdmins(tenant);
 
   console.log(`bootstrapped admin ${email} (sub ${sub}) for tenant ${tenant}`);
   console.log('they can now sign in via email OTP.');

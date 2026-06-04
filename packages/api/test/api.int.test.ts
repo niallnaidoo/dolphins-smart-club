@@ -31,6 +31,9 @@ process.env.AWS_MAX_ATTEMPTS = '1';
 
 const devAuth = (memberships: unknown) =>
   Buffer.from(JSON.stringify({ sub: 'u', email: 'admin@test', memberships })).toString('base64');
+/** devAuth with an explicit sub/email — needed for multi-user team-management tests. */
+const devAuthAs = (sub: string, email: string, memberships: unknown) =>
+  Buffer.from(JSON.stringify({ sub, email, memberships })).toString('base64');
 const ADMIN = devAuth([{ tenantId: 'dolphins', role: 'admin', clubIds: [] }]);
 const REP = devAuth([{ tenantId: 'dolphins', role: 'rep', clubIds: ['testers'] }]);
 
@@ -902,5 +905,496 @@ describe('compliance doc view-url + replace', () => {
       docMeta?: Record<string, { objectKey?: string }>;
     };
     assert.equal(club.docMeta?.constitution?.objectKey, 'dolphins/docclub/constitution-b.pdf');
+  });
+});
+
+describe('/admin/users', () => {
+  // A dedicated tenant so the admin marker GSI (which drives the last-admin counter)
+  // is isolated from the other suites' users. FROM_EMAIL/WHATSAPP_* unset ⇒ notify/
+  // runs in dry-run; LOCAL_AUTH=1 ⇒ Cognito is stubbed (ensurePasswordlessUser returns
+  // a deterministic local-<sha1(email)> sub; sign-out/delete are no-ops).
+  const T = 'team';
+  const adminHeaders = (auth: string) => ({
+    'x-tenant': T,
+    'x-dev-auth': auth,
+    'content-type': 'application/json',
+  });
+  // Caller tokens (the caller's own sub is independent of the users they create).
+  const TADMIN = devAuthAs('caller-admin', 'caller@team.test', [
+    { tenantId: T, role: 'admin', clubIds: [] },
+  ]);
+  const TREP = devAuthAs('caller-rep', 'rep@team.test', [
+    { tenantId: T, role: 'rep', clubIds: ['c1'] },
+  ]);
+
+  // Deterministic offline sub for an email — mirrors cognito-users.localSub so a test
+  // can address a just-created user by its sub.
+  const subFor = async (email: string) => {
+    const { createHash } = await import('node:crypto');
+    return `local-${createHash('sha1').update(email.trim().toLowerCase()).digest('hex')}`;
+  };
+
+  const invite = (body: unknown, auth = TADMIN) =>
+    app.request('/admin/users', {
+      method: 'POST',
+      headers: adminHeaders(auth),
+      body: JSON.stringify(body),
+    });
+  const list = (auth = TADMIN) => app.request('/admin/users', { headers: adminHeaders(auth) });
+  const patch = (sub: string, body: unknown, auth = TADMIN) =>
+    app.request(`/admin/users/${sub}`, {
+      method: 'PATCH',
+      headers: adminHeaders(auth),
+      body: JSON.stringify(body),
+    });
+  const remove = (sub: string, auth = TADMIN) =>
+    app.request(`/admin/users/${sub}`, { method: 'DELETE', headers: adminHeaders(auth) });
+
+  before(async () => {
+    // Seed a blank config for the isolated tenant (no seed-core branding for 'team').
+    await repo.putTenantConfig({
+      tenant: T,
+      branding: {
+        name: 'Team Test Union',
+        title: 'Team Test',
+        logoUrl: '',
+        colors: {},
+        copy: {},
+      },
+      submissionDeadline: '2026-12-31',
+      knownClubs: [],
+      leagues: [],
+    });
+  });
+
+  test('GET lists invited users with role, clubIds and pending status', async () => {
+    const adminEmail = 'list-admin@team.test';
+    const repEmail = 'list-rep@team.test';
+    assert.equal((await invite({ email: adminEmail, role: 'admin' })).status, 201);
+    assert.equal(
+      (await invite({ email: repEmail, role: 'rep', clubIds: ['c1', 'c2'] })).status,
+      201,
+    );
+
+    const res = await list();
+    assert.equal(res.status, 200);
+    const rows = (await res.json()) as Array<{
+      sub: string;
+      email: string;
+      role: string;
+      clubIds: string[];
+      invitedAt?: string;
+      status: string;
+    }>;
+    const admin = rows.find((r) => r.email === adminEmail);
+    const rep = rows.find((r) => r.email === repEmail);
+    assert.ok(admin && rep, 'both invited users appear in the roster');
+    assert.equal(admin!.role, 'admin');
+    assert.deepEqual(admin!.clubIds, []);
+    // clubIds come from the enriched profile (markers don't carry them).
+    assert.deepEqual(rep!.clubIds.sort(), ['c1', 'c2']);
+    assert.ok(rep!.invitedAt, 'invitedAt is stamped');
+    // No sign-in yet ⇒ pending.
+    assert.equal(admin!.status, 'pending');
+    assert.equal(rep!.status, 'pending');
+  });
+
+  test('status flips to active once lastLoginAt is stamped (first sign-in)', async () => {
+    const email = 'logs-in@team.test';
+    await invite({ email, role: 'rep', clubIds: ['c1'] });
+    const sub = await subFor(email);
+    await repo.stampFirstLogin(sub); // simulate the PreTokenGen first-login stamp
+
+    const rows = (await (await list()).json()) as Array<{ email: string; status: string }>;
+    assert.equal(rows.find((r) => r.email === email)?.status, 'active');
+  });
+
+  test('POST returns a loginUrl + per-channel send results (dry-run) and normalizes email', async () => {
+    const res = await invite({
+      email: 'MixedCase@Team.Test',
+      role: 'admin',
+      channels: ['email', 'whatsapp'],
+      link: 'http://localhost:5173/',
+    });
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as {
+      sub: string;
+      email: string;
+      loginUrl: string;
+      results?: { channel: string; status: string }[];
+    };
+    // Email normalized to lowercase server-side.
+    assert.equal(body.email, 'mixedcase@team.test');
+    assert.equal(body.loginUrl, 'http://localhost:5173/');
+    assert.equal(body.results?.length, 2);
+    // Email "sends" in dry-run (synthetic id); WhatsApp is skipped — a staff invite has
+    // no cell on file (email is the identity / primary staff channel).
+    assert.equal(body.results?.find((r) => r.channel === 'email')?.status, 'sent');
+    assert.equal(body.results?.find((r) => r.channel === 'whatsapp')?.status, 'skipped');
+    // Stored email is the normalized form (so it matches the Cognito username on offboard).
+    const stored = await repo.getUser(body.sub);
+    assert.equal(stored?.email, 'mixedcase@team.test');
+  });
+
+  test('re-inviting an ALREADY-ACTIVE user is a 409 (no silent role reset)', async () => {
+    const email = 'active-already@team.test';
+    await invite({ email, role: 'rep', clubIds: ['c1'] });
+    const sub = await subFor(email);
+    await repo.stampFirstLogin(sub); // now active
+
+    const res = await invite({ email, role: 'admin' });
+    assert.equal(res.status, 409);
+    // Role/scope unchanged by the rejected re-invite.
+    const stored = await repo.getUser(sub);
+    const m = stored?.memberships.find((mm) => mm.tenantId === T);
+    assert.equal(m?.role, 'rep');
+    assert.deepEqual(m?.clubIds, ['c1']);
+  });
+
+  test('PATCH promotes rep→admin (clubIds forced empty) and demotes admin→rep', async () => {
+    const email = 'role-swap@team.test';
+    await invite({ email, role: 'rep', clubIds: ['c1'] });
+    const sub = await subFor(email);
+
+    const up = await patch(sub, { role: 'admin' });
+    assert.equal(up.status, 200);
+    const upBody = (await up.json()) as { role: string; clubIds: string[] };
+    assert.equal(upBody.role, 'admin');
+    assert.deepEqual(upBody.clubIds, [], 'admins are forced to whole-union scope');
+
+    // Demote back (another admin exists, so this is allowed).
+    const down = await patch(sub, { role: 'rep', clubIds: ['c2'] });
+    assert.equal(down.status, 200);
+    const downBody = (await down.json()) as { role: string; clubIds: string[] };
+    assert.equal(downBody.role, 'rep');
+    assert.deepEqual(downBody.clubIds, ['c2']);
+  });
+
+  test('PATCH a rep to clubIds:[] is rejected (400 — would be a dead account)', async () => {
+    const email = 'no-clubs@team.test';
+    await invite({ email, role: 'rep', clubIds: ['c1'] });
+    const sub = await subFor(email);
+    const res = await patch(sub, { clubIds: [] });
+    assert.equal(res.status, 400);
+  });
+
+  test('last-admin guard: demoting the only admin in a tenant is rejected (409)', async () => {
+    // Fresh isolated tenant with exactly one admin.
+    const solo = 'team-solo';
+    await repo.putTenantConfig({
+      tenant: solo,
+      branding: { name: 'Solo', title: 'Solo', logoUrl: '', colors: {}, copy: {} },
+      submissionDeadline: '2026-12-31',
+      knownClubs: [],
+      leagues: [],
+    });
+    const soloHeaders = (auth: string) => ({
+      'x-tenant': solo,
+      'x-dev-auth': auth,
+      'content-type': 'application/json',
+    });
+    const soloAdminToken = devAuthAs('caller-solo', 'solo@team.test', [
+      { tenantId: solo, role: 'admin', clubIds: [] },
+    ]);
+    const email = 'only-admin@solo.test';
+    await app.request('/admin/users', {
+      method: 'POST',
+      headers: soloHeaders(soloAdminToken),
+      body: JSON.stringify({ email, role: 'admin' }),
+    });
+    const sub = await subFor(email);
+    // Only one admin ⇒ demote rejected by the transactional adminCount>1 guard.
+    const res = await app.request(`/admin/users/${sub}`, {
+      method: 'PATCH',
+      headers: soloHeaders(soloAdminToken),
+      body: JSON.stringify({ role: 'rep', clubIds: ['c1'] }),
+    });
+    assert.equal(res.status, 409);
+    // Still an admin (the rejected transaction rolled back the user write too).
+    const stored = await repo.getUser(sub);
+    assert.equal(stored?.memberships.find((m) => m.tenantId === solo)?.role, 'admin');
+    // Promoting a 2nd admin then demoting the first now succeeds (transactional decrement).
+    await app.request('/admin/users', {
+      method: 'POST',
+      headers: soloHeaders(soloAdminToken),
+      body: JSON.stringify({ email: 'second-admin@solo.test', role: 'admin' }),
+    });
+    const ok = await app.request(`/admin/users/${sub}`, {
+      method: 'PATCH',
+      headers: soloHeaders(soloAdminToken),
+      body: JSON.stringify({ role: 'rep', clubIds: ['c1'] }),
+    });
+    assert.equal(ok.status, 200);
+    // adminCount decremented back to 1.
+    const cfg = await repo.getTenantConfig(solo);
+    assert.equal(cfg?.adminCount, 1);
+  });
+
+  test('re-inviting a pending admin as a rep decrements adminCount (no drift, guard still holds)', async () => {
+    const tn = 'team-reinvite';
+    await repo.putTenantConfig({
+      tenant: tn,
+      branding: { name: 'RI', title: 'RI', logoUrl: '', colors: {}, copy: {} },
+      submissionDeadline: '2026-12-31',
+      knownClubs: [],
+      leagues: [],
+    });
+    const h = (auth: string) => ({
+      'x-tenant': tn,
+      'x-dev-auth': auth,
+      'content-type': 'application/json',
+    });
+    const caller = devAuthAs('caller-ri', 'ri@team.test', [
+      { tenantId: tn, role: 'admin', clubIds: [] },
+    ]);
+    const reqUser = (body: unknown) =>
+      app.request('/admin/users', {
+        method: 'POST',
+        headers: h(caller),
+        body: JSON.stringify(body),
+      });
+
+    // Two stored admins A and B, both pending (never signed in).
+    await reqUser({ email: 'a@ri.test', role: 'admin' });
+    await reqUser({ email: 'b@ri.test', role: 'admin' });
+    assert.equal((await repo.getTenantConfig(tn))?.adminCount, 2);
+
+    // Re-invite still-pending admin A down to rep — an admin→rep transition that MUST
+    // decrement adminCount. The bug left the counter at 2 (drift high), which would later
+    // let the last-admin guard be bypassed.
+    const subA = await subFor('a@ri.test');
+    const re = await reqUser({ email: 'a@ri.test', role: 'rep', clubIds: ['c1'] });
+    assert.equal(re.status, 201);
+    assert.equal(
+      (await repo.getUser(subA))?.memberships.find((m) => m.tenantId === tn)?.role,
+      'rep',
+    );
+    assert.equal(
+      (await repo.getTenantConfig(tn))?.adminCount,
+      1,
+      'adminCount must decrement on re-invite-demote',
+    );
+
+    // B is now the only admin — the guard must reject demoting them (defeated if drifted).
+    const subB = await subFor('b@ri.test');
+    const demoteB = await app.request(`/admin/users/${subB}`, {
+      method: 'PATCH',
+      headers: h(caller),
+      body: JSON.stringify({ role: 'rep', clubIds: ['c1'] }),
+    });
+    assert.equal(demoteB.status, 409);
+  });
+
+  test('cross-tenant safety: PATCH in tenant A leaves tenant B membership + marker intact', async () => {
+    // One user with memberships in BOTH 'team' (A) and 'dolphins' (B).
+    const email = 'multi-tenant@team.test';
+    const sub = await subFor(email);
+    await repo.putUser({
+      sub,
+      email,
+      memberships: [
+        { tenantId: T, role: 'rep', clubIds: ['c1'] },
+        { tenantId: 'dolphins', role: 'rep', clubIds: ['testers'] },
+      ],
+      onboardingSeen: {},
+    });
+
+    // PATCH the user in tenant A only.
+    const res = await patch(sub, { role: 'rep', clubIds: ['c9'] });
+    assert.equal(res.status, 200);
+
+    const after = await repo.getUser(sub);
+    // Tenant B membership untouched.
+    const b = after?.memberships.find((m) => m.tenantId === 'dolphins');
+    assert.deepEqual(b, { tenantId: 'dolphins', role: 'rep', clubIds: ['testers'] });
+    // Tenant A reflects the patch.
+    assert.deepEqual(after?.memberships.find((m) => m.tenantId === T)?.clubIds, ['c9']);
+    // And tenant B's TENANT# marker still exists (asserted via the listing, not just the array).
+    const bRoster = await repo.listTenantUsers('dolphins');
+    assert.ok(
+      bRoster.some((u) => u.sub === sub),
+      'tenant B marker survives the tenant-A PATCH',
+    );
+  });
+
+  test('cross-tenant safety: DELETE in tenant A leaves tenant B membership + marker intact', async () => {
+    const email = 'multi-del@team.test';
+    const sub = await subFor(email);
+    await repo.putUser({
+      sub,
+      email,
+      memberships: [
+        { tenantId: T, role: 'rep', clubIds: ['c1'] },
+        { tenantId: 'dolphins', role: 'rep', clubIds: ['testers'] },
+      ],
+      onboardingSeen: {},
+    });
+
+    const res = await remove(sub);
+    assert.equal(res.status, 200);
+
+    const after = await repo.getUser(sub);
+    assert.ok(after, 'user still exists (kept tenant B membership)');
+    assert.equal(after?.memberships.length, 1);
+    assert.equal(after?.memberships[0].tenantId, 'dolphins');
+    // Tenant B marker intact; tenant A marker gone.
+    assert.ok((await repo.listTenantUsers('dolphins')).some((u) => u.sub === sub));
+    assert.ok(!(await repo.listTenantUsers(T)).some((u) => u.sub === sub));
+  });
+
+  test('DELETE a rep removes their membership + marker', async () => {
+    const email = 'remove-rep@team.test';
+    await invite({ email, role: 'rep', clubIds: ['c1'] });
+    const sub = await subFor(email);
+    assert.ok((await repo.listTenantUsers(T)).some((u) => u.sub === sub));
+
+    const res = await remove(sub);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+    assert.ok(!(await repo.listTenantUsers(T)).some((u) => u.sub === sub), 'marker is gone');
+  });
+
+  test('DELETE a single-membership user fully offboards them (USER# gone)', async () => {
+    const email = 'offboard-me@team.test';
+    await invite({ email, role: 'rep', clubIds: ['c1'] });
+    const sub = await subFor(email);
+    assert.ok(await repo.getUser(sub), 'user exists before removal');
+
+    const res = await remove(sub);
+    assert.equal(res.status, 200);
+    assert.equal(await repo.getUser(sub), null, 'USER# record fully deleted');
+  });
+
+  test('last-admin guard on DELETE: removing the only admin is rejected (409)', async () => {
+    const solo = 'team-del-solo';
+    await repo.putTenantConfig({
+      tenant: solo,
+      branding: { name: 'Solo', title: 'Solo', logoUrl: '', colors: {}, copy: {} },
+      submissionDeadline: '2026-12-31',
+      knownClubs: [],
+      leagues: [],
+    });
+    const soloHeaders = (auth: string) => ({
+      'x-tenant': solo,
+      'x-dev-auth': auth,
+      'content-type': 'application/json',
+    });
+    const tok = devAuthAs('caller-del-solo', 'solo2@team.test', [
+      { tenantId: solo, role: 'admin', clubIds: [] },
+    ]);
+    const email = 'last-admin@solo.test';
+    await app.request('/admin/users', {
+      method: 'POST',
+      headers: soloHeaders(tok),
+      body: JSON.stringify({ email, role: 'admin' }),
+    });
+    const sub = await subFor(email);
+    const res = await app.request(`/admin/users/${sub}`, {
+      method: 'DELETE',
+      headers: soloHeaders(tok),
+    });
+    assert.equal(res.status, 409);
+    // Still present (the guard ran before any delete).
+    assert.ok(await repo.getUser(sub), 'last admin was not removed');
+  });
+
+  test('POST /admin/users/:sub/resend returns send results (dry-run)', async () => {
+    const email = 'resend-me@team.test';
+    await invite({ email, role: 'rep', clubIds: ['c1'] });
+    const sub = await subFor(email);
+    const res = await app.request(`/admin/users/${sub}/resend`, {
+      method: 'POST',
+      headers: adminHeaders(TADMIN),
+      body: JSON.stringify({ channels: ['email'] }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { results: { channel: string; status: string }[] };
+    assert.equal(body.results.length, 1);
+    assert.equal(body.results[0].status, 'sent');
+  });
+
+  test('a non-admin (rep) is forbidden (403)', async () => {
+    const res = await list(TREP);
+    assert.equal(res.status, 403);
+  });
+});
+
+describe('reconcileTenantAdmins (orphan pruning)', () => {
+  // reconcile takes an INJECTED `exists` so orphan logic is testable without Cognito.
+  // The atomic ADD -1 prune (repo.pruneAdminMembership) is what keeps the count race-free;
+  // the single-threaded harness can't exercise the concurrency, only the prune semantics.
+  let reconcile: typeof import('../src/reconcile.js');
+  before(async () => {
+    reconcile = await import('../src/reconcile.js');
+  });
+
+  const OLD = '2026-01-01T00:00:00.000Z'; // well past the 10-min grace window
+  const seedTenant = (t: string) =>
+    repo.putTenantConfig({
+      tenant: t,
+      branding: { name: 'O', title: 'O', logoUrl: '', colors: {}, copy: {} },
+      submissionDeadline: '2026-12-31',
+      knownClubs: [],
+      leagues: [],
+    });
+  const admin = (t: string, email: string, invitedAt: string) => ({
+    sub: `sub-${email}`,
+    email,
+    memberships: [{ tenantId: t, role: 'admin' as const, clubIds: [], invitedAt }],
+    onboardingSeen: {},
+  });
+
+  test('prunes an orphaned admin and frees the last-admin floor', async () => {
+    const t = 'orphan-a';
+    await seedTenant(t);
+    await repo.putUser(admin(t, 'real@o.test', OLD));
+    await repo.putUser(admin(t, 'orphan@o.test', OLD));
+    await repo.recountAdmins(t); // adminCount = 2 (membership count, incl. the orphan)
+    assert.equal((await repo.getTenantConfig(t))?.adminCount, 2);
+
+    // Cognito reports the orphan gone; the real one present.
+    await reconcile.reconcileTenantAdmins(t, async (email) => email !== 'orphan@o.test');
+
+    assert.equal((await repo.getTenantConfig(t))?.adminCount, 1, 'orphan atomically decremented');
+    const orphan = await repo.getUser('sub-orphan@o.test');
+    assert.equal(
+      orphan?.memberships.some((m) => m.tenantId === t),
+      false,
+      'orphan membership dropped',
+    );
+    // The real admin is now the genuine last admin → the guarded decrement refuses.
+    await assert.rejects(() => repo.decrementAdminCount(t), repo.LastAdminError);
+  });
+
+  test('keeps an admin whose Cognito user exists (no-op)', async () => {
+    const t = 'orphan-keep';
+    await seedTenant(t);
+    await repo.putUser(admin(t, 'a@o.test', OLD));
+    await repo.putUser(admin(t, 'b@o.test', OLD));
+    await repo.recountAdmins(t);
+    await reconcile.reconcileTenantAdmins(t, async () => true);
+    assert.equal((await repo.getTenantConfig(t))?.adminCount, 2, 'nothing pruned');
+  });
+
+  test('does NOT prune a just-invited admin within the grace window', async () => {
+    const t = 'orphan-grace';
+    await seedTenant(t);
+    await repo.putUser(admin(t, 'fresh@o.test', new Date().toISOString())); // recent
+    await repo.recountAdmins(t);
+    await reconcile.reconcileTenantAdmins(t, async () => false); // reports missing
+    assert.equal((await repo.getTenantConfig(t))?.adminCount, 1, 'grace window protects new admin');
+    const fresh = await repo.getUser('sub-fresh@o.test');
+    assert.ok(fresh?.memberships.some((m) => m.tenantId === t));
+  });
+
+  test('a transient Cognito error prunes nothing and does not throw', async () => {
+    const t = 'orphan-transient';
+    await seedTenant(t);
+    await repo.putUser(admin(t, 'maybe@o.test', OLD));
+    await repo.recountAdmins(t);
+    await reconcile.reconcileTenantAdmins(t, async () => {
+      throw new Error('cognito unavailable');
+    });
+    assert.equal((await repo.getTenantConfig(t))?.adminCount, 1, 'skipped on ambiguous failure');
   });
 });

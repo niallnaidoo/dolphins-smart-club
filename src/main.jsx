@@ -49,6 +49,7 @@ import {
   AdminFixtures,
   AdminLeagues,
   AdminSettingsView,
+  AdminTeamAccessView,
   LeagueForm,
   CreateSeriesForm,
 } from './admin.jsx';
@@ -289,6 +290,13 @@ function AuthedApp({ tenantConfig }) {
     enabled: !!membership,
   });
   const meQuery = useQuery({ queryKey: qk.me(), queryFn: api.getMe, enabled: !!membership });
+  // Tenant roster for Team & Access (admins only). Not part of the initial-load gate —
+  // the Team page handles its own loading/empty so the rest of the console renders immediately.
+  const usersQuery = useQuery({
+    queryKey: qk.users(),
+    queryFn: api.getUsers,
+    enabled: !!membership && role === 'admin',
+  });
 
   if (!membership) {
     return (
@@ -312,6 +320,7 @@ function AuthedApp({ tenantConfig }) {
   const clubs =
     role === 'admin' ? (clubsQuery.data ?? []) : repClubQueries.map((q) => q.data).filter(Boolean);
   const allSeries = seriesQuery.data ?? [];
+  const users = usersQuery.data ?? [];
   // Leagues live in tenant config (admin-managed catalogue clubs opt into).
   const allLeagues = tenantConfig?.leagues ?? [];
   const onboarded = meQuery.data?.onboardingSeen ?? {};
@@ -347,19 +356,25 @@ function AuthedApp({ tenantConfig }) {
 
   // ── Series mutations (preserve prototype signatures; back with the API) ──
   const invalidate = (key) => queryClient.invalidateQueries({ queryKey: key });
-  async function withToast(fn, errMsg) {
+  async function withToast(fn, errMsg, opts = {}) {
     try {
       return await fn();
     } catch (err) {
       const conflict = err instanceof ApiError && err.status === 409;
+      // Most 409s are optimistic-concurrency clashes → generic refresh copy. But user-mgmt
+      // 409s ("user already active…", "cannot remove the last admin") carry actionable copy
+      // the admin must see, so those callers pass `rawConflict` to surface err.message.
+      const rawConflict = conflict && opts.rawConflict;
       toastShow(
-        conflict ? 'Someone else just changed this — refreshing.' : errMsg || err.message,
+        rawConflict
+          ? err.message
+          : conflict
+            ? 'Someone else just changed this — refreshing.'
+            : errMsg || err.message,
         'warn',
       );
       if (conflict) {
-        invalidate(qk.clubs());
-        invalidate(qk.series());
-        invalidate(qk.tenant());
+        (opts.invalidate ?? [qk.clubs(), qk.series(), qk.tenant()]).forEach(invalidate);
       }
       // Flag so callers that rethrow (e.g. an upload UI) don't toast this a second time.
       if (err && typeof err === 'object') err.alreadyToasted = true;
@@ -489,6 +504,7 @@ function AuthedApp({ tenantConfig }) {
                 role="admin"
                 {...{
                   clubs,
+                  users,
                   allSeries,
                   allLeagues,
                   toastShow,
@@ -585,6 +601,7 @@ function AuthedApp({ tenantConfig }) {
 function Shell({
   role,
   clubs,
+  users = [],
   allSeries,
   allLeagues,
   toastShow,
@@ -809,9 +826,40 @@ function Shell({
       })
       .catch(() => {});
   }
-  // Admin invites a rep/admin: creates the Cognito account + membership server-side.
+  // Admin invites a rep/admin: creates the Cognito account + membership server-side. The
+  // spec carries { email, role, clubIds?, channels?, link? }; the modal owns the success view
+  // (login link + per-channel results) off the returned { sub, email, loginUrl, results? }.
+  // User-mgmt 409s ("user already active", "cannot remove the last admin") are surfaced
+  // verbatim (rawConflict) and refresh the users list rather than clubs/series/tenant.
+  const userConflictOpts = { rawConflict: true, invalidate: [qk.users()] };
   function inviteUser(spec) {
-    return withToast(() => api.inviteUser(spec), 'Could not send invite');
+    return withToast(() => api.inviteUser(spec), 'Could not send invite', userConflictOpts).then(
+      (res) => {
+        invalidate(qk.users());
+        return res;
+      },
+    );
+  }
+  // Change a user's role and/or club scope.
+  function patchUser(sub, body) {
+    return withToast(
+      () => api.patchUser(sub, body),
+      'Could not update user',
+      userConflictOpts,
+    ).then((res) => {
+      invalidate(qk.users());
+      return res;
+    });
+  }
+  // Remove a user's access to this tenant (server hard-revokes + enforces last-admin).
+  function removeUser(sub) {
+    return withToast(() => api.removeUser(sub), 'Could not remove user', userConflictOpts).then(
+      () => invalidate(qk.users()),
+    );
+  }
+  // Re-send the staff invite notification. Resolves to { results } for the caller to surface.
+  function resendInvite(sub) {
+    return withToast(() => api.resendInvite(sub), 'Could not resend invite');
   }
   async function generatePlayerRegLink(targetClubId) {
     const res = await withToast(() => api.generateRegLink(targetClubId), 'Could not create link');
@@ -883,6 +931,7 @@ function Shell({
     },
     { v: 'leagues', label: 'Leagues', icon: Icon.Shield, num: allLeagues.length },
     { v: 'fixtures', label: 'Fixtures & Venues', icon: Icon.Field, dot: 'teal' },
+    { v: 'team', label: 'Team & Access', icon: Icon.Users, num: users.length || undefined },
   ];
 
   const releasedForMe = allSeries.filter((s) => s.released && s.teams.includes(clubId));
@@ -933,6 +982,7 @@ function Shell({
             gotoClub={setActiveClub}
             gotoList={gotoList}
             gotoAdminView={gotoAdminView}
+            onInviteAdmin={() => gotoAdminView('team')}
             toast={toastShow}
             submissionDeadline={submissionDeadline}
             onUpdateDeadline={setSubmissionDeadline}
@@ -950,6 +1000,7 @@ function Shell({
             onOnboardClub={onboardClub}
             onBulkOnboardClubs={bulkOnboardClubs}
             onSendInvite={sendClubInvite}
+            onInvite={inviteUser}
             knownClubs={tenantConfig?.knownClubs ?? []}
           />
         );
@@ -1040,6 +1091,19 @@ function Shell({
             toast={toastShow}
           />
         );
+      if (view === 'team')
+        return (
+          <AdminTeamAccessView
+            users={users}
+            clubs={clubs}
+            onInvite={inviteUser}
+            onPatchUser={patchUser}
+            onRemoveUser={removeUser}
+            onResend={resendInvite}
+            currentUserEmail={userEmail}
+            toast={toastShow}
+          />
+        );
       if (view === 'settings')
         return (
           <AdminSettingsView
@@ -1049,6 +1113,7 @@ function Shell({
             onSaveOrg={saveOrgName}
             onUpdateDeadline={setSubmissionDeadline}
             onUpdateSupport={setSupportContact}
+            onManageTeam={() => gotoAdminView('team')}
             toast={toastShow}
           />
         );

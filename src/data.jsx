@@ -39,6 +39,14 @@ export function daysUntil(iso) {
   return Math.max(0, diff);
 }
 
+// Whole days since a full ISO timestamp (e.g. invitedAt `2026-06-04T…Z`). Floor at 0.
+export function daysAgo(iso) {
+  if (!iso) return null;
+  const then = new Date(iso);
+  if (Number.isNaN(then.getTime())) return null;
+  return Math.max(0, Math.floor((Date.now() - then.getTime()) / 86400000));
+}
+
 // Sub-unions / districts derived from the affiliation form's drop-down
 export const DISTRICTS = [
   'Ethekwini Metro Cricket Union',

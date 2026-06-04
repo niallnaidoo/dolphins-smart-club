@@ -7,6 +7,10 @@ export interface Membership {
   role: Role;
   /** Clubs a rep is scoped to. Ignored for admins (who see the whole tenant). */
   clubIds: string[];
+  /** When this membership was created via an admin invite (ISO). */
+  invitedAt?: string;
+  /** Email of the admin who issued the invite. */
+  invitedBy?: string;
 }
 
 export interface UserProfile {
@@ -14,6 +18,12 @@ export interface UserProfile {
   email: string;
   memberships: Membership[];
   onboardingSeen: Record<string, boolean>;
+  /**
+   * First-ever sign-in timestamp (ISO), stamped once per user lifetime by the
+   * PreTokenGen trigger. Absent ⇒ the user has been invited but never signed in
+   * (status 'pending'). Drives the Team & Access "Active / Not signed in" pill.
+   */
+  lastLoginAt?: string;
 }
 
 /**
@@ -48,6 +58,13 @@ export interface TenantConfig {
   leagues?: League[];
   /** Optional per-tenant required-docs override; falls back to shared default. */
   requiredDocs?: unknown[];
+  /**
+   * Authoritative count of admins for this tenant, maintained transactionally on
+   * the CONFIG item so the last-admin lockout guard is race-free (no TOCTOU on a
+   * point-in-time list). Absent on legacy tenants → lazily backfilled by
+   * repo.recountAdmins from authoritative memberships before the guard runs.
+   */
+  adminCount?: number;
 }
 
 /** Stored club record. Catalogue-derived fields stay client-side. */

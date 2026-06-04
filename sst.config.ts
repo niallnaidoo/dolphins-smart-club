@@ -104,6 +104,9 @@ export default $config({
       'WhatsappInviteTemplate',
       'club_onboarding_invite',
     );
+    // Staff (admin/rep) invites reuse the invite template by default until a dedicated
+    // Meta-approved staff template exists. Read by notify/whatsapp.ts (WHATSAPP_STAFF_TEMPLATE).
+    const whatsappStaffTemplate = new sst.Secret('WhatsappStaffTemplate', 'club_onboarding_invite');
 
     // ── API: one Hono Lambda behind a $default route ──
     // JWT is verified inside the app (aws-jwt-verify) so public routes (/tenant,
@@ -122,6 +125,7 @@ export default $config({
         whatsappAccessToken,
         whatsappPhoneNumberId,
         whatsappInviteTemplate,
+        whatsappStaffTemplate,
       ],
       // SES isn't covered by `link` (it's not an SST resource), so grant it directly.
       // SES authorizes by verified identity, not resource ARN, hence resources: ['*'].
@@ -146,6 +150,7 @@ export default $config({
         WHATSAPP_ACCESS_TOKEN: whatsappAccessToken.value,
         WHATSAPP_PHONE_NUMBER_ID: whatsappPhoneNumberId.value,
         WHATSAPP_INVITE_TEMPLATE: whatsappInviteTemplate.value,
+        WHATSAPP_STAFF_TEMPLATE: whatsappStaffTemplate.value,
         // Force dry-run regardless of secrets (set NOTIFY_DRY_RUN=1 in the deploy env)
         // — the verified-only/dry-run gate while awaiting SES production access.
         NOTIFY_DRY_RUN: process.env.NOTIFY_DRY_RUN ?? '',
