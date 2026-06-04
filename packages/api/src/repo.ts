@@ -34,6 +34,7 @@ import {
 import type {
   Club,
   ClubCommEvent,
+  League,
   SendResult,
   Series,
   TenantConfig,
@@ -137,6 +138,41 @@ export async function updateSupportCopy(tenant: string, support: string): Promis
       ExpressionAttributeValues: { ':v': support },
     }),
   );
+}
+
+/**
+ * Targeted SET of the league catalogue (leaves branding/deadline/knownClubs/adminCount
+ * untouched), guarded so a concurrent admin save can't be clobbered: by default the write
+ * only lands while the stored catalogue is still ABSENT or EMPTY. Returns true if written,
+ * false if the guard failed (raced to populated, or the CONFIG row vanished). The CALLER
+ * decides whether to attempt this based on a prior read (see seedLeaguesOnly) — this is the
+ * race net, not the policy. `force` drops the empty-array half of the guard so an explicitly
+ * forced repair can overwrite a present-but-empty catalogue.
+ */
+export async function backfillLeagues(
+  tenant: string,
+  leagues: League[],
+  force = false,
+): Promise<boolean> {
+  const guard = force
+    ? 'attribute_exists(pk)'
+    : 'attribute_exists(pk) AND (attribute_not_exists(#l) OR size(#l) = :zero)';
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: TABLE,
+        Key: tenantConfigKey(tenant),
+        UpdateExpression: 'SET #l = :v',
+        ConditionExpression: guard,
+        ExpressionAttributeNames: { '#l': 'leagues' },
+        ExpressionAttributeValues: force ? { ':v': leagues } : { ':v': leagues, ':zero': 0 },
+      }),
+    );
+    return true;
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name === 'ConditionalCheckFailedException') return false;
+    throw err;
+  }
 }
 
 // ── Clubs ──

@@ -1398,3 +1398,72 @@ describe('reconcileTenantAdmins (orphan pruning)', () => {
     assert.equal((await repo.getTenantConfig(t))?.adminCount, 1, 'skipped on ambiguous failure');
   });
 });
+
+/**
+ * `seedLeaguesOnly` — the manual leagues-backfill repair (--leagues-only). Exercises the
+ * tri-state policy that surfaced in review: never falsely reassure on a missing CONFIG,
+ * never clobber a populated or intentionally-emptied catalogue without --force, and fix the
+ * actual dev-stage bug (CONFIG present but the `leagues` attribute absent).
+ */
+describe('seedLeaguesOnly (manual leagues backfill repair)', () => {
+  let seed: typeof import('../src/seed-core.js');
+  let snapshotCount = 0;
+
+  before(async () => {
+    seed = await import('../src/seed-core.js');
+    snapshotCount = (await repo.getTenantConfig('dolphins'))?.leagues?.length ?? 0;
+    assert.ok(snapshotCount > 0, 'precondition: dolphins seeded with a non-empty catalogue');
+  });
+
+  // Leave dolphins with its full catalogue so later suites (if any) see a healthy tenant.
+  after(async () => {
+    await seed.seedLeaguesOnly('dolphins', true);
+  });
+
+  test('tenant with no CONFIG row → config-missing (loud, not a silent skip)', async () => {
+    const r = await seed.seedLeaguesOnly('unseeded-co');
+    assert.deepEqual(r, { status: 'config-missing' });
+  });
+
+  test('already-populated catalogue → idempotent no-op', async () => {
+    const before = await repo.getTenantConfig('dolphins');
+    const r = await seed.seedLeaguesOnly('dolphins');
+    assert.equal(r.status, 'already-populated');
+    assert.equal(r.status === 'already-populated' && r.count, before?.leagues?.length);
+  });
+
+  test('intentionally-empty [] is respected without --force (empty-skipped)', async () => {
+    await repo.backfillLeagues('dolphins', [], true); // admin-emptied state
+    const r = await seed.seedLeaguesOnly('dolphins');
+    assert.equal(r.status, 'empty-skipped');
+    assert.equal((await repo.getTenantConfig('dolphins'))?.leagues?.length, 0, 'left untouched');
+  });
+
+  test('--force overwrites an empty catalogue from the snapshot', async () => {
+    const r = await seed.seedLeaguesOnly('dolphins', true); // still [] from previous test
+    assert.equal(r.status, 'backfilled');
+    assert.equal(r.status === 'backfilled' && r.count, snapshotCount);
+    assert.equal((await repo.getTenantConfig('dolphins'))?.leagues?.length, snapshotCount);
+  });
+
+  test('absent leagues attribute → backfilled (the dev-stage bug)', async () => {
+    const cfg = await repo.getTenantConfig('dolphins');
+    delete (cfg as { leagues?: unknown }).leagues; // simulate a pre-catalogue CONFIG
+    await repo.putTenantConfig(cfg!);
+    const r = await seed.seedLeaguesOnly('dolphins'); // no --force needed for absent
+    assert.equal(r.status, 'backfilled');
+    assert.equal(r.status === 'backfilled' && r.count, snapshotCount);
+    assert.equal((await repo.getTenantConfig('dolphins'))?.leagues?.length, snapshotCount);
+  });
+
+  test('backfillLeagues guard refuses to clobber a populated catalogue (returns false, no-op)', async () => {
+    // dolphins is populated (restored by the previous test) — the race net must hold.
+    const before = (await repo.getTenantConfig('dolphins'))?.leagues ?? [];
+    assert.ok(before.length > 0, 'precondition: catalogue populated');
+    const intruder = [{ key: 'x', label: 'X', group: 'g', district: 'd' }];
+    const wrote = await repo.backfillLeagues('dolphins', intruder, false);
+    assert.equal(wrote, false, 'guard fails on a non-empty catalogue');
+    const after = (await repo.getTenantConfig('dolphins'))?.leagues ?? [];
+    assert.equal(after.length, before.length, 'existing catalogue left untouched');
+  });
+});

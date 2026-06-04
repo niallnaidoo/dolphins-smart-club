@@ -88,6 +88,55 @@ export async function seedTenantConfig(tenant: string): Promise<number> {
 }
 
 /**
+ * Outcome of a leagues-only backfill, kept tri-state on purpose: a single boolean would
+ * conflate "already populated" (healthy) with "no CONFIG row" (broken tenant) and give the
+ * operator a false all-clear. The CLI maps each case to distinct output / exit code.
+ */
+export type LeaguesBackfillResult =
+  | { status: 'config-missing' }
+  | { status: 'already-populated'; count: number }
+  | { status: 'empty-skipped'; count: number }
+  | { status: 'backfilled'; count: number };
+
+/**
+ * Repair ONLY a tenant's league catalogue from its snapshot, without touching branding,
+ * deadline, knownClubs, or adminCount — a manual one-shot repair for a stage whose CONFIG
+ * predates the catalogue (NOT an automatic post-deploy step). Reads first to decide policy:
+ *
+ *   • no CONFIG row     → 'config-missing' (caller surfaces a loud error; run full seed)
+ *   • leagues non-empty → 'already-populated' (idempotent no-op)
+ *   • leagues `[]`      → 'empty-skipped' unless `force` — an empty catalogue is a valid
+ *                         admin choice (PUT /tenant/config accepts it), so we don't silently
+ *                         refill it; `force` overrides for a deliberate repair
+ *   • leagues absent    → 'backfilled' (the "never seeded" case)
+ *
+ * The write itself is race-guarded (see repo.backfillLeagues) so a concurrent admin save
+ * between our read and write can't be clobbered.
+ */
+export async function seedLeaguesOnly(
+  tenant: string,
+  force = false,
+): Promise<LeaguesBackfillResult> {
+  const current = await repo.getTenantConfig(tenant);
+  if (!current) return { status: 'config-missing' };
+  const existing = current.leagues;
+  if (Array.isArray(existing) && existing.length > 0)
+    return { status: 'already-populated', count: existing.length };
+  if (Array.isArray(existing) && existing.length === 0 && !force)
+    return { status: 'empty-skipped', count: 0 };
+  const snapLeagues = loadSnapshot(tenant).leagues ?? [];
+  const written = await repo.backfillLeagues(tenant, snapLeagues, force);
+  if (written) return { status: 'backfilled', count: snapLeagues.length };
+  // Guard fired between our read and our write — a concurrent admin save (or a deleted
+  // CONFIG) changed the row. Don't report a backfill that didn't happen: re-read and tell
+  // the truth. Non-force ⇒ the catalogue became non-empty; force ⇒ the only way the guard
+  // (attribute_exists(pk)) fails is the row vanished.
+  const after = await repo.getTenantConfig(tenant);
+  if (!after) return { status: 'config-missing' };
+  return { status: 'already-populated', count: after.leagues?.length ?? 0 };
+}
+
+/**
  * Opt-in demo COHORT data: load the snapshot's sample clubs + series into a tenant
  * (for local dev / set demo accounts). Provisioning (config, incl. leagues) must run
  * first. Leagues are NOT demo data — they're provisioned in seedTenantConfig.
