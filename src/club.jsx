@@ -6,14 +6,23 @@ import {
   useEffect as useEffectC,
   useRef as useRefC,
 } from 'react';
+import { createPortal } from 'react-dom';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
   DISTRICTS,
+  COACHING_BODIES,
   COACHING_LEVELS,
+  greeting,
   REQUIRED_DOCS,
   CQI_STRUCTURE,
   docFileMeta,
+  DOC_ACCEPT,
+  resolveDocMime,
+  isAllowedDocMime,
+  extFromMime,
+  safeguardingMeta,
+  MIN_SAFEGUARDING_FILES,
   docCompletion,
   docsUploadedCount,
   overallProgress,
@@ -32,8 +41,8 @@ import {
   clearanceOverdue,
   clearanceDaysRemaining,
 } from './data.jsx';
-import { leagueOptionsForDistrict, findByKey, labelByKey } from './leagues.js';
-import { shortAddress, suburbOf } from './geocode.js';
+import { leagueOptionsForDistrict, findByKey, labelByKey, teamCounts } from './leagues.js';
+import { shortAddress, suburbOf, SA_BOUNDS, isInSouthAfrica } from './geocode.js';
 import {
   Icon,
   Pill,
@@ -53,22 +62,46 @@ import { getDocUploadUrl, uploadToPresigned } from './api.js';
 import { DocPreviewModal } from './DocPreviewModal.jsx';
 
 /* ─── Compliance doc upload — presigned S3 PUT, then mark uploaded ─── */
-function DocUploadButton({ clubId, docKey, label, onUploaded, toast, variant = 'button' }) {
+function DocUploadButton({
+  clubId,
+  docKey,
+  label,
+  onUploaded,
+  toast,
+  variant = 'button',
+  buttonLabel,
+}) {
   const inputRef = useRefC(null);
   const [busy, setBusy] = useStateC(false);
   const isReplace = variant === 'link';
   async function handleFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
+    // file.type is often empty for .doc/.docx — resolve from the extension before
+    // validating, or valid Word files get rejected / mislabelled as PDF.
+    const mime = resolveDocMime(file);
+    if (!isAllowedDocMime(mime)) {
+      toast('PDF or Word documents only', 'warn');
+      if (inputRef.current) inputRef.current.value = '';
+      return;
+    }
     setBusy(true);
     try {
       if (import.meta.env.VITE_LOCAL_AUTH === '1') {
         // Local dev: no S3 — record the doc metadata without an actual upload.
-        await onUploaded(docKey, { objectKey: `local/${docKey}.pdf`, size: file.size });
+        // The key must be unique per file: safeguarding stores several entries,
+        // and a constant key would make every upload dedupe into the first.
+        await onUploaded(docKey, {
+          objectKey: `local/${docKey}-${crypto.randomUUID()}.${extFromMime(mime)}`,
+          size: file.size,
+          contentType: mime,
+        });
       } else {
-        const { uploadUrl, objectKey } = await getDocUploadUrl(clubId, docKey);
-        await uploadToPresigned(uploadUrl, file);
-        await onUploaded(docKey, { objectKey, size: file.size });
+        // Use the server-echoed contentType for the PUT — it must match the
+        // presigned ContentType exactly or S3 rejects the upload.
+        const { uploadUrl, objectKey, contentType } = await getDocUploadUrl(clubId, docKey, mime);
+        await uploadToPresigned(uploadUrl, file, contentType);
+        await onUploaded(docKey, { objectKey, size: file.size, contentType });
       }
       // onUploaded rejects if the server-side record failed, so this only fires on
       // real success (and the failure toast is surfaced by the caller's withToast).
@@ -87,7 +120,7 @@ function DocUploadButton({ clubId, docKey, label, onUploaded, toast, variant = '
       <input
         ref={inputRef}
         type="file"
-        accept="application/pdf"
+        accept={DOC_ACCEPT}
         style={{ display: 'none' }}
         onChange={handleFile}
       />
@@ -106,11 +139,11 @@ function DocUploadButton({ clubId, docKey, label, onUploaded, toast, variant = '
             cursor: busy ? 'default' : 'pointer',
           }}
         >
-          {busy ? 'Replacing…' : 'Replace'}
+          {busy ? 'Replacing…' : buttonLabel || 'Replace'}
         </button>
       ) : (
         <Btn tone="ink" size="sm" icon={Icon.Upload} onClick={() => inputRef.current?.click()}>
-          {busy ? 'Uploading…' : 'Upload'}
+          {busy ? 'Uploading…' : buttonLabel || 'Upload'}
         </Btn>
       )}
     </>
@@ -123,11 +156,12 @@ export function GroundMap({ query, coords: savedPin, onResolved, onAddressPicked
   const elRef = useRefC(null);
   const mapRef = useRefC(null);
   const markerRef = useRefC(null);
-  // A persisted pin is only restorable when it carries finite coords. A truthy-but-
-  // malformed pin must be ignored: it would feed undefined into setView/placeMarker and
-  // make the coords badge's `.toFixed` throw. Invalid → fall through to forward-geocode.
-  const validPin =
-    savedPin && Number.isFinite(savedPin.lat) && Number.isFinite(savedPin.lon) ? savedPin : null;
+  // A persisted pin is only restorable when it carries finite coords INSIDE South
+  // Africa. A truthy-but-malformed pin would feed undefined into setView/placeMarker
+  // and make the coords badge's `.toFixed` throw; an out-of-SA pin (saved before the
+  // SA lock existed) would restore a maxBounds-clamped view with the marker off-screen.
+  // Either way → fall through to forward-geocode.
+  const validPin = savedPin && isInSouthAfrica(savedPin.lat, savedPin.lon) ? savedPin : null;
   const [coords, setCoords] = useStateC(validPin);
   // True only when we mounted with a valid saved pin. Used once to skip the mount-time
   // forward-geocode so a remount (e.g. returning to step 1) restores the dropped pin
@@ -177,6 +211,9 @@ export function GroundMap({ query, coords: savedPin, onResolved, onAddressPicked
   // a single Nominatim request (their usage policy caps at ~1 req/s).
   function handleMapClick(lat, lon) {
     if (!mapRef.current || !L) return;
+    // maxBounds keeps the viewport over SA, but its half-degree padding strip is
+    // still clickable — silently ignore those points rather than pin them.
+    if (!isInSouthAfrica(lat, lon)) return;
     const id = ++reqRef.current; // this click is now the latest interaction
     setNotFound(false);
     setLoadError(false);
@@ -206,6 +243,17 @@ export function GroundMap({ query, coords: savedPin, onResolved, onAddressPicked
       .then((r) => {
         if (id !== reqRef.current) return; // a newer interaction superseded this
         setLoading(false);
+        // The SA bbox contains Lesotho and Eswatini, so a click can land outside
+        // South Africa proper — the resolved country is the precise gate. Reject
+        // the pin entirely (the bbox click-guard already stored it optimistically).
+        const cc = r?.address?.country_code;
+        if (cc && cc !== 'za') {
+          if (markerRef.current) markerRef.current.remove();
+          setCoords(null);
+          setNotFound(true);
+          onResolvedRef.current?.(null);
+          return;
+        }
         const addr = shortAddress(r); // '' when no readable address resolves
         onResolvedRef.current?.({ lat, lon, name: r?.display_name || null, suburb: suburbOf(r) });
         // Only fill the field with a real address — never a raw lat/lon string.
@@ -226,6 +274,16 @@ export function GroundMap({ query, coords: savedPin, onResolved, onAddressPicked
     const map = L.map(elRef.current, {
       scrollWheelZoom: false,
       attributionControl: true,
+      // Hard-lock the viewport to South Africa. Half-degree padding keeps coastal
+      // grounds off the hard edge; viscosity 1.0 makes panning out impossible.
+      // minZoom 6, not lower: at 5 the SA bounds are narrower than the map frame
+      // and Leaflet bounces fighting maxBoundsViscosity on zoom-out.
+      minZoom: 6,
+      maxBounds: L.latLngBounds(
+        [SA_BOUNDS.south - 0.5, SA_BOUNDS.west - 0.5],
+        [SA_BOUNDS.north + 0.5, SA_BOUNDS.east + 0.5],
+      ),
+      maxBoundsViscosity: 1.0,
     }).setView(
       validPin ? [validPin.lat, validPin.lon] : [-29.85, 31.02], // saved pin, else Durban default
       validPin ? 16 : 11,
@@ -264,8 +322,11 @@ export function GroundMap({ query, coords: savedPin, onResolved, onAddressPicked
     setLoading(true);
     setNotFound(false);
     setLoadError(false);
+    // countrycodes=za hard-filters results to South Africa — typing "London" must
+    // come back not-found, not fly the map abroad. A server-side filter beats
+    // appending "South Africa" to the query string (no string-munging surprises).
     fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&q=${encodeURIComponent(query)}`,
+      `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&countrycodes=za&q=${encodeURIComponent(query)}`,
       {
         signal: ctrl.signal,
         headers: { 'Accept-Language': 'en' },
@@ -286,6 +347,13 @@ export function GroundMap({ query, coords: savedPin, onResolved, onAddressPicked
         const r = results[0];
         const lat = parseFloat(r.lat),
           lon = parseFloat(r.lon);
+        // Belt-and-braces: countrycodes=za should guarantee this, but a result
+        // outside the SA box would fight maxBounds — treat it as not-found.
+        if (!isInSouthAfrica(lat, lon)) {
+          setCoords(null);
+          setNotFound(true);
+          return;
+        }
         mapRef.current.flyTo([lat, lon], 16, { duration: 0.8 });
         placeMarker(lat, lon, r.display_name.split(',').slice(0, 2).join(','));
         setNotFound(false);
@@ -336,7 +404,14 @@ export function GroundMap({ query, coords: savedPin, onResolved, onAddressPicked
 }
 
 /* ─── Club Home: phase tracker + onboarding next step ─── */
-export function ClubHome({ club, goto, toast, replayOnboarding, submissionDeadline }) {
+export function ClubHome({
+  club,
+  goto,
+  toast,
+  replayOnboarding,
+  submissionDeadline,
+  allLeagues = [],
+}) {
   const deadlineLong = formatDeadlineLong(submissionDeadline);
   const deadlineShort = formatDeadlineShort(submissionDeadline);
   const daysLeft = daysUntil(submissionDeadline);
@@ -349,6 +424,9 @@ export function ClubHome({ club, goto, toast, replayOnboarding, submissionDeadli
   const dc = docCompletion(club);
   const op = overallProgress(club);
   const band = cqiBand(club.cqi);
+  // Team counts derive from the leagues entered on the affiliation form
+  // (one side per league); club.teams/juniors are stale admin-era fields.
+  const tc = teamCounts(club.leagues, allLeagues);
   // "Submitted" is the form fact (affiliation === 'complete'), never payment.
   const affDone = affiliationSubmitted(club);
 
@@ -405,16 +483,13 @@ export function ClubHome({ club, goto, toast, replayOnboarding, submissionDeadli
             provincial heroes.
           </p>
         </div>
-        <div className="hero-attrib">
-          <strong>Marques Ackerman</strong> · 92 (74)
-        </div>
       </div>
 
       <div className="page-head">
         <div className="ph-left">
           <div className="ph-crumb">Club Portal · {club.name}</div>
           <h1 className="ph-title">
-            Good morning, <em>{club.chair.split(' ')[0]}</em>
+            {greeting()}, <em>{club.chair.split(' ')[0]}</em>
           </h1>
           <p className="ph-desc">
             Your 2026/27 Cricket Services club integration sits at{' '}
@@ -637,9 +712,9 @@ export function ClubHome({ club, goto, toast, replayOnboarding, submissionDeadli
             {[
               ['CQI score', club.cqi > 0 ? club.cqi.toFixed(1) : '—'],
               ['Members', club.players || 0],
-              ['Senior teams', club.teams],
-              ['Junior teams', club.juniors],
-              ['Sub-union', club.sub],
+              ['Senior teams', tc.senior],
+              ['Junior teams', tc.junior],
+              ['Sub-union', club.district || club.sub || '—'],
               ['Chair', club.chair.split(' ')[0]],
             ].map(([k, v], i) => (
               <div key={i}>
@@ -677,8 +752,8 @@ export function ClubHome({ club, goto, toast, replayOnboarding, submissionDeadli
 const EMPTY_MEMBER = { name: '', cell: '', email: '', gender: '', race: '' };
 const EMPTY_COACH = {
   name: '',
-  body: 'CSA',
-  level: 'Level 2',
+  body: 'None',
+  level: 'None',
   status: 'Completed',
   cell: '',
   email: '',
@@ -1747,8 +1822,9 @@ export function AffiliationForm({
                                               updateCoach(idx, 'body', e.target.value)
                                             }
                                           >
-                                            <option>CSA</option>
-                                            <option>Gary Kirsten</option>
+                                            {COACHING_BODIES.map((b) => (
+                                              <option key={b}>{b}</option>
+                                            ))}
                                           </select>
                                         </div>
                                         <div className="field" style={{ marginBottom: 8 }}>
@@ -1956,9 +2032,7 @@ export function AffiliationForm({
                   Affiliated clubs join the Hollywoodbets Dolphins ecosystem — fixtures, talent ID,
                   clinical data and franchise readiness, all in one place.
                 </div>
-                <div className="aff-hero-credit">
-                  <strong>Marques Ackerman</strong> · 92 (74) · Hollywoodbets Dolphins
-                </div>
+                <div className="aff-hero-credit">Hollywoodbets Dolphins</div>
               </div>
             </div>
           </div>
@@ -2425,6 +2499,7 @@ export function DocumentsView({
   goto,
   toast,
   onUpload,
+  onRemoveFile,
   onSaveExco,
   submissionDeadline,
   unionEmail,
@@ -2440,6 +2515,9 @@ export function DocumentsView({
   const dc = docCompletion(club);
   const [showExcoForm, setShowExcoForm] = useStateC(false);
   const [preview, setPreview] = useStateC(null);
+  // Pending safeguarding-file removal ({ key, entry }) awaiting the confirm modal —
+  // deletion also removes the S3 object, so a stray click must not be enough.
+  const [confirmRemove, setConfirmRemove] = useStateC(null);
   const excoBearerCount = (() => {
     if (!club.exco) return 0;
     const fixed = FIXED_EXCO_ROLES.filter((r) => club.exco[r.key]?.name).length;
@@ -2459,8 +2537,8 @@ export function DocumentsView({
           </h1>
           <p className="ph-desc">
             Per the 2026/27 Cricket Services Club Requirements, {REQUIRED_DOCS.length - 1} documents
-            must be uploaded and one roster captured directly on the platform. PDFs preferred — max
-            10 MB per file.
+            must be uploaded and one roster captured directly on the platform. PDF or Word documents
+            — max 10 MB per file.
           </p>
         </div>
       </div>
@@ -2489,12 +2567,15 @@ export function DocumentsView({
         {REQUIRED_DOCS.map((d) => {
           const up = club.docs[d.key];
           const isExco = d.key === 'exco';
+          const isSafeguarding = d.key === 'safeguarding';
           // Real uploads carry docMeta with an objectKey; an admin "mark compliant"
           // override sets the flag with no file. Demo/local mode has no docMeta at all
-          // but should still preview the bundled sample.
+          // but should still preview the bundled sample. Safeguarding is multi-file:
+          // one certificate per person, at least two people.
           const meta = club.docMeta?.[d.key];
           const demo = import.meta.env.VITE_LOCAL_AUTH === '1';
           const { real, metaText } = docFileMeta(meta);
+          const sg = isSafeguarding ? safeguardingMeta(meta) : null;
           return (
             <div key={d.key} className={`doc-row ${up ? 'uploaded' : ''}`}>
               <div className="doc-icon">{isExco ? <Icon.Form /> : <Icon.Doc />}</div>
@@ -2521,7 +2602,55 @@ export function DocumentsView({
                   )}
                 </div>
                 <div className="doc-meta">
-                  {up ? (
+                  {isSafeguarding ? (
+                    sg.files.length ? (
+                      <span style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                        {sg.files.map((f) => {
+                          const fm = docFileMeta(f);
+                          return (
+                            <span key={f.objectKey}>
+                              {/* Real buttons (not the codebase's <a onClick> habit):
+                                  keyboard focus matters here — View is per-file and
+                                  Remove is destructive (gated by the confirm modal). */}
+                              {fm.metaText || 'Document'} ·{' '}
+                              <button
+                                type="button"
+                                onClick={() => setPreview({ key: d.key, entry: f })}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  padding: 0,
+                                  font: 'inherit',
+                                  color: 'var(--teal-deep)',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                View
+                              </button>{' '}
+                              ·{' '}
+                              <button
+                                type="button"
+                                onClick={() => setConfirmRemove({ key: d.key, entry: f })}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  padding: 0,
+                                  font: 'inherit',
+                                  color: 'var(--coral)',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                Remove
+                              </button>
+                            </span>
+                          );
+                        })}
+                        {sg.files.length < MIN_SAFEGUARDING_FILES && !up && <span>{d.desc}</span>}
+                      </span>
+                    ) : (
+                      d.desc
+                    )
+                  ) : up ? (
                     isExco ? (
                       <span>
                         Roster captured · {excoBearerCount} bearer{excoBearerCount === 1 ? '' : 's'}{' '}
@@ -2535,7 +2664,7 @@ export function DocumentsView({
                       </span>
                     ) : (
                       <span>
-                        {metaText || 'PDF document'} ·{' '}
+                        {metaText || 'Document'} ·{' '}
                         <DocUploadButton
                           clubId={club.id}
                           docKey={d.key}
@@ -2561,7 +2690,27 @@ export function DocumentsView({
                   )}
                 </div>
               </div>
-              {up ? (
+              {isSafeguarding ? (
+                <>
+                  {up ? (
+                    <Pill tone="teal" dot>
+                      Uploaded
+                    </Pill>
+                  ) : sg.files.length ? (
+                    <Pill tone="gold" dot>
+                      {sg.files.length} of {MIN_SAFEGUARDING_FILES} minimum
+                    </Pill>
+                  ) : null}
+                  <DocUploadButton
+                    clubId={club.id}
+                    docKey={d.key}
+                    label={d.name}
+                    onUploaded={onUpload}
+                    toast={toast}
+                    buttonLabel="Add certificate"
+                  />
+                </>
+              ) : up ? (
                 <>
                   <Pill tone="teal" dot>
                     {isExco ? 'Completed' : 'Uploaded'}
@@ -2572,7 +2721,7 @@ export function DocumentsView({
                       size="sm"
                       icon={Icon.Eye}
                       title={`View ${d.name}`}
-                      onClick={() => setPreview(d.key)}
+                      onClick={() => setPreview({ key: d.key })}
                     />
                   )}
                 </>
@@ -2612,13 +2761,55 @@ export function DocumentsView({
       {preview && (
         <DocPreviewModal
           clubId={club.id}
-          docKey={preview}
-          docName={REQUIRED_DOCS.find((d) => d.key === preview)?.name || 'Document'}
+          docKey={preview.key}
+          docName={REQUIRED_DOCS.find((d) => d.key === preview.key)?.name || 'Document'}
           clubName={club.name}
-          meta={club.docMeta?.[preview]}
+          // Safeguarding passes the selected file entry (the wrapper has no
+          // objectKey of its own); single-file docs pass their stored meta.
+          meta={preview.entry ?? club.docMeta?.[preview.key]}
+          objectKey={preview.entry?.objectKey}
           onClose={() => setPreview(null)}
         />
       )}
+
+      {confirmRemove &&
+        // Portaled: the page root's fadeUp animation retains a transform, which
+        // would otherwise become this fixed backdrop's containing block (same
+        // trap documented on the admin confirm modal).
+        createPortal(
+          <div
+            className="fix-confirm"
+            onClick={(e) => e.target === e.currentTarget && setConfirmRemove(null)}
+          >
+            <div className="fix-confirm-box">
+              <div className="fix-confirm-icon danger">
+                <Icon.Alert />
+              </div>
+              <div className="fix-confirm-title">Remove this certificate?</div>
+              <div className="fix-confirm-body">
+                <strong>{docFileMeta(confirmRemove.entry).fileName || 'This certificate'}</strong>{' '}
+                will be permanently deleted — there is no undo, and the holder would need to upload
+                it again.
+              </div>
+              <div className="fix-confirm-actions">
+                <Btn tone="outline" onClick={() => setConfirmRemove(null)}>
+                  Cancel
+                </Btn>
+                <Btn
+                  tone="ink"
+                  onClick={() => {
+                    const { key, entry } = confirmRemove;
+                    setConfirmRemove(null);
+                    onRemoveFile(key, entry.objectKey);
+                  }}
+                >
+                  Yes, remove
+                </Btn>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 16 }}>
         <Card title="What we check">
@@ -2728,7 +2919,7 @@ export function DocumentsView({
 }
 
 /* ─── CQI Self-Assessment ─── */
-export function CQIView({ club, goto, toast, onSubmit, submissionDeadline }) {
+export function CQIView({ club, goto, toast, onSubmit, submissionDeadline, allLeagues = [] }) {
   const deadlineLong = formatDeadlineLong(submissionDeadline);
   const [answers, setAnswers] = useStateC(() => {
     // Prefer the real stored answers (persisted on submit). Only fall back to the
@@ -2746,9 +2937,11 @@ export function CQIView({ club, goto, toast, onSubmit, submissionDeadline }) {
       a.conduct = true;
       a.inventory = true;
       a.playerdb = true;
-      a.senior = club.teams;
+      // Mirror the home-page glance card: team counts derive from leagues entered.
+      const tc = teamCounts(club.leagues, allLeagues);
+      a.senior = tc.senior;
       a.women = club.women;
-      a.juniorB = club.juniors;
+      a.juniorB = tc.junior;
       a.juniorG = 0;
       a.premprom = true;
       a.coaches = 5;
@@ -3345,50 +3538,53 @@ export function ClubFixturesView({ club, allSeries, clubs, toast, onSendFixtures
         release. Adjustments to schedule require a Dolphins office sign-off.
       </div>
 
-      {/* Share-with-players modal */}
-      {shareOpen && (
-        <div
-          className="fix-confirm"
-          onClick={(e) => e.target === e.currentTarget && !sharing && setShareOpen(false)}
-        >
-          <div className="fix-confirm-box">
-            <div className="fix-confirm-icon go">
-              <Icon.Mail />
+      {/* Share-with-players modal — portaled for the same transformed-ancestor
+          reason as the certificate-removal confirm. */}
+      {shareOpen &&
+        createPortal(
+          <div
+            className="fix-confirm"
+            onClick={(e) => e.target === e.currentTarget && !sharing && setShareOpen(false)}
+          >
+            <div className="fix-confirm-box">
+              <div className="fix-confirm-icon go">
+                <Icon.Mail />
+              </div>
+              <div className="fix-confirm-title">Share fixtures with players</div>
+              <div className="fix-confirm-body">
+                Email the full schedule and send a WhatsApp heads-up to your{' '}
+                <strong>{playerCount}</strong> registered player{playerCount === 1 ? '' : 's'}.
+                Players registered as minors are skipped. Choose how to reach them:
+              </div>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginBottom: 4 }}>
+                {[
+                  { k: 'email', label: 'Email' },
+                  { k: 'whatsapp', label: 'WhatsApp' },
+                ].map(({ k, label }) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setShareCh((s) => ({ ...s, [k]: !s[k] }))}
+                    className={`check-item ${shareCh[k] ? 'on' : ''}`}
+                    style={{ padding: '8px 16px', width: 'auto' }}
+                  >
+                    <div className="box">{shareCh[k] && <Icon.Check />}</div>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="fix-confirm-actions" style={{ marginTop: 22 }}>
+                <Btn tone="outline" onClick={() => !sharing && setShareOpen(false)}>
+                  Cancel
+                </Btn>
+                <Btn tone="teal" onClick={doShareFixtures} disabled={sharing}>
+                  {sharing ? 'Sending…' : 'Send to players'}
+                </Btn>
+              </div>
             </div>
-            <div className="fix-confirm-title">Share fixtures with players</div>
-            <div className="fix-confirm-body">
-              Email the full schedule and send a WhatsApp heads-up to your{' '}
-              <strong>{playerCount}</strong> registered player{playerCount === 1 ? '' : 's'}.
-              Players registered as minors are skipped. Choose how to reach them:
-            </div>
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginBottom: 4 }}>
-              {[
-                { k: 'email', label: 'Email' },
-                { k: 'whatsapp', label: 'WhatsApp' },
-              ].map(({ k, label }) => (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => setShareCh((s) => ({ ...s, [k]: !s[k] }))}
-                  className={`check-item ${shareCh[k] ? 'on' : ''}`}
-                  style={{ padding: '8px 16px', width: 'auto' }}
-                >
-                  <div className="box">{shareCh[k] && <Icon.Check />}</div>
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="fix-confirm-actions" style={{ marginTop: 22 }}>
-              <Btn tone="outline" onClick={() => !sharing && setShareOpen(false)}>
-                Cancel
-              </Btn>
-              <Btn tone="teal" onClick={doShareFixtures} disabled={sharing}>
-                {sharing ? 'Sending…' : 'Send to players'}
-              </Btn>
-            </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

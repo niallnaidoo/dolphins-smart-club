@@ -114,9 +114,6 @@ function StepWelcome({ club, deadlineLong }) {
             <span className="dot" />
             Hollywoodbets Dolphins · 2026/27
           </div>
-          <div className="ob-hero-credit">
-            <strong>Marques Ackerman</strong> · 92 (74)
-          </div>
         </div>
       </div>
       <div className="ob-hero-content">

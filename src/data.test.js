@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { generateRoundRobin, resolveSpread } from './data.jsx';
+import {
+  generateRoundRobin,
+  resolveSpread,
+  greeting,
+  safeguardingMeta,
+  safeguardingSatisfied,
+} from './data.jsx';
 
 // 6 teams → 5 single round-robin rounds (each round = one match-day).
 const SIX = ['a', 'b', 'c', 'd', 'e', 'f'];
@@ -105,5 +111,65 @@ describe('resolveSpread (smart default — guards the create/regenerate parity)'
     });
 
     expect(regenFixtures).toEqual(createFixtures);
+  });
+});
+
+describe('greeting', () => {
+  const at = (h) => new Date(2026, 5, 11, h, 0, 0);
+  it('is morning before noon', () => {
+    expect(greeting(at(0))).toBe('Good morning');
+    expect(greeting(at(11))).toBe('Good morning');
+  });
+  it('is afternoon from noon to 17:59', () => {
+    expect(greeting(at(12))).toBe('Good afternoon');
+    expect(greeting(at(17))).toBe('Good afternoon');
+  });
+  it('is evening from 18:00', () => {
+    expect(greeting(at(18))).toBe('Good evening');
+    expect(greeting(at(23))).toBe('Good evening');
+  });
+});
+
+describe('safeguardingMeta', () => {
+  it('normalizes missing meta to an empty file list', () => {
+    expect(safeguardingMeta(undefined)).toEqual({
+      files: [],
+      markedCompliant: false,
+      at: undefined,
+    });
+  });
+
+  it('normalizes a legacy single upload to a one-entry array', () => {
+    const legacy = { objectKey: 't/c/safeguarding-x.pdf', size: 10, uploadedAt: '2026-01-01' };
+    expect(safeguardingMeta(legacy)).toEqual({ files: [legacy], markedCompliant: false });
+  });
+
+  it('normalizes the legacy admin sentinel to empty files with the flag', () => {
+    expect(safeguardingMeta({ markedCompliant: true, at: '2026-01-01' })).toEqual({
+      files: [],
+      markedCompliant: true,
+      at: '2026-01-01',
+    });
+  });
+
+  it('passes the canonical wrapper shape through', () => {
+    const files = [{ objectKey: 'a' }, { objectKey: 'b' }];
+    expect(safeguardingMeta({ files, markedCompliant: true, at: 'T' })).toEqual({
+      files,
+      markedCompliant: true,
+      at: 'T',
+    });
+  });
+});
+
+describe('safeguardingSatisfied', () => {
+  it('requires the two-person minimum', () => {
+    expect(safeguardingSatisfied(undefined)).toBe(false);
+    expect(safeguardingSatisfied({ files: [{ objectKey: 'a' }] })).toBe(false);
+    expect(safeguardingSatisfied({ files: [{ objectKey: 'a' }, { objectKey: 'b' }] })).toBe(true);
+  });
+
+  it('honours an admin override regardless of file count', () => {
+    expect(safeguardingSatisfied({ files: [], markedCompliant: true })).toBe(true);
   });
 });

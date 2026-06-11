@@ -6,6 +6,7 @@ import {
   labelByKey,
   optionsGroupedByGroup,
   findByKey,
+  teamCounts,
 } from './leagues.js';
 
 const LEAGUES = [
@@ -88,5 +89,31 @@ describe('labelByKey / findByKey / optionsGroupedByGroup', () => {
     const groups = optionsGroupedByGroup(LEAGUES);
     expect(Object.keys(groups)).toEqual(['Overarching', 'EMCU Divisions', 'King Cetshwayo']);
     expect(groups['EMCU Divisions'].map((l) => l.key)).toEqual(['emcuD1', 'emcuD2']);
+  });
+});
+
+describe('teamCounts', () => {
+  const CATALOGUE = [
+    ...LEAGUES,
+    { key: 'u11', label: 'Under 11', group: 'Juniors', district: 'Ethekwini Metro Cricket Union' },
+    { key: 'u13', label: 'Under 13', group: 'Juniors', district: 'Ugu Cricket District' },
+  ];
+
+  it('splits selected leagues into senior and junior by catalogue group', () => {
+    expect(teamCounts(['premier', 'emcuD1', 'u11', 'u13'], CATALOGUE)).toEqual({
+      senior: 2,
+      junior: 2,
+    });
+  });
+
+  it('counts a key whose league was deleted from the catalogue as senior', () => {
+    // Total must always equal leagues entered, so dangling keys stay counted.
+    expect(teamCounts(['premier', 'deleted-league'], CATALOGUE)).toEqual({ senior: 2, junior: 0 });
+  });
+
+  it('handles empty and missing inputs', () => {
+    expect(teamCounts([], CATALOGUE)).toEqual({ senior: 0, junior: 0 });
+    expect(teamCounts(undefined, CATALOGUE)).toEqual({ senior: 0, junior: 0 });
+    expect(teamCounts(['u11'], undefined)).toEqual({ senior: 1, junior: 0 });
   });
 });

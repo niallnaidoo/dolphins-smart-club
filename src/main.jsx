@@ -861,17 +861,34 @@ function Shell({
       invalidate(qk.clubs());
     });
   }
+  // Safeguarding writes are version-pinned server-side (append/remove are
+  // read-modify-write), so a parallel writer 409s instead of losing a file.
+  // One silent retry re-reads and re-applies server-side — safe for both ops.
+  const retryOnConflict = (send) =>
+    send().catch((err) => (err?.status === 409 ? send() : Promise.reject(err)));
   // Compliance doc: DocumentsView uploads to S3 first, then calls this with the
   // stored object metadata. (No-arg legacy callers just flip the flag server-side.)
   function uploadDoc(key, meta) {
     // Rejects on failure (withToast rethrows, flagged alreadyToasted) so the upload UI
     // doesn't report a false success.
     return withToast(
-      () => api.markDocUploaded(clubId, key, meta ?? { objectKey: '', size: 0 }),
+      () =>
+        retryOnConflict(() => api.markDocUploaded(clubId, key, meta ?? { objectKey: '', size: 0 })),
       'Could not record upload',
     ).then(() => {
       invalidate(qk.club(clubId));
       invalidate(qk.clubs());
+    });
+  }
+  // Remove one stored safeguarding certificate (the only multi-file doc).
+  function removeDocFile(key, objectKey) {
+    return withToast(
+      () => retryOnConflict(() => api.deleteDocFile(clubId, key, objectKey)),
+      'Could not remove file',
+    ).then(() => {
+      invalidate(qk.club(clubId));
+      invalidate(qk.clubs());
+      toastShow('Certificate removed');
     });
   }
   // ── Player roster + clearances (club role) ──
@@ -1364,6 +1381,7 @@ function Shell({
             toast={toastShow}
             replayOnboarding={() => setShowOnboarding(true)}
             submissionDeadline={submissionDeadline}
+            allLeagues={allLeagues}
           />
         );
       if (view === 'cqi')
@@ -1373,6 +1391,7 @@ function Shell({
             goto={gotoClubView}
             toast={toastShow}
             submissionDeadline={submissionDeadline}
+            allLeagues={allLeagues}
             onSubmit={(score, answers) => {
               updateClub({ cqi: score, cqiAnswers: answers }).catch(() => {});
               gotoClubView('home');
@@ -1696,6 +1715,7 @@ function Shell({
             goto={gotoClubView}
             toast={toastShow}
             onUpload={uploadDoc}
+            onRemoveFile={removeDocFile}
             onSaveExco={saveExco}
             submissionDeadline={submissionDeadline}
             unionEmail={unionEmail}

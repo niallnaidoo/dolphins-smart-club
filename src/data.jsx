@@ -61,7 +61,17 @@ export const DISTRICTS = [
    client bundle; its content lives in packages/api/seed-data/<tenant>.json as the demo
    seed (see git history for the original arrays). DISTRICTS above stays live. */
 
-export const COACHING_LEVELS = ['Level 1', 'Level 2', 'Level 3', 'Level 4'];
+// 'None' leads both lists so a coach without accreditation is an explicit,
+// selectable state (and the default for a freshly added coach) rather than a
+// silently presumed CSA Level 2.
+export const COACHING_BODIES = ['None', 'CSA', 'Gary Kirsten'];
+export const COACHING_LEVELS = ['None', 'Level 1', 'Level 2', 'Level 3', 'Level 4'];
+
+/** Time-of-day greeting. `d` is injectable so tests can pin the clock. */
+export function greeting(d = new Date()) {
+  const h = d.getHours();
+  return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+}
 
 // ── Player registration profile vocabularies (mirror the official Union form) ──
 export const BATTING_TYPES = ['Top Order', 'Mid Order', 'Low Order', 'WK Batsman', 'Bat All Round'];
@@ -133,15 +143,69 @@ export const REQUIRED_DOCS = [
   {
     key: 'safeguarding',
     name: 'Safeguarding Certificate',
-    desc: 'Valid safeguarding / child-protection certificate',
+    desc: 'Valid safeguarding / child-protection certificates — one per person, at least two people',
   },
 ];
+
+// ── Compliance document file types ──
+// Accepted upload formats. Word covers Google Docs (which exports .docx/.pdf).
+// Mirrored server-side in packages/api/src/catalogue.ts DOC_CONTENT_TYPES.
+export const DOC_MIME_TYPES = {
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+export const DOC_ACCEPT = '.pdf,.doc,.docx';
+
+// Browsers (notably on Windows) often report an empty `file.type` for .doc/.docx —
+// resolve from the filename extension before validating, or valid files get
+// rejected (or worse: signed and stored as application/pdf forever).
+export function resolveDocMime(file) {
+  if (file?.type) return file.type;
+  const ext = String(file?.name || '')
+    .split('.')
+    .pop()
+    .toLowerCase();
+  return DOC_MIME_TYPES[ext] || '';
+}
+export const isAllowedDocMime = (mime) => Object.values(DOC_MIME_TYPES).includes(mime);
+export function extFromMime(mime) {
+  const hit = Object.entries(DOC_MIME_TYPES).find(([, m]) => m === mime);
+  return hit ? hit[0] : 'pdf';
+}
 
 // Doc-completion helpers — the single source of truth for every count/gate so the
 // definition can't drift across call sites. Both are driven by REQUIRED_DOCS and
 // tolerate clubs whose `docs` object predates a newly-added key (treated as missing).
 export const docsUploadedCount = (club) => REQUIRED_DOCS.filter((d) => club.docs?.[d.key]).length;
 export const docsAllComplete = (club) => REQUIRED_DOCS.every((d) => !!club.docs?.[d.key]);
+
+// ── Safeguarding: multi-file document (one certificate per person, min 2 people) ──
+// Canonical docMeta.safeguarding shape: { files: [{objectKey, size, contentType?,
+// uploadedAt}], markedCompliant?, at? }. Mirrored server-side in packages/api.
+export const MIN_SAFEGUARDING_FILES = 2;
+
+/**
+ * Normalize any historical docMeta.safeguarding shape to the canonical one:
+ *  - new `{ files: [...] }` wrapper → as-is
+ *  - legacy single real upload `{ objectKey, ... }` → one-entry files array
+ *  - legacy admin sentinel `{ markedCompliant: true, at }` → empty files + flag
+ *  - missing/null → empty files, no flag
+ */
+export function safeguardingMeta(meta) {
+  if (!meta) return { files: [], markedCompliant: false, at: undefined };
+  if (Array.isArray(meta.files)) {
+    return { files: meta.files, markedCompliant: !!meta.markedCompliant, at: meta.at };
+  }
+  if (meta.objectKey) return { files: [meta], markedCompliant: !!meta.markedCompliant };
+  return { files: [], markedCompliant: !!meta.markedCompliant, at: meta.at };
+}
+
+/** Whether safeguarding is satisfied: admin override, or the 2-person minimum met. */
+export function safeguardingSatisfied(meta) {
+  const m = safeguardingMeta(meta);
+  return m.markedCompliant || m.files.length >= MIN_SAFEGUARDING_FILES;
+}
 
 /**
  * Derive display fields for an uploaded compliance document from its `docMeta` entry.
@@ -164,7 +228,14 @@ export function docFileMeta(meta) {
   const metaText = [fileName, uploadedDate && `uploaded ${uploadedDate}`, sizeMB]
     .filter(Boolean)
     .join(' · ');
-  return { real, fileName, uploadedDate, sizeMB, metaText };
+  // Word docs can't render in an iframe — the preview modal branches on this.
+  // Legacy uploads (no contentType) predate Word support, so they're PDFs.
+  const isPdf = !real
+    ? true
+    : meta.contentType
+      ? meta.contentType === DOC_MIME_TYPES.pdf
+      : String(meta.objectKey).toLowerCase().endsWith('.pdf');
+  return { real, fileName, uploadedDate, sizeMB, metaText, isPdf };
 }
 
 /**
@@ -700,6 +771,16 @@ export function computeMarkCompliance(club, keys, at) {
   const docMeta = { ...(club.docMeta ?? {}) };
   const flipped = [];
   for (const k of keys) {
+    if (k === 'safeguarding') {
+      // Multi-file doc: "has a real upload" means the 2-person minimum is met.
+      // The sentinel must PRESERVE the files array — uploads are never erased.
+      const m = safeguardingMeta(club.docMeta?.safeguarding);
+      if (m.files.length >= MIN_SAFEGUARDING_FILES) continue; // satisfied → leave as-is
+      if (!club.docs?.[k]) flipped.push(k);
+      docs[k] = true;
+      docMeta[k] = { files: m.files, markedCompliant: true, at };
+      continue;
+    }
     if (club.docMeta?.[k]?.objectKey) continue; // real upload → leave as-is
     if (!club.docs?.[k]) flipped.push(k); // was Missing → track for Undo
     docs[k] = true;
@@ -717,6 +798,22 @@ export function computeRevertCompliance(club, keys) {
   const reverted = [];
   for (const k of keys) {
     const m = docMeta[k];
+    if (k === 'safeguarding') {
+      const norm = safeguardingMeta(m);
+      const satisfied = norm.files.length >= MIN_SAFEGUARDING_FILES;
+      // Revertable: an explicit sentinel, OR a compliant flag the uploads don't
+      // justify — legacy flag-only records (no docMeta at all) and grandfathered
+      // single-file records predate the 2-person minimum and carry no sentinel.
+      if (!norm.markedCompliant && !(club.docs?.[k] && !satisfied)) continue;
+      // Strip the override but keep every uploaded file; the flag then derives
+      // purely from the uploads (a lingering sentinel stays removable even when
+      // the club later met the minimum on its own).
+      docs[k] = satisfied;
+      if (norm.files.length) docMeta[k] = { files: norm.files };
+      else delete docMeta[k];
+      reverted.push(k);
+      continue;
+    }
     if (m && m.markedCompliant && !m.objectKey) {
       docs[k] = false;
       delete docMeta[k];

@@ -130,12 +130,22 @@ export const setPaid = (id, paid) =>
 export const setProgression = (id, progressionMode) =>
   request(`/clubs/${id}/progression`, { method: 'PATCH', body: { progressionMode } });
 export const generateRegLink = (id) => request(`/clubs/${id}/reg-link`, { method: 'POST' });
-export const getDocUploadUrl = (id, key) =>
-  request(`/clubs/${id}/docs/${key}/upload-url`, { method: 'POST' });
+export const getDocUploadUrl = (id, key, contentType) =>
+  request(`/clubs/${id}/docs/${key}/upload-url`, {
+    method: 'POST',
+    body: contentType ? { contentType } : undefined,
+  });
 export const markDocUploaded = (id, key, meta) =>
   request(`/clubs/${id}/docs/${key}`, { method: 'PATCH', body: meta });
-export const getDocViewUrl = (id, key) =>
-  request(`/clubs/${id}/docs/${key}/view-url`, { method: 'POST' });
+// objectKey selects one of a multi-file doc's stored files (safeguarding);
+// omitted for single-file docs.
+export const getDocViewUrl = (id, key, objectKey) =>
+  request(`/clubs/${id}/docs/${key}/view-url`, {
+    method: 'POST',
+    body: objectKey ? { objectKey } : undefined,
+  });
+export const deleteDocFile = (id, key, objectKey) =>
+  request(`/clubs/${id}/docs/${key}/file`, { method: 'DELETE', body: { objectKey } });
 export const addClubNote = (id, text) =>
   request(`/clubs/${id}/notes`, { method: 'POST', body: { text } });
 /**
@@ -221,8 +231,8 @@ export const submitRegistration = (clubId, token, body) =>
 
 /**
  * Upload a file directly to a presigned S3 URL (not the API). The content-type must
- * match what the URL was signed with (compliance docs sign as application/pdf; player
- * ID docs sign as the file's image/PDF type — pass it explicitly there).
+ * match what the URL was signed with — compliance docs and player ID docs both sign
+ * with the file's own type, so pass the contentType echoed by the upload-url route.
  */
 export async function uploadToPresigned(uploadUrl, file, contentType = 'application/pdf') {
   const res = await fetch(uploadUrl, {

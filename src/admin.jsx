@@ -9,6 +9,8 @@ import {
   SUBMISSION_DEADLINE_DEFAULT,
   cohortStats,
   docFileMeta,
+  safeguardingMeta,
+  MIN_SAFEGUARDING_FILES,
   docCompletion,
   docsUploadedCount,
   docsAllComplete,
@@ -33,6 +35,7 @@ import {
   findByKey,
   slugifyLeagueKey,
   labelByKey,
+  teamCounts,
   OVERARCHING_DISTRICT,
 } from './leagues.js';
 import { exportRowsToXlsx, clubExportRow } from './exportXlsx.js';
@@ -1943,9 +1946,6 @@ export function AdminDashboard({
             Every club below is a feeder for our provincial squad. Track readiness, lift standards,
             identify talent.
           </p>
-        </div>
-        <div className="hero-attrib">
-          <strong>Marques Ackerman</strong> · 78* (63)
         </div>
       </div>
 
@@ -4681,6 +4681,9 @@ export function AdminClubDetail({
   const dc = docCompletion(club);
   const op = overallProgress(club);
   const band = cqiBand(club.cqi);
+  // Team counts derive from the leagues entered on the affiliation form
+  // (one side per league); club.teams/juniors are stale admin-era fields.
+  const tc = teamCounts(club.leagues, allLeagues);
 
   async function handleGenerate() {
     const hadLink = !!club.playerRegLink;
@@ -4865,11 +4868,7 @@ export function AdminClubDetail({
           num={club.cqi.toFixed(1)}
           sub={band.label}
         />
-        <KPI
-          label="Players"
-          num={club.players}
-          sub={`${club.teams} teams · ${club.juniors} junior`}
-        />
+        <KPI label="Players" num={club.players} sub={`${tc.senior} teams · ${tc.junior} junior`} />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 16 }}>
@@ -5012,10 +5011,20 @@ export function AdminClubDetail({
               const up = club.docs[d.key];
               // Real uploads carry docMeta with an objectKey; an admin "Mark as
               // compliant" override sets the flag true with a markedCompliant
-              // sentinel (no file). docFileMeta never fabricates a filename for the latter.
+              // sentinel (no file). docFileMeta never fabricates a filename for the
+              // latter. Safeguarding is multi-file (one certificate per person, min
+              // two people) — render its stored files as sub-rows.
               const meta = club.docMeta?.[d.key];
+              const sg = d.key === 'safeguarding' ? safeguardingMeta(meta) : null;
               const { real, metaText } = docFileMeta(meta);
-              const override = up && !real;
+              const sgSatisfied = sg ? sg.files.length >= MIN_SAFEGUARDING_FILES : false;
+              // Safeguarding "override" = any compliant flag the uploads don't
+              // justify: explicit sentinel, legacy flag-only (no docMeta — the
+              // seeded demo clubs), or a grandfathered single file. All revert.
+              const override = sg ? up && !sgSatisfied : up && !real;
+              // A lingering sentinel on a club that later met the minimum on its
+              // own shows Approved but must stay revertable.
+              const canRevert = override || (sg ? up && sg.markedCompliant : false);
               return (
                 <div key={d.key} className={`doc-row ${up ? 'uploaded' : ''}`}>
                   <div className="doc-icon">
@@ -5027,38 +5036,75 @@ export function AdminClubDetail({
                       {!up && <span className="doc-required-tag">Required</span>}
                     </div>
                     <div className="doc-meta">
-                      {real
-                        ? metaText
-                        : override
-                          ? 'Marked compliant — no file on record'
-                          : 'Not yet uploaded · awaiting club'}
+                      {sg ? (
+                        sg.files.length ? (
+                          <span style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            {sg.files.map((f) => (
+                              <span key={f.objectKey}>
+                                {docFileMeta(f).metaText || 'Document'} ·{' '}
+                                {/* Button, not <a onClick>: per-file actions must be
+                                    keyboard-focusable. */}
+                                <button
+                                  type="button"
+                                  onClick={() => setShowDocPreview({ key: d.key, entry: f })}
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    padding: 0,
+                                    font: 'inherit',
+                                    color: 'var(--teal-deep)',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  View
+                                </button>
+                              </span>
+                            ))}
+                          </span>
+                        ) : override ? (
+                          'Marked compliant — no files on record'
+                        ) : (
+                          'Not yet uploaded · awaiting club'
+                        )
+                      ) : real ? (
+                        metaText
+                      ) : override ? (
+                        'Marked compliant — no file on record'
+                      ) : (
+                        'Not yet uploaded · awaiting club'
+                      )}
                     </div>
                   </div>
-                  {up ? (
+                  {up || (sg && sg.files.length > 0) ? (
                     <div className="doc-row-actions">
-                      <Pill tone={override ? 'gold' : 'teal'} dot>
-                        {override ? 'Override' : 'Approved'}
+                      <Pill tone={override || (sg && !up) ? 'gold' : 'teal'} dot>
+                        {sg && !up
+                          ? `${sg.files.length} of ${MIN_SAFEGUARDING_FILES} minimum`
+                          : override
+                            ? 'Override'
+                            : 'Approved'}
                       </Pill>
                       {/* Only real uploads (with a stored file) can be previewed;
-                          overrides have no file on record. */}
-                      {real && (
+                          overrides have no file on record. Safeguarding previews
+                          per-file via the links above. */}
+                      {!sg && real && (
                         <Btn
                           tone="ghost"
                           size="sm"
                           icon={Icon.Eye}
                           title={`View ${d.name}`}
-                          onClick={() => setShowDocPreview(d.key)}
+                          onClick={() => setShowDocPreview({ key: d.key })}
                         />
                       )}
-                      {/* Override = compliant with no file on record; offer a
-                          lossless revert back to Missing. Real uploads (Approved)
-                          never show this — their file can't be reverted away. */}
-                      {override && onRevertDoc && (
+                      {/* Override = compliant via admin flag; offer a lossless revert.
+                          Real uploads (Approved) never show this — their files can't
+                          be reverted away (safeguarding keeps its files on revert). */}
+                      {canRevert && onRevertDoc && (
                         <Btn
                           tone="ghost"
                           size="sm"
                           onClick={() => onRevertDoc(d.key)}
-                          title="Remove this override — sets the document back to Missing"
+                          title="Remove this override — compliance re-derives from uploads"
                         >
                           Revert
                         </Btn>
@@ -5119,13 +5165,14 @@ export function AdminClubDetail({
           <Card title="Club details">
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 18px' }}>
               {[
-                ['District', club.district],
-                ['Sub-union', club.sub],
+                // The affiliation form captures one "Municipal District / Sub-Union"
+                // field, so a separate Sub-union row would just repeat District.
+                ['District', club.district || club.sub],
                 ['Chairperson', club.chair],
                 ['Status', club.paid ? 'Active member' : 'Pending'],
-                ['Senior teams', club.teams],
+                ['Senior teams', tc.senior],
                 ["Women's teams", club.women],
-                ['Junior teams', club.juniors],
+                ['Junior teams', tc.junior],
                 ['Players', club.players],
               ].map(([k, v], i) => (
                 <div key={i}>
@@ -5308,10 +5355,13 @@ export function AdminClubDetail({
       {showDocPreview && (
         <DocPreviewModal
           clubId={club.id}
-          docKey={showDocPreview}
-          docName={REQUIRED_DOCS.find((d) => d.key === showDocPreview)?.name || 'Document'}
+          docKey={showDocPreview.key}
+          docName={REQUIRED_DOCS.find((d) => d.key === showDocPreview.key)?.name || 'Document'}
           clubName={club.name}
-          meta={club.docMeta?.[showDocPreview]}
+          // Safeguarding passes the selected file entry (the wrapper has no
+          // objectKey of its own); single-file docs pass their stored meta.
+          meta={showDocPreview.entry ?? club.docMeta?.[showDocPreview.key]}
+          objectKey={showDocPreview.entry?.objectKey}
           onClose={() => setShowDocPreview(null)}
         />
       )}
@@ -5560,7 +5610,7 @@ function AffiliationViewModal({ club, allLeagues, onClose }) {
               <div className="stack" style={{ gap: 4 }}>
                 <Row label="Name" value={club.name} />
                 <Row label="District" value={club.district} />
-                <Row label="Sub-union" value={club.sub} />
+                <Row label="Sub-union" value={club.district || club.sub} />
                 <Row label="Chairperson" value={club.chair} />
                 <Row label="Paid" value={club.paid ? 'Yes' : 'No'} />
                 <Row label="Status" value={affPill(club.affiliation)} />

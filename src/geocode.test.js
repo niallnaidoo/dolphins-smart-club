@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { shortAddress, suburbOf } from './geocode.js';
+import { shortAddress, suburbOf, SA_BOUNDS, isInSouthAfrica } from './geocode.js';
 
 describe('shortAddress', () => {
   it('composes street, suburb and city from structured addressdetails', () => {
@@ -49,5 +49,30 @@ describe('suburbOf', () => {
     expect(suburbOf({ address: { city: 'Durban' } })).toBeUndefined();
     expect(suburbOf({})).toBeUndefined();
     expect(suburbOf(null)).toBeUndefined();
+  });
+});
+
+describe('isInSouthAfrica', () => {
+  it('accepts well-known SA points', () => {
+    expect(isInSouthAfrica(-29.8587, 31.0218)).toBe(true); // Durban
+    expect(isInSouthAfrica(-33.9249, 18.4241)).toBe(true); // Cape Town
+    expect(isInSouthAfrica(-22.35, 30.04)).toBe(true); // Musina (far north)
+  });
+
+  it('rejects points outside the SA bounding box', () => {
+    expect(isInSouthAfrica(51.5074, -0.1278)).toBe(false); // London
+    expect(isInSouthAfrica(-1.2921, 36.8219)).toBe(false); // Nairobi
+    expect(isInSouthAfrica(-22.0, 30.0)).toBe(false); // just north of the border
+  });
+
+  it('treats the box edges as inside', () => {
+    expect(isInSouthAfrica(SA_BOUNDS.south, SA_BOUNDS.west)).toBe(true);
+    expect(isInSouthAfrica(SA_BOUNDS.north, SA_BOUNDS.east)).toBe(true);
+  });
+
+  it('rejects non-finite coordinates', () => {
+    expect(isInSouthAfrica(NaN, 31)).toBe(false);
+    expect(isInSouthAfrica(undefined, undefined)).toBe(false);
+    expect(isInSouthAfrica(-29.85, Infinity)).toBe(false);
   });
 });

@@ -31,6 +31,27 @@ export const DOC_KEYS = new Set([
 ]);
 
 /**
+ * Accepted compliance-upload content types → stored object-key extension.
+ * Mirror of DOC_MIME_TYPES in the frontend's data.jsx. Word covers Google Docs
+ * (which exports .docx/.pdf). The presigned PUT is minted with exactly one of
+ * these, so S3 rejects anything else at upload time.
+ */
+export const DOC_CONTENT_TYPES: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+};
+
+/**
+ * Safeguarding is a per-person certificate: a club needs one for at least two
+ * people, stored as docMeta.safeguarding = { files: [...] }. Mirror of
+ * MIN_SAFEGUARDING_FILES in the frontend's data.jsx.
+ */
+export const MIN_SAFEGUARDING_FILES = 2;
+/** Upper bound on stored safeguarding certificates — a runaway-append backstop. */
+export const MAX_SAFEGUARDING_FILES = 10;
+
+/**
  * Validate an affiliation/CQI patch. Throws a message string on failure
  * (callers map to HTTP 400). Only checks fields present in the patch.
  *

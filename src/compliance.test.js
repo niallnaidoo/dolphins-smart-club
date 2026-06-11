@@ -155,3 +155,119 @@ describe('mark → undo → undo round-trip', () => {
     expect(afterRedo.flipped).toEqual(['constitution', 'agm', 'exco']);
   });
 });
+
+describe('safeguarding (multi-file) mark/revert', () => {
+  const f = (k) => ({ objectKey: `t/c/safeguarding-${k}.pdf`, size: 10, uploadedAt: AT });
+
+  it('mark with no files sets the sentinel with an empty files array', () => {
+    const c = club({ docs: { safeguarding: false } });
+    const { docs, docMeta, flipped } = computeMarkCompliance(c, ['safeguarding'], AT);
+    expect(docs.safeguarding).toBe(true);
+    expect(docMeta.safeguarding).toEqual({ files: [], markedCompliant: true, at: AT });
+    expect(flipped).toEqual(['safeguarding']);
+  });
+
+  it('mark below the minimum preserves the uploaded files in the sentinel', () => {
+    const c = club({
+      docs: { safeguarding: false },
+      docMeta: { safeguarding: { files: [f('a')] } },
+    });
+    const { docs, docMeta, flipped } = computeMarkCompliance(c, ['safeguarding'], AT);
+    expect(docs.safeguarding).toBe(true);
+    expect(docMeta.safeguarding).toEqual({ files: [f('a')], markedCompliant: true, at: AT });
+    expect(flipped).toEqual(['safeguarding']);
+  });
+
+  it('mark is a no-op when the two-file minimum is already met', () => {
+    const c = club({
+      docs: { safeguarding: true },
+      docMeta: { safeguarding: { files: [f('a'), f('b')] } },
+    });
+    const { docMeta, flipped } = computeMarkCompliance(c, ['safeguarding'], AT);
+    expect(docMeta.safeguarding).toEqual({ files: [f('a'), f('b')] });
+    expect(flipped).toEqual([]);
+  });
+
+  it('mark treats a legacy single-file upload as one file (below minimum)', () => {
+    const legacy = f('legacy');
+    const c = club({ docs: { safeguarding: true }, docMeta: { safeguarding: legacy } });
+    const { docs, docMeta, flipped } = computeMarkCompliance(c, ['safeguarding'], AT);
+    // Grandfathered flag was true, so nothing flips for Undo — but the sentinel
+    // now wraps the legacy file rather than discarding it.
+    expect(flipped).toEqual([]);
+    expect(docs.safeguarding).toBe(true);
+    expect(docMeta.safeguarding).toEqual({ files: [legacy], markedCompliant: true, at: AT });
+  });
+
+  it('revert strips the override but keeps the files, rederiving the flag', () => {
+    const c = club({
+      docs: { safeguarding: true },
+      docMeta: { safeguarding: { files: [f('a')], markedCompliant: true, at: AT } },
+    });
+    const { docs, docMeta, reverted } = computeRevertCompliance(c, ['safeguarding']);
+    expect(docs.safeguarding).toBe(false); // 1 file < minimum
+    expect(docMeta.safeguarding).toEqual({ files: [f('a')] });
+    expect(reverted).toEqual(['safeguarding']);
+  });
+
+  it('revert keeps the doc compliant when the minimum is met by uploads', () => {
+    const c = club({
+      docs: { safeguarding: true },
+      docMeta: { safeguarding: { files: [f('a'), f('b')], markedCompliant: true, at: AT } },
+    });
+    const { docs, docMeta, reverted } = computeRevertCompliance(c, ['safeguarding']);
+    expect(docs.safeguarding).toBe(true); // sentinel gone, flag derives from files
+    expect(docMeta.safeguarding).toEqual({ files: [f('a'), f('b')] });
+    expect(reverted).toEqual(['safeguarding']);
+  });
+
+  it('revert deletes the docMeta key when no files remain', () => {
+    const c = club({
+      docs: { safeguarding: true },
+      docMeta: { safeguarding: { files: [], markedCompliant: true, at: AT } },
+    });
+    const { docs, docMeta } = computeRevertCompliance(c, ['safeguarding']);
+    expect(docs.safeguarding).toBe(false);
+    expect(docMeta.safeguarding).toBeUndefined();
+  });
+
+  it('revert ignores safeguarding that is neither flagged nor overridden', () => {
+    const c = club({
+      docs: { safeguarding: false },
+      docMeta: { safeguarding: { files: [f('a')] } },
+    });
+    expect(computeRevertCompliance(c, ['safeguarding']).reverted).toEqual([]);
+  });
+
+  it('revert handles a legacy flag-only record (no docMeta at all)', () => {
+    // Seeded demo clubs have docs.safeguarding true with no docMeta entry.
+    const c = club({ docs: { safeguarding: true }, docMeta: {} });
+    const { docs, docMeta, reverted } = computeRevertCompliance(c, ['safeguarding']);
+    expect(docs.safeguarding).toBe(false);
+    expect(docMeta.safeguarding).toBeUndefined();
+    expect(reverted).toEqual(['safeguarding']);
+  });
+
+  it('revert handles a grandfathered single-file record (flag true, no sentinel)', () => {
+    const legacy = f('legacy');
+    const c = club({ docs: { safeguarding: true }, docMeta: { safeguarding: legacy } });
+    const { docs, docMeta, reverted } = computeRevertCompliance(c, ['safeguarding']);
+    expect(docs.safeguarding).toBe(false); // 1 file < minimum once the flag is reverted
+    expect(docMeta.safeguarding).toEqual({ files: [legacy] }); // upload kept
+    expect(reverted).toEqual(['safeguarding']);
+  });
+
+  it('mark → undo round-trips below the minimum', () => {
+    const original = club({
+      docs: { safeguarding: false },
+      docMeta: { safeguarding: { files: [f('a')] } },
+    });
+    const marked = computeMarkCompliance(original, ['safeguarding'], AT);
+    const undone = computeRevertCompliance(
+      { docs: marked.docs, docMeta: marked.docMeta },
+      marked.flipped,
+    );
+    expect(undone.docs.safeguarding).toBe(false);
+    expect(undone.docMeta.safeguarding).toEqual({ files: [f('a')] });
+  });
+});

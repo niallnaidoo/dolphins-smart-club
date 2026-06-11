@@ -984,6 +984,286 @@ describe('compliance doc view-url + replace', () => {
     };
     assert.equal(club.docMeta?.constitution?.objectKey, 'dolphins/docclub/constitution-b.pdf');
   });
+
+  test('upload-url signs Word content types and falls back to PDF for unknown ones', async () => {
+    const docx = await app.request('/clubs/docclub/docs/agm/upload-url', {
+      method: 'POST',
+      headers: headers(ADMIN),
+      body: JSON.stringify({
+        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      }),
+    });
+    assert.equal(docx.status, 200);
+    const docxBody = (await docx.json()) as { objectKey: string; contentType: string };
+    assert.ok(docxBody.objectKey.endsWith('.docx'), 'objectKey carries the docx extension');
+    assert.equal(
+      docxBody.contentType,
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'echoes the signed content type',
+    );
+
+    // Present-but-unknown must 400 (silently signing as PDF would orphan the
+    // upload when the record PATCH later rejects it); MISSING falls back to PDF.
+    const bogus = await app.request('/clubs/docclub/docs/agm/upload-url', {
+      method: 'POST',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ contentType: 'application/zip' }),
+    });
+    assert.equal(bogus.status, 400);
+
+    const noBody = await app.request('/clubs/docclub/docs/agm/upload-url', {
+      method: 'POST',
+      headers: headers(ADMIN),
+    });
+    assert.equal(noBody.status, 200);
+    const noBodyRes = (await noBody.json()) as { objectKey: string; contentType: string };
+    assert.ok(noBodyRes.objectKey.endsWith('.pdf'), 'missing type falls back to pdf');
+    assert.equal(noBodyRes.contentType, 'application/pdf');
+  });
+
+  test('recorded objectKeys must live under the club own prefix', async () => {
+    // Record integrity is the security gate for view-url and the safeguarding
+    // DELETE — a foreign club's key must never get on record.
+    const foreign = await app.request('/clubs/docclub/docs/agm', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ objectKey: 'dolphins/other-club/agm-x.pdf', size: 100 }),
+    });
+    assert.equal(foreign.status, 400);
+
+    const viaGeneric = await app.request('/clubs/docclub', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({
+        docMeta: { agm: { objectKey: 'dolphins/other-club/agm-x.pdf', size: 100 } },
+      }),
+    });
+    assert.equal(viaGeneric.status, 400);
+  });
+
+  test('PATCH rejects a non-PDF/Word contentType but accepts a missing one', async () => {
+    const bad = await app.request('/clubs/docclub/docs/agm', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({
+        objectKey: 'dolphins/docclub/agm-x.zip',
+        size: 100,
+        contentType: 'application/zip',
+      }),
+    });
+    assert.equal(bad.status, 400);
+  });
+});
+
+describe('safeguarding multi-file certificates', () => {
+  const baseClub = {
+    id: 'sgclub',
+    name: 'Safeguard CC',
+    district: 'Test District',
+    sub: 'sub-1',
+    chair: 'Chair',
+    affiliation: 'not_started' as const,
+    paid: false,
+    cqi: 0,
+    docs: {},
+    players: 0,
+    teams: 0,
+    women: 0,
+    juniors: 0,
+    color: '#123456',
+    ground: {},
+    leagues: [],
+    version: 1,
+  };
+  const KEY_A = 'dolphins/sgclub/safeguarding-a.pdf';
+  const KEY_B = 'dolphins/sgclub/safeguarding-b.docx';
+  const upload = (objectKey: string, extra: Record<string, unknown> = {}) =>
+    app.request('/clubs/sgclub/docs/safeguarding', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ objectKey, size: 500, ...extra }),
+    });
+  const getClub = async () =>
+    (await repo.getClub('dolphins', 'sgclub')) as {
+      docs: Record<string, boolean>;
+      docMeta?: Record<string, { files?: { objectKey: string }[]; markedCompliant?: boolean }>;
+    };
+
+  before(async () => {
+    await repo.createClub('dolphins', baseClub);
+  });
+
+  test('one certificate is below the minimum — doc stays incomplete', async () => {
+    const res = await upload(KEY_A);
+    assert.equal(res.status, 200);
+    const club = await getClub();
+    assert.equal(club.docs.safeguarding, false, 'one file does not satisfy the 2-person minimum');
+    assert.equal(club.docMeta?.safeguarding?.files?.length, 1);
+  });
+
+  test('a second certificate appends (no replace) and completes the doc', async () => {
+    const res = await upload(KEY_B, {
+      contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+    assert.equal(res.status, 200);
+    const club = await getClub();
+    assert.equal(club.docs.safeguarding, true);
+    assert.deepEqual(
+      club.docMeta?.safeguarding?.files?.map((f) => f.objectKey),
+      [KEY_A, KEY_B],
+      'both certificates coexist',
+    );
+  });
+
+  test('re-recording the same objectKey is idempotent', async () => {
+    const res = await upload(KEY_B);
+    assert.equal(res.status, 200);
+    const club = await getClub();
+    assert.equal(club.docMeta?.safeguarding?.files?.length, 2);
+  });
+
+  test('view-url presigns a specific stored file and 404s a foreign objectKey', async () => {
+    const ok = await app.request('/clubs/sgclub/docs/safeguarding/view-url', {
+      method: 'POST',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ objectKey: KEY_B }),
+    });
+    assert.equal(ok.status, 200);
+
+    const foreign = await app.request('/clubs/sgclub/docs/safeguarding/view-url', {
+      method: 'POST',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ objectKey: 'dolphins/other-club/secret.pdf' }),
+    });
+    assert.equal(foreign.status, 404, 'cannot presign a key not on record');
+
+    const legacyNoBody = await app.request('/clubs/sgclub/docs/safeguarding/view-url', {
+      method: 'POST',
+      headers: headers(ADMIN),
+    });
+    assert.equal(legacyNoBody.status, 200, 'no objectKey defaults to the first file');
+  });
+
+  test('a stale-client generic PATCH (bare sentinel) cannot erase the files array', async () => {
+    // Old admin tabs send docMeta.safeguarding = { markedCompliant: true } wholesale.
+    const res = await app.request('/clubs/sgclub', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({
+        docs: { safeguarding: true },
+        docMeta: { safeguarding: { markedCompliant: true, at: '2026-06-11T00:00:00.000Z' } },
+      }),
+    });
+    assert.equal(res.status, 200);
+    const club = await getClub();
+    assert.equal(club.docMeta?.safeguarding?.files?.length, 2, 'stored files survived');
+    assert.equal(club.docMeta?.safeguarding?.markedCompliant, true, 'sentinel applied');
+  });
+
+  test('a stale-client revert (docs flag false) cannot un-comply a met minimum', async () => {
+    const club = await getClub();
+    const { safeguarding: _gone, ...metaWithout } = club.docMeta ?? {};
+    const res = await app.request('/clubs/sgclub', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({
+        docs: { ...club.docs, safeguarding: false },
+        docMeta: metaWithout,
+      }),
+    });
+    assert.equal(res.status, 200);
+    const after = await getClub();
+    assert.equal(after.docMeta?.safeguarding?.files?.length, 2, 'files restored on omission');
+    assert.equal(after.docs.safeguarding, true, 'flag re-derived from the preserved minimum');
+  });
+
+  test('removing a certificate below the minimum un-completes the doc', async () => {
+    const res = await app.request('/clubs/sgclub/docs/safeguarding/file', {
+      method: 'DELETE',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ objectKey: KEY_B }),
+    });
+    assert.equal(res.status, 200);
+    const club = await getClub();
+    assert.deepEqual(
+      club.docMeta?.safeguarding?.files?.map((f) => f.objectKey),
+      [KEY_A],
+    );
+    assert.equal(club.docs.safeguarding, false, 'one remaining file is below the minimum');
+  });
+
+  test('DELETE 404s an objectKey not on record and 400s non-safeguarding keys', async () => {
+    const missing = await app.request('/clubs/sgclub/docs/safeguarding/file', {
+      method: 'DELETE',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ objectKey: 'dolphins/sgclub/never-uploaded.pdf' }),
+    });
+    assert.equal(missing.status, 404);
+
+    const wrongKey = await app.request('/clubs/sgclub/docs/constitution/file', {
+      method: 'DELETE',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ objectKey: KEY_A }),
+    });
+    assert.equal(wrongKey.status, 400);
+  });
+
+  test('the 10-file cap holds on both the append route and the generic PATCH', async () => {
+    // Seed a full record at the repo layer (bypassing the API caps).
+    const tenFiles = Array.from({ length: 10 }, (_, i) => ({
+      objectKey: `dolphins/sgclub/safeguarding-cap-${i}.pdf`,
+      size: 10,
+      uploadedAt: '2026-01-01',
+    }));
+    await repo.updateClub(
+      'dolphins',
+      'sgclub',
+      { docMeta: { safeguarding: { files: tenFiles } }, docs: { safeguarding: true } },
+      'test-seed',
+      new Date().toISOString(),
+    );
+
+    const eleventh = await upload('dolphins/sgclub/safeguarding-cap-11.pdf');
+    assert.equal(eleventh.status, 400, 'append route rejects an 11th certificate');
+
+    const viaGeneric = await app.request('/clubs/sgclub', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({
+        docMeta: {
+          safeguarding: {
+            files: [
+              ...tenFiles,
+              { objectKey: 'dolphins/sgclub/safeguarding-cap-11.pdf', size: 10 },
+            ],
+          },
+        },
+      }),
+    });
+    assert.equal(viaGeneric.status, 400, 'generic PATCH rejects an oversized files array');
+  });
+
+  test('a legacy single-object upload counts as one file and appends cleanly', async () => {
+    // Seed the pre-multi-file shape directly at the repo layer.
+    const legacy = { objectKey: 'dolphins/sgclub/legacy.pdf', size: 9, uploadedAt: '2026-01-01' };
+    await repo.updateClub(
+      'dolphins',
+      'sgclub',
+      { docMeta: { safeguarding: legacy }, docs: { safeguarding: true } },
+      'test-seed',
+      new Date().toISOString(),
+    );
+
+    const res = await upload('dolphins/sgclub/safeguarding-new.pdf');
+    assert.equal(res.status, 200);
+    const after = await getClub();
+    assert.deepEqual(
+      after.docMeta?.safeguarding?.files?.map((f) => f.objectKey),
+      ['dolphins/sgclub/legacy.pdf', 'dolphins/sgclub/safeguarding-new.pdf'],
+      'legacy file normalized into the array, new file appended',
+    );
+    assert.equal(after.docs.safeguarding, true, 'two files satisfy the minimum');
+  });
 });
 
 describe('/admin/users', () => {

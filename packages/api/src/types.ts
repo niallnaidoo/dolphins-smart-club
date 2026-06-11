@@ -91,7 +91,12 @@ export interface Club {
   cqi: number;
   cqiAnswers?: Record<string, unknown>;
   docs: Record<string, boolean>;
-  /** Per-doc upload metadata (objectKey, size, uploadedAt), keyed by doc key. */
+  /**
+   * Per-doc upload metadata, keyed by doc key. Single-file docs store one
+   * `{ objectKey, size, contentType?, uploadedAt }` object (or an admin
+   * `{ markedCompliant, at }` sentinel). Safeguarding is multi-file and stores
+   * `{ files: [...entries], markedCompliant?, at? }` — see safeguardingMeta.
+   */
   docMeta?: Record<string, unknown>;
   /** Surfaced as `players` on read; derived from registrations. */
   players: number;

@@ -51,7 +51,7 @@ export async function exportSheetsToXlsx(filename, sheets) {
 export function clubExportRow(c, { docCompletion, overallProgress, cqiBand }) {
   return {
     Club: c.name,
-    District: c.sub,
+    District: c.district || c.sub,
     Chairperson: c.chair,
     Affiliation: c.affiliation,
     Paid: c.paid ? 'Yes' : 'No',

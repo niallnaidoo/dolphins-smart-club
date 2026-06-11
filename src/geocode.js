@@ -31,3 +31,22 @@ export function suburbOf(r) {
   const a = r?.address || {};
   return a.suburb || a.neighbourhood || a.city_district || a.village || undefined;
 }
+
+// South Africa mainland bounding box. Northernmost land is ~-22.13 (Limpopo/
+// Beitbridge), easternmost ~32.9 (Kosi Bay) — the box hugs those with a small
+// margin. Note Lesotho and Eswatini fall INSIDE this box; the bbox is a cheap
+// pre-filter and the reverse-geocode country_code check is the precise gate.
+export const SA_BOUNDS = { south: -35.0, west: 16.3, north: -22.1, east: 33.0 };
+
+// Whether a point is plausibly in South Africa (within the mainland bbox).
+// Non-finite inputs are out by definition — callers gate saved pins with this.
+export function isInSouthAfrica(lat, lon) {
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lon) &&
+    lat >= SA_BOUNDS.south &&
+    lat <= SA_BOUNDS.north &&
+    lon >= SA_BOUNDS.west &&
+    lon <= SA_BOUNDS.east
+  );
+}

@@ -59,3 +59,20 @@ export function optionsGroupedByGroup(allLeagues) {
 export function findByKey(allLeagues, key) {
   return (allLeagues || []).find((l) => l.key === key);
 }
+
+/** The catalogue `group` whose leagues count as junior teams. */
+export const JUNIOR_GROUP = 'Juniors';
+
+/**
+ * Senior/junior team counts derived from a club's selected league keys — each
+ * league entered fields one side. Keys whose league was deleted from the
+ * catalogue count as senior so the total always equals leagues entered.
+ */
+export function teamCounts(leagueKeys, allLeagues) {
+  const keys = Array.isArray(leagueKeys) ? leagueKeys : [];
+  let junior = 0;
+  for (const k of keys) {
+    if (findByKey(allLeagues, k)?.group === JUNIOR_GROUP) junior++;
+  }
+  return { senior: keys.length - junior, junior };
+}

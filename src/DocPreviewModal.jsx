@@ -23,12 +23,15 @@ const SAMPLE_PDF = `${import.meta.env.BASE_URL || '/'}sample-document.pdf`;
  * iframe, so "Open in new tab" is a first-class action, not a footnote. The presigned URL
  * expires (server-side, 15 min); "Try again" re-mints it if a stale preview fails.
  */
-export function DocPreviewModal({ clubId, docKey, docName, clubName, meta, onClose }) {
+export function DocPreviewModal({ clubId, docKey, docName, clubName, meta, objectKey, onClose }) {
   useEscapeClose(onClose);
 
+  // `meta` is always a single file entry: multi-file docs (safeguarding) pass the
+  // selected entry plus its objectKey so the API presigns that specific file.
   const source = resolvePreviewSource(meta, import.meta.env.VITE_LOCAL_AUTH === '1');
   const [state, setState] = useState({ status: 'loading', src: null });
   const [reloadKey, setReloadKey] = useState(0);
+  const { metaText, isPdf } = docFileMeta(meta);
 
   useEffect(() => {
     if (source === 'demo') {
@@ -41,17 +44,19 @@ export function DocPreviewModal({ clubId, docKey, docName, clubName, meta, onClo
     }
     let alive = true;
     setState({ status: 'loading', src: null });
-    getDocViewUrl(clubId, docKey)
+    getDocViewUrl(clubId, docKey, objectKey)
       .then((r) => alive && setState({ status: 'ready', src: r.viewUrl }))
       .catch(() => alive && setState({ status: 'error', src: null }));
     return () => {
       alive = false;
     };
-  }, [source, clubId, docKey, reloadKey]);
+  }, [source, clubId, docKey, objectKey, reloadKey]);
 
-  const { metaText } = docFileMeta(meta);
-  const caption =
-    metaText || (source === 'demo' ? 'Demo preview · sample document' : 'PDF document');
+  const caption = metaText || (source === 'demo' ? 'Demo preview · sample document' : 'Document');
+  // Demo mode always serves the bundled sample PDF, so render the iframe even
+  // when the entry itself is a Word file — the "open in new tab" hint would
+  // point at a PDF and read as broken.
+  const renderInline = isPdf || source === 'demo';
 
   return createPortal(
     <div className="task-modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -112,7 +117,18 @@ export function DocPreviewModal({ clubId, docKey, docName, clubName, meta, onClo
             </div>
           )}
 
-          {state.status === 'ready' && state.src && (
+          {state.status === 'ready' && state.src && !renderInline && (
+            // Browsers can't render Word documents in an iframe — offer the
+            // download (the presigned GET serves it) instead of a broken frame.
+            <div style={{ textAlign: 'center', padding: '48px 8px', color: 'var(--muted)' }}>
+              <div style={{ fontWeight: 600, color: 'var(--ink)', marginBottom: 4 }}>
+                Word document
+              </div>
+              Word documents can’t be previewed inline — use “Open in new tab” to download it.
+            </div>
+          )}
+
+          {state.status === 'ready' && state.src && renderInline && (
             <iframe
               title={`${docName} preview`}
               src={state.src}

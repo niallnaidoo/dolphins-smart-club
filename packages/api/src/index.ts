@@ -41,7 +41,13 @@ import {
 } from './auth.js';
 import * as repo from './repo.js';
 import { VersionConflictError, LastAdminError } from './repo.js';
-import { validateClubPatch, DOC_KEYS } from './catalogue.js';
+import {
+  validateClubPatch,
+  DOC_KEYS,
+  DOC_CONTENT_TYPES,
+  MIN_SAFEGUARDING_FILES,
+  MAX_SAFEGUARDING_FILES,
+} from './catalogue.js';
 import {
   sendClubInvite,
   sendClubFixtures,
@@ -69,6 +75,76 @@ const MAX_DOC_BYTES = 10 * 1024 * 1024; // 10 MB
 /** Reject unknown/retired compliance-doc keys before any S3 or record work. */
 function assertDocKey(key: string): void {
   if (!DOC_KEYS.has(key)) throw new HttpError(400, `unknown document key "${key}"`);
+}
+
+/**
+ * A recorded objectKey must live under this club's own S3 prefix. view-url and
+ * the safeguarding DELETE presign/delete whatever is on record, so record
+ * integrity IS their security gate — without this check a rep could record a
+ * foreign club's key and then read (or S3-delete) that club's PII through their
+ * own record. `local/` is the no-S3 local-dev sentinel.
+ */
+function assertOwnObjectKey(tenant: string, clubId: string, objectKey: string): void {
+  if (objectKey.startsWith('local/')) return;
+  if (!objectKey.startsWith(`${tenant}/${clubId}/`)) {
+    throw new HttpError(400, 'objectKey does not belong to this club');
+  }
+}
+
+/** Apply assertOwnObjectKey to every file reference inside a docMeta patch. */
+function assertDocMetaObjectKeys(
+  tenant: string,
+  clubId: string,
+  docMeta: Record<string, unknown>,
+): void {
+  for (const value of Object.values(docMeta)) {
+    const m = value as { objectKey?: unknown; files?: unknown } | null;
+    if (typeof m?.objectKey === 'string') assertOwnObjectKey(tenant, clubId, m.objectKey);
+    if (Array.isArray(m?.files)) {
+      for (const f of m.files as { objectKey?: unknown }[]) {
+        if (typeof f?.objectKey === 'string') assertOwnObjectKey(tenant, clubId, f.objectKey);
+      }
+    }
+  }
+}
+
+/** One stored compliance-document file (safeguarding holds an array of these). */
+interface DocFileEntry {
+  objectKey: string;
+  size: number;
+  contentType?: string;
+  uploadedAt: string;
+}
+
+/**
+ * Mirror of `safeguardingMeta` in the frontend's data.jsx — normalizes every
+ * historical docMeta.safeguarding shape to `{ files, markedCompliant, at }`:
+ * the `{ files: [...] }` wrapper as-is, a legacy single upload `{ objectKey }`
+ * as a one-entry array, and the admin `{ markedCompliant }` sentinel as an
+ * empty array with the flag set.
+ */
+function safeguardingMeta(meta: unknown): {
+  files: DocFileEntry[];
+  markedCompliant: boolean;
+  at?: string;
+} {
+  const m = (meta ?? {}) as Record<string, unknown>;
+  if (Array.isArray(m.files)) {
+    return {
+      files: m.files as DocFileEntry[],
+      markedCompliant: !!m.markedCompliant,
+      at: m.at as string | undefined,
+    };
+  }
+  if (m.objectKey) {
+    return { files: [m as unknown as DocFileEntry], markedCompliant: !!m.markedCompliant };
+  }
+  return { files: [], markedCompliant: !!m.markedCompliant, at: m.at as string | undefined };
+}
+
+/** Re-wrap normalized safeguarding state as the stored docMeta value. */
+function safeguardingValue(files: DocFileEntry[], markedCompliant: boolean, at?: string) {
+  return markedCompliant ? { files, markedCompliant: true, at } : { files };
 }
 
 const app = new Hono<HonoEnv>();
@@ -391,8 +467,41 @@ app.patch('/clubs/:id', async (c) => {
   ]);
   const invalid = validateClubPatch(patch, validLeagueKeys, validDocKeys);
   if (invalid) throw new HttpError(400, invalid);
+  if (patch.docMeta) assertDocMetaObjectKeys(ra.tenant, id, patch.docMeta);
   // `paid` is admin-only (its own route); strip it from general patches.
   delete (patch as { paid?: boolean }).paid;
+  // Stale-client guard: docMeta is replaced wholesale (see repo.updateClub), so a
+  // pre-multi-file client's "mark compliant" (bare sentinel) or revert (key omitted)
+  // would erase the safeguarding files array — uploaded certificates must survive
+  // any generic patch that touches docMeta. Merge the stored files back in and keep
+  // the docs flag consistent with the preserved minimum.
+  if (patch.docMeta) {
+    const incoming = safeguardingMeta((patch.docMeta as Record<string, unknown>).safeguarding);
+    // A client can also hand-craft an oversized files array straight into the
+    // generic patch — the append route's cap must hold here too.
+    if (incoming.files.length > MAX_SAFEGUARDING_FILES) {
+      throw new HttpError(400, `no more than ${MAX_SAFEGUARDING_FILES} safeguarding certificates`);
+    }
+    const stored = safeguardingMeta(current.docMeta?.safeguarding);
+    if (stored.files.length) {
+      const have = new Set(incoming.files.map((f) => f.objectKey));
+      const files = [...incoming.files, ...stored.files.filter((f) => !have.has(f.objectKey))];
+      (patch.docMeta as Record<string, unknown>).safeguarding = safeguardingValue(
+        files,
+        incoming.markedCompliant,
+        incoming.at,
+      );
+      const docs = patch.docs as Record<string, boolean> | undefined;
+      if (docs && docs.safeguarding === false && files.length >= MIN_SAFEGUARDING_FILES) {
+        docs.safeguarding = true;
+      }
+      // The merge is read-modify-write off `current`: without pinning that version,
+      // a safeguarding append landing between this read and the repo's own re-read
+      // would be silently overwritten by the merged (stale) docMeta — the very loss
+      // this guard exists to prevent. Pin so the race 409s and the client retries.
+      patch.version ??= current.version;
+    }
+  }
   const updated = await applyClubPatch(ra.tenant, id, patch, ra.email);
   return c.json(withPlayerCount(updated));
 });
@@ -733,17 +842,30 @@ app.post('/clubs/:id/docs/:key/upload-url', async (c) => {
   const key = c.req.param('key');
   assertDocKey(key);
   assertClubAccess(ra, id);
-  const objectKey = `${ra.tenant}/${id}/${key}-${randomUUID()}.pdf`;
+  // PDF and Word are accepted (Google Docs exports as .docx/.pdf). A MISSING
+  // contentType falls back to PDF (legacy no-body clients); a present-but-unknown
+  // one must 400 here — silently signing it as PDF would let the upload through
+  // only for the record PATCH to reject it, orphaning the object in S3. The
+  // presign locks the upload to the echoed type, so the client must PUT with
+  // exactly this Content-Type.
+  const { contentType } = await c.req
+    .json<{ contentType?: string }>()
+    .catch(() => ({ contentType: undefined }));
+  if (contentType !== undefined && !DOC_CONTENT_TYPES[contentType]) {
+    throw new HttpError(400, 'contentType must be PDF or Word');
+  }
+  const ct = contentType ?? 'application/pdf';
+  const objectKey = `${ra.tenant}/${id}/${key}-${randomUUID()}.${DOC_CONTENT_TYPES[ct]}`;
   const url = await getSignedUrl(
     s3,
     new PutObjectCommand({
       Bucket: UPLOADS_BUCKET,
       Key: objectKey,
-      ContentType: 'application/pdf',
+      ContentType: ct,
     }),
     { expiresIn: 300 },
   );
-  return c.json({ uploadUrl: url, objectKey });
+  return c.json({ uploadUrl: url, objectKey, contentType: ct });
 });
 
 /** Mark a document uploaded with its stored object metadata. */
@@ -753,14 +875,54 @@ app.patch('/clubs/:id/docs/:key', async (c) => {
   const key = c.req.param('key');
   assertDocKey(key);
   assertClubAccess(ra, id);
-  const meta = await c.req.json<{ objectKey: string; size: number }>();
+  const meta = await c.req.json<{ objectKey: string; size: number; contentType?: string }>();
   if (!meta.objectKey) throw new HttpError(400, 'objectKey required');
+  assertOwnObjectKey(ra.tenant, id, meta.objectKey);
   if (typeof meta.size !== 'number' || meta.size <= 0 || meta.size > MAX_DOC_BYTES) {
-    throw new HttpError(400, 'file must be a non-empty PDF under 10 MB');
+    throw new HttpError(400, 'file must be a non-empty PDF or Word document under 10 MB');
+  }
+  if (meta.contentType !== undefined && !DOC_CONTENT_TYPES[meta.contentType]) {
+    throw new HttpError(400, 'contentType must be PDF or Word');
   }
   const current = await repo.getClub(ra.tenant, id);
   if (!current) throw new HttpError(404, 'club not found');
   const docMeta = current.docMeta ?? {};
+  if (key === 'safeguarding') {
+    // Safeguarding certificates are per-person and APPEND — files coexist (no
+    // delete-previous), and the doc only completes at the 2-person minimum.
+    const norm = safeguardingMeta(docMeta[key]);
+    const exists = norm.files.some((f) => f.objectKey === meta.objectKey);
+    if (!exists && norm.files.length >= MAX_SAFEGUARDING_FILES) {
+      throw new HttpError(400, `no more than ${MAX_SAFEGUARDING_FILES} safeguarding certificates`);
+    }
+    const files = exists
+      ? norm.files
+      : [
+          ...norm.files,
+          {
+            objectKey: meta.objectKey,
+            size: meta.size,
+            contentType: meta.contentType,
+            uploadedAt: now(),
+          },
+        ];
+    const updated = await applyClubPatch(
+      ra.tenant,
+      id,
+      {
+        docs: {
+          ...current.docs,
+          [key]: norm.markedCompliant || files.length >= MIN_SAFEGUARDING_FILES,
+        },
+        docMeta: { ...docMeta, [key]: safeguardingValue(files, norm.markedCompliant, norm.at) },
+        // Append is read-modify-write: pin the version read above so a parallel
+        // upload 409s (client retries) instead of silently dropping a file.
+        version: current.version,
+      },
+      ra.email,
+    );
+    return c.json(updated);
+  }
   // Replacing a wrongly-uploaded file: best-effort delete the previous S3 object so a
   // stale PDF (PII) isn't orphaned in the bucket (POPIA data-minimisation). A failed
   // delete must never fail the replace, and we skip non-S3 keys (e.g. local dev).
@@ -787,25 +949,94 @@ app.patch('/clubs/:id/docs/:key', async (c) => {
   return c.json(updated);
 });
 
-/** Mint a presigned GET so a rep or admin can preview a stored compliance PDF inline. */
+/**
+ * Remove one stored safeguarding certificate (the only multi-file doc). Recomputes
+ * the docs flag from the remaining files; an admin override keeps the doc compliant.
+ */
+app.delete('/clubs/:id/docs/:key/file', async (c) => {
+  const ra = c.get('requestAuth')!;
+  const id = c.req.param('id');
+  const key = c.req.param('key');
+  assertDocKey(key);
+  assertClubAccess(ra, id);
+  if (key !== 'safeguarding') {
+    throw new HttpError(400, 'per-file removal only applies to safeguarding');
+  }
+  const { objectKey } = await c.req.json<{ objectKey?: string }>().catch(() => ({}) as never);
+  if (!objectKey) throw new HttpError(400, 'objectKey required');
+  assertOwnObjectKey(ra.tenant, id, objectKey);
+  const current = await repo.getClub(ra.tenant, id);
+  if (!current) throw new HttpError(404, 'club not found');
+  const docMeta = current.docMeta ?? {};
+  const norm = safeguardingMeta(docMeta[key]);
+  if (!norm.files.some((f) => f.objectKey === objectKey)) {
+    throw new HttpError(404, 'no such file on record for this document');
+  }
+  // Best-effort S3 delete (PII minimisation); never block the record update.
+  if (!objectKey.startsWith('local/')) {
+    try {
+      await s3.send(new DeleteObjectCommand({ Bucket: UPLOADS_BUCKET, Key: objectKey }));
+    } catch (err) {
+      console.warn(`docs remove: failed to delete object ${objectKey}`, err);
+    }
+  }
+  const files = norm.files.filter((f) => f.objectKey !== objectKey);
+  const nextMeta = { ...docMeta };
+  if (files.length || norm.markedCompliant) {
+    nextMeta[key] = safeguardingValue(files, norm.markedCompliant, norm.at);
+  } else {
+    delete nextMeta[key];
+  }
+  const updated = await applyClubPatch(
+    ra.tenant,
+    id,
+    {
+      docs: {
+        ...current.docs,
+        [key]: norm.markedCompliant || files.length >= MIN_SAFEGUARDING_FILES,
+      },
+      docMeta: nextMeta,
+      // Same read-modify-write pinning as the append path.
+      version: current.version,
+    },
+    ra.email,
+  );
+  return c.json(updated);
+});
+
+/** Mint a presigned GET so a rep or admin can preview a stored compliance doc inline. */
 app.post('/clubs/:id/docs/:key/view-url', async (c) => {
   const ra = c.get('requestAuth')!;
   const id = c.req.param('id');
   const key = c.req.param('key');
   assertDocKey(key);
   assertClubAccess(ra, id);
+  const { objectKey: requested } = await c.req
+    .json<{ objectKey?: string }>()
+    .catch(() => ({}) as { objectKey?: string });
   const club = await repo.getClub(ra.tenant, id);
   if (!club) throw new HttpError(404, 'club not found');
   const docMeta = club.docMeta ?? {};
-  const meta = docMeta[key] as { objectKey?: string } | undefined;
-  // Only real uploads have an objectKey; admin "mark compliant" overrides do not.
-  if (!meta?.objectKey) throw new HttpError(404, 'no file on record for this document');
+  // Resolve the target file. The requested objectKey must be ON RECORD for this
+  // doc — that check is the security gate against presigning arbitrary bucket
+  // keys. Safeguarding holds several files (default: first, for old clients);
+  // single-file docs ignore a matching param and 404 a foreign one.
+  let entry: { objectKey?: string; contentType?: string } | undefined;
+  if (key === 'safeguarding') {
+    const norm = safeguardingMeta(docMeta[key]);
+    entry = requested ? norm.files.find((f) => f.objectKey === requested) : norm.files[0];
+  } else {
+    const meta = docMeta[key] as { objectKey?: string; contentType?: string } | undefined;
+    // Only real uploads have an objectKey; admin "mark compliant" overrides do not.
+    entry = meta?.objectKey && (!requested || requested === meta.objectKey) ? meta : undefined;
+  }
+  if (!entry?.objectKey) throw new HttpError(404, 'no file on record for this document');
   const url = await getSignedUrl(
     s3,
     new GetObjectCommand({
       Bucket: UPLOADS_BUCKET,
-      Key: meta.objectKey,
-      ResponseContentType: 'application/pdf',
+      Key: entry.objectKey,
+      ResponseContentType: entry.contentType ?? 'application/pdf',
       ResponseContentDisposition: 'inline',
     }),
     { expiresIn: 900 },
