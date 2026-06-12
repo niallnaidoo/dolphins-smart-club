@@ -1046,6 +1046,20 @@ function Shell({
       () => invalidate(qk.users()),
     );
   }
+  // Permanently remove a club (server cascades players/docs/clearances and
+  // offboards reps whose only club it was). Touches clubs, users (rep rescope),
+  // series (fixtures now reference a missing id) and the admin clearance list —
+  // refresh all four, then land back on the list the club just vanished from.
+  function deleteClub(id) {
+    return withToast(() => api.deleteClub(id), 'Could not remove club').then(() => {
+      invalidate(qk.clubs());
+      invalidate(qk.users());
+      invalidate(qk.series());
+      invalidate(qk.allClearances());
+      gotoAdminView('clubs_list');
+      toastShow('Club removed');
+    });
+  }
   // Re-send the staff invite notification. Resolves to { results } for the caller to surface.
   function resendInvite(sub) {
     return withToast(() => api.resendInvite(sub), 'Could not resend invite');
@@ -1239,6 +1253,8 @@ function Shell({
               })
             }
             onAddNote={addNote}
+            onDeleteClub={deleteClub}
+            allSeries={allSeries}
             onMarkCompliant={() =>
               markComplianceFor(
                 activeClub,

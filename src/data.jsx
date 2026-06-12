@@ -839,8 +839,21 @@ export function haversineKm(a, b) {
   return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
 }
 
-export function fixtureCost(homeClub, awayClub, costPerKm = 4.5, cars = 3) {
-  const km = haversineKm(homeClub.ground, awayClub.ground);
+// Shared travel-cost defaults — used as fixtureCost's parameter defaults AND by
+// display sites that read series.costPerKm/carsPerAwayTrip directly, so a series
+// missing the fields (hand-crafted API payload) renders the same numbers it costs.
+export const DEFAULT_COST_PER_KM = 4.5;
+export const DEFAULT_CARS = 3;
+
+export function fixtureCost(
+  homeClub,
+  awayClub,
+  costPerKm = DEFAULT_COST_PER_KM,
+  cars = DEFAULT_CARS,
+) {
+  // Null-safe: a fixture can reference a deleted club (lookup → undefined);
+  // haversineKm already returns 0 for a missing coord, so cost degrades to R0.
+  const km = haversineKm(homeClub?.ground, awayClub?.ground);
   const roundTripKm = km * 2;
   const fuelR = roundTripKm * cars * costPerKm;
   return { distanceKm: km, roundTripKm, cars, costPerKm, fuelR };

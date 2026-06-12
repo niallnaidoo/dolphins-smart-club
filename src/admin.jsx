@@ -17,6 +17,8 @@ import {
   overallProgress,
   affiliationSubmitted,
   fixtureCost,
+  DEFAULT_COST_PER_KM,
+  DEFAULT_CARS,
   generateRoundRobin,
   resolveSpread,
   formatDeadlineLong,
@@ -467,8 +469,8 @@ export function FixtureTable({
           <div className="fix-header-agg">
             <div className="fix-header-agg-l">@ R / km</div>
             <div className="fix-header-agg-n">
-              R {series.costPerKm.toFixed(2)}
-              <span className="unit">× {series.carsPerAwayTrip} cars</span>
+              R {(series.costPerKm ?? DEFAULT_COST_PER_KM).toFixed(2)}
+              <span className="unit">× {series.carsPerAwayTrip ?? DEFAULT_CARS} cars</span>
             </div>
           </div>
         </div>
@@ -599,7 +601,11 @@ export function FixtureTable({
                     <div className="fix-row-team">
                       {home && <ClubAvatar club={home} size={26} />}
                       <div>
-                        <div className="fix-row-team-name">{home?.name || 'TBD'}</div>
+                        {/* An id with no club behind it means the club was deleted —
+                            say so instead of the pre-schedule 'TBD'. */}
+                        <div className="fix-row-team-name">
+                          {home?.name || (f.home ? 'Removed club' : 'TBD')}
+                        </div>
                         <div className="fix-row-team-sub">{home?.sub}</div>
                       </div>
                     </div>
@@ -616,7 +622,9 @@ export function FixtureTable({
                     <div className="fix-row-team">
                       {away && <ClubAvatar club={away} size={26} />}
                       <div>
-                        <div className="fix-row-team-name">{away?.name || 'TBD'}</div>
+                        <div className="fix-row-team-name">
+                          {away?.name || (f.away ? 'Removed club' : 'TBD')}
+                        </div>
                         <div className="fix-row-team-sub">{away?.sub}</div>
                       </div>
                     </div>
@@ -3942,6 +3950,8 @@ export function AdminClubDetail({
   onRevertDoc,
   onAddNote,
   onUpdateChair,
+  onDeleteClub,
+  allSeries = [],
 }) {
   // Hooks must run unconditionally — keep state before any early return.
   const [showLinkModal, setShowLinkModal] = useStateA(false);
@@ -3951,6 +3961,7 @@ export function AdminClubDetail({
   const [showDocPreview, setShowDocPreview] = useStateA(null);
   const [showCompliant, setShowCompliant] = useStateA(false);
   const [showChairEdit, setShowChairEdit] = useStateA(false);
+  const [showRemove, setShowRemove] = useStateA(false);
   const [noteText, setNoteText] = useStateA('');
   const [noteBusy, setNoteBusy] = useStateA(false);
   if (!club) return null;
@@ -4566,6 +4577,14 @@ export function AdminClubDetail({
               <Btn tone="outline" icon={Icon.Shield} onClick={() => setShowCompliant(true)}>
                 Mark as compliant
               </Btn>
+              <Btn
+                tone="outline"
+                icon={Icon.X}
+                onClick={() => setShowRemove(true)}
+                style={{ color: 'var(--coral)', borderColor: 'var(--coral)' }}
+              >
+                Remove club
+              </Btn>
             </div>
           </Card>
         </div>
@@ -4630,6 +4649,16 @@ export function AdminClubDetail({
           onSave={(c) => Promise.resolve(onUpdateChair?.(c)).then(() => setShowChairEdit(false))}
         />
       )}
+      {showRemove && (
+        <RemoveClubModal
+          club={club}
+          allSeries={allSeries}
+          onClose={() => setShowRemove(false)}
+          // Success navigates back to the clubs list (the parent handler owns
+          // that), which unmounts this whole view — no need to close here.
+          onConfirm={() => onDeleteClub?.(club.id)}
+        />
+      )}
     </div>
   );
 }
@@ -4655,6 +4684,91 @@ function ConfirmModal({ title, body, confirmLabel = 'Confirm', onConfirm, onClos
             </Btn>
             <Btn tone="ink" size="sm" onClick={onConfirm}>
               {confirmLabel}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/* ─── RemoveClubModal — type-the-name confirm for the product's most destructive
+   action (child ID-doc PII + Cognito accounts go with the club). A plain
+   ConfirmModal is too easy to click through, so the confirm button stays
+   disabled until the admin types the club's exact name. ─── */
+function RemoveClubModal({ club, allSeries = [], onClose, onConfirm }) {
+  useEscapeClose(onClose);
+  const [typed, setTyped] = useStateA('');
+  const [busy, setBusy] = useStateA(false);
+  // Exact match (trimmed, case-sensitive) — the friction is the point.
+  const match = typed.trim() === club.name;
+  const inReleased = allSeries.some((s) => s.released && (s.teams || []).includes(club.id));
+  const playerCount = club.players || 0;
+  const docCount = docsUploadedCount(club);
+  function confirm() {
+    if (!match || busy) return;
+    setBusy(true);
+    // Success navigates away and unmounts the whole detail view; only failure
+    // (already toasted by the parent's withToast) needs the button back.
+    Promise.resolve(onConfirm()).catch(() => setBusy(false));
+  }
+  return createPortal(
+    <div className="task-modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="task-modal narrow" style={{ maxWidth: 460 }}>
+        <div className="task-modal-head">
+          <div className="task-modal-head-text">
+            <div className="task-modal-head-title">Remove {club.name}?</div>
+          </div>
+          <button className="task-modal-close" onClick={onClose} title="Close">
+            <Icon.X />
+          </button>
+        </div>
+        <div className="task-modal-body">
+          <p style={{ fontSize: 13.5, color: 'var(--ink)', lineHeight: 1.55, margin: 0 }}>
+            This permanently deletes the club and everything stored under it:{' '}
+            <strong>
+              {playerCount} registered {playerCount === 1 ? 'player' : 'players'}
+            </strong>{' '}
+            (including ID documents) and{' '}
+            <strong>
+              {docCount} compliance {docCount === 1 ? 'document' : 'documents'}
+            </strong>
+            , plus any clearance history.
+          </p>
+          {inReleased && (
+            <p style={{ fontSize: 12.5, color: 'var(--coral)', lineHeight: 1.5, marginTop: 10 }}>
+              This club is named in released fixtures — published schedules will show &ldquo;Removed
+              club&rdquo; in its place.
+            </p>
+          )}
+          <p style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.5, marginTop: 10 }}>
+            Reps whose only club this is lose sign-in access entirely. This can&apos;t be undone.
+          </p>
+          <label style={{ display: 'block', marginTop: 14 }}>
+            <span className="reg-label">Type the club name to confirm</span>
+            <input
+              className="field-input"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && confirm()}
+              placeholder={club.name}
+              autoFocus
+              style={{ width: '100%' }}
+            />
+          </label>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
+            <Btn tone="outline" size="sm" onClick={onClose}>
+              Cancel
+            </Btn>
+            <Btn
+              tone="ink"
+              size="sm"
+              onClick={confirm}
+              disabled={!match || busy}
+              style={{ background: 'var(--coral)', opacity: !match || busy ? 0.5 : 1 }}
+            >
+              {busy ? 'Removing…' : 'Remove club'}
             </Btn>
           </div>
         </div>

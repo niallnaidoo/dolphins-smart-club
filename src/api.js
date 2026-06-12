@@ -114,6 +114,18 @@ async function request(path, { method = 'GET', body, auth = true, query } = {}) 
 // Email validation — kept identical to the backend EMAIL_RE (index.ts) so a value
 // that passes the form can't be rejected by the API.
 export const EMAIL_RE = /^[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}$/;
+// ZA cell normalization — kept identical to the backend normalizer in index.ts so
+// a value that passes the form can't be rejected by the API. Accepts local
+// (083…) and international (+27/27) forms with spaces/dashes/dots/parens; returns
+// the canonical stored form `0XXXXXXXXX` (what waNumber/toE164 expect) or null.
+// The [6-8] range is a deliberate permissive SUPERSET of real mobile prefixes (it
+// admits some non-mobile ranges like 080x/086/087) — don't "tighten" it; WhatsApp
+// sends already skip undeliverable numbers, and false rejections cost signups.
+export function normalizeZaCell(raw) {
+  const digits = String(raw ?? '').replace(/[\s\-().]/g, '');
+  const m = digits.match(/^(?:\+?27|0)([6-8]\d{8})$/);
+  return m ? `0${m[1]}` : null;
+}
 export const getTenant = () => request('/tenant', { auth: false });
 export const putTenantConfig = (patch) => request('/tenant/config', { method: 'PUT', body: patch });
 export const putSupportContact = ({ name, email }) =>
@@ -127,6 +139,9 @@ export const patchMe = (patch) => request('/me', { method: 'PATCH', body: patch 
 export const getClubs = () => request('/clubs');
 export const getClub = (id) => request(`/clubs/${id}`);
 export const patchClub = (id, patch) => request(`/clubs/${id}`, { method: 'PATCH', body: patch });
+// Admin-only hard delete: cascades players/docs/clearances and offboards reps
+// server-side. Resolves to { ok, removed: { players, clearances, users } }.
+export const deleteClub = (id) => request(`/clubs/${id}`, { method: 'DELETE' });
 export const saveExco = (id, exco) => request(`/clubs/${id}/exco`, { method: 'POST', body: exco });
 export const generateRegLink = (id) => request(`/clubs/${id}/reg-link`, { method: 'POST' });
 export const getDocUploadUrl = (id, key, contentType) =>

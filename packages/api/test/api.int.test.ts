@@ -2084,7 +2084,7 @@ describe('public club self-registration (/club-signup)', () => {
     assert.equal(club.district, 'KCCD');
     assert.equal(club.exco?.chair?.name, 'Robin Rep');
     assert.equal(club.exco?.chair?.email, 'robin@sharks.test');
-    assert.equal(club.exco?.chair?.cell, '083 555 0001');
+    assert.equal(club.exco?.chair?.cell, '0835550001', 'cell stored normalized (spaces stripped)');
     assert.equal(club.onboardedVia, 'self-signup');
     assert.ok(club.signupConsentAt, 'POPIA consent timestamp stamped');
     assert.equal(club.changedBy, 'robin@sharks.test');
@@ -2154,6 +2154,52 @@ describe('public club self-registration (/club-signup)', () => {
     for (const email of ['bad1@su.test', 'bad3@su.test', 'bad5@su.test']) {
       assert.equal(await repo.getUser(await subFor(email)), null, `${email} not minted`);
     }
+  });
+
+  test('cell normalization: +27/27/spaced/parenthesised variants all store 0835550001', async () => {
+    // The happy path covers '083 555 0001'; these are the other accepted input shapes.
+    const variants: Array<[string, string, string]> = [
+      ['27835550001', 'Cell Variant One CC', 'cellv1@su.test'],
+      ['+27 83-555-0001', 'Cell Variant Two CC', 'cellv2@su.test'],
+      ['(083) 555 0001', 'Cell Variant Three CC', 'cellv3@su.test'],
+    ];
+    for (const [cell, clubName, email] of variants) {
+      const res = await signupPost(validBody({ clubName, repEmail: email, repCell: cell }));
+      assert.equal(res.status, 201, cell);
+      const { clubId } = (await res.json()) as { clubId: string };
+      const club = (await (
+        await app.request(`/clubs/${clubId}`, { headers: sHeaders(SADMIN) })
+      ).json()) as { exco?: { chair?: { cell?: string } } };
+      assert.equal(club.exco?.chair?.cell, '0835550001', cell);
+    }
+  });
+
+  test('an invalid cell is a 400 and mints no account', async () => {
+    const cases: Array<[string, string, string, string]> = [
+      ['12345', 'Bad Cell One CC', 'bad-cell-one-cc', 'badcell1@su.test'],
+      // 09x sits outside even the deliberately permissive 06–08 superset.
+      ['0935550001', 'Bad Cell Two CC', 'bad-cell-two-cc', 'badcell2@su.test'],
+      ['08355500012', 'Bad Cell Three CC', 'bad-cell-three-cc', 'badcell3@su.test'], // 11 digits
+    ];
+    for (const [cell, clubName, slug, email] of cases) {
+      const res = await signupPost(validBody({ clubName, repEmail: email, repCell: cell }));
+      assert.equal(res.status, 400, cell);
+      const body = (await res.json()) as { error?: string };
+      assert.match(body.error ?? '', /South African cell/, cell);
+      assert.equal(await repo.getUser(await subFor(email)), null, `${email} not minted`);
+      assert.equal(await repo.getClub(T, slug), null, `${clubName} not created`);
+    }
+  });
+
+  test('an absent cell is still accepted (the field is optional)', async () => {
+    const res = await signupPost(
+      validBody({ clubName: 'No Cell CC', repEmail: 'nocell@su.test', repCell: undefined }),
+    );
+    assert.equal(res.status, 201);
+    const club = (await (
+      await app.request('/clubs/no-cell-cc', { headers: sHeaders(SADMIN) })
+    ).json()) as { exco?: { chair?: { cell?: string } } };
+    assert.equal(club.exco?.chair?.cell, '', 'no cell stored, chair record still created');
   });
 
   test('an existing rep signing up a second club gains the clubId exactly once; other tenants intact', async () => {
@@ -2278,5 +2324,341 @@ describe('public club self-registration (/club-signup)', () => {
     assert.equal((await signupGet(etToken)).status, 404);
     assert.equal((await signupPost(validBody({ repEmail: 'late@eu.test' }), etToken)).status, 404);
     assert.equal(await repo.getToken(etToken), null, 'erase revoked the TOKEN# item');
+  });
+});
+
+describe('DELETE /clubs/:id (admin club deletion)', () => {
+  // Dedicated tenant so the cascade can't disturb other suites' fixtures.
+  const T = 'deltenant';
+  const dHeaders = (auth: string) => ({
+    'x-tenant': T,
+    'x-dev-auth': auth,
+    'content-type': 'application/json',
+  });
+  const DADMIN = devAuthAs('caller-del-admin', 'del-admin@del.test', [
+    { tenantId: T, role: 'admin', clubIds: [] },
+  ]);
+  const DREP = devAuthAs('caller-del-rep', 'del-rep@del.test', [
+    { tenantId: T, role: 'rep', clubIds: ['survivor'] },
+  ]);
+
+  const mkClub = (id: string, name: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    name,
+    district: 'Test District',
+    sub: 's',
+    chair: 'Chair',
+    affiliation: 'not_started' as const,
+    cqi: 0,
+    docs: {},
+    players: 0,
+    teams: 0,
+    women: 0,
+    juniors: 0,
+    color: '#abcdef',
+    ground: {},
+    leagues: [],
+    version: 1,
+    ...extra,
+  });
+  const mkPlayer = (clubId: string, nk: string, extra: Record<string, unknown> = {}) => ({
+    naturalKey: nk,
+    clubId,
+    firstName: 'Del',
+    lastName: 'Player',
+    dob: '1995-01-01',
+    isMinor: false,
+    status: 'active' as const,
+    consentAt: '2026-06-01T00:00:00.000Z',
+    createdAt: '2026-06-01T00:00:00.000Z',
+    ...extra,
+  });
+  const mkClearance = (id: string, nk: string, fromClubId: string, toClubId: string) => ({
+    id,
+    playerNaturalKey: nk,
+    playerName: 'Del Player',
+    fromClubId,
+    toClubId,
+    fromClubName: 'From CC',
+    toClubName: 'To CC',
+    requestedAt: new Date().toISOString(),
+    feesCleared: false,
+    misconductCleared: false,
+    status: 'pending' as const,
+    clubApprovedAt: null,
+    adminOverrideAt: null,
+    version: 0,
+  });
+
+  // Users the delete must sweep (seeded straight through the repo; the auth headers
+  // above never create USER# rows, so the roster is exactly these three).
+  const soloSub = 'del-solo-rep';
+  const multiSub = 'del-multi-rep';
+  const staffAdminSub = 'del-staff-admin';
+
+  const del = (id: string, auth = DADMIN) =>
+    app.request(`/clubs/${id}`, { method: 'DELETE', headers: dHeaders(auth) });
+
+  before(async () => {
+    await repo.putTenantConfig({
+      tenant: T,
+      branding: { name: 'Delete Union', title: 'Del', logoUrl: '', colors: {}, copy: {} },
+      submissionDeadline: '2026-12-31',
+      knownClubs: [],
+      leagues: [],
+    });
+    // The doomed club carries every kind of sub-item the cascade must reach: a live
+    // reg-link token, doc objectKeys (incl. the multi-file safeguarding shape),
+    // players (one with an ID doc), clearances in BOTH directions, an invite marker.
+    await repo.createClub(
+      T,
+      mkClub('doomed', 'Doomed CC', {
+        playerRegLink: { token: 'del-reg-token', createdAt: '2026-06-01T00:00:00.000Z' },
+        docMeta: {
+          constitution: {
+            objectKey: 'local/doomed-constitution.pdf',
+            size: 1,
+            uploadedAt: '2026-06-01T00:00:00.000Z',
+          },
+          safeguarding: {
+            files: [
+              {
+                objectKey: 'local/doomed-sg-1.pdf',
+                size: 1,
+                uploadedAt: '2026-06-01T00:00:00.000Z',
+              },
+            ],
+          },
+        },
+      }),
+    );
+    await repo.putToken('del-reg-token', T, 'doomed', '2026-06-01T00:00:00.000Z');
+    await repo.createClub(T, mkClub('survivor', 'Survivor CC'));
+
+    await repo.createPlayer(
+      T,
+      mkPlayer('doomed', 'p1', {
+        idDocMeta: {
+          objectKey: 'local/p1-id.pdf',
+          size: 1,
+          uploadedAt: '2026-06-01T00:00:00.000Z',
+        },
+      }),
+    );
+    await repo.createPlayer(T, mkPlayer('doomed', 'p2'));
+    await repo.createPlayer(T, mkPlayer('survivor', 'stuck'));
+    // Outgoing: doomed is the SOURCE (mirror lives under survivor).
+    await repo.createClearance(T, mkClearance('clr-out', 'p1', 'doomed', 'survivor'));
+    // Inbound: doomed is the DESTINATION — leaves survivor's player 'stuck' pending.
+    await repo.createClearance(T, mkClearance('clr-in', 'stuck', 'survivor', 'doomed'));
+    assert.equal(await repo.claimInviteSend(T, 'doomed', 'kDel', ['email']), null);
+
+    await repo.putUser({
+      sub: soloSub,
+      email: 'solo@del.test',
+      memberships: [{ tenantId: T, role: 'rep', clubIds: ['doomed'] }],
+      onboardingSeen: {},
+    });
+    await repo.putUser({
+      sub: multiSub,
+      email: 'multi@del.test',
+      memberships: [
+        { tenantId: T, role: 'rep', clubIds: ['doomed', 'survivor'] },
+        { tenantId: 'dolphins', role: 'rep', clubIds: ['testers'] },
+      ],
+      onboardingSeen: {},
+    });
+    await repo.putUser({
+      sub: staffAdminSub,
+      email: 'staff-admin@del.test',
+      memberships: [{ tenantId: T, role: 'admin', clubIds: [] }],
+      onboardingSeen: {},
+    });
+  });
+
+  test('a rep is forbidden (403) and anonymous is unauthenticated (401)', async () => {
+    assert.equal((await del('doomed', DREP)).status, 403);
+    const anon = await app.request('/clubs/doomed', {
+      method: 'DELETE',
+      headers: { 'x-tenant': T, 'content-type': 'application/json' },
+    });
+    assert.equal(anon.status, 401);
+    assert.ok(await repo.getClub(T, 'doomed'), 'the club survived the refused attempts');
+  });
+
+  test('an unknown club is a 404', async () => {
+    assert.equal((await del('never-existed')).status, 404);
+  });
+
+  test('deleting cascades players, clearances (both partitions), markers and the token', async () => {
+    const res = await del('doomed');
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), {
+      ok: true,
+      removed: { players: 2, clearances: 2, users: 2 },
+    });
+
+    // Club + players gone; the route 404s like it never existed.
+    assert.equal(await repo.getClub(T, 'doomed'), null);
+    assert.deepEqual(await repo.listPlayers(T, 'doomed'), []);
+    assert.equal((await app.request('/clubs/doomed', { headers: dHeaders(DADMIN) })).status, 404);
+
+    // Both clearance directions cleaned INCLUDING the counterpart partitions: the
+    // outgoing mirror under survivor and the inbound canonical under survivor.
+    assert.deepEqual(await repo.listClearancesForSource(T, 'doomed'), []);
+    assert.deepEqual(await repo.listInboundForDest(T, 'doomed'), []);
+    assert.deepEqual(await repo.listInboundForDest(T, 'survivor'), []);
+    assert.deepEqual(await repo.listClearancesForSource(T, 'survivor'), []);
+
+    // The pending inbound clearance held survivor's player hostage — reset to active.
+    assert.equal((await repo.getPlayer(T, 'survivor', 'stuck'))?.status, 'active');
+
+    // Reg-link token revoked: the public registration link is dead.
+    assert.equal(await repo.getToken('del-reg-token'), null);
+    assert.equal((await app.request('/register/doomed?t=del-reg-token')).status, 404);
+
+    // Invite marker gone — the same key claims fresh instead of replaying.
+    assert.equal(await repo.claimInviteSend(T, 'doomed', 'kDel', ['email']), null);
+  });
+
+  test('membership sweep: solo rep offboarded, multi-club rep rescoped, admin untouched', async () => {
+    // Single-club rep: fully offboarded — USER# META and all TENANT# markers gone.
+    assert.equal(await repo.getUser(soloSub), null);
+    const roster = await repo.listTenantUsers(T);
+    assert.ok(!roster.some((u) => u.sub === soloSub), 'solo rep marker gone');
+
+    // Multi-club rep: rescoped to the surviving club; the other tenant is intact.
+    const multi = await repo.getUser(multiSub);
+    assert.deepEqual(multi?.memberships.find((m) => m.tenantId === T)?.clubIds, ['survivor']);
+    assert.deepEqual(
+      multi?.memberships.find((m) => m.tenantId === 'dolphins'),
+      { tenantId: 'dolphins', role: 'rep', clubIds: ['testers'] },
+      'other-tenant membership untouched',
+    );
+
+    // Admins are never swept (clubIds: [] can't reference a club).
+    const staff = await repo.getUser(staffAdminSub);
+    assert.deepEqual(staff?.memberships, [{ tenantId: T, role: 'admin', clubIds: [] }]);
+  });
+
+  test('a second delete is a 404 (the cascade is idempotent, the route is honest)', async () => {
+    assert.equal((await del('doomed')).status, 404);
+  });
+
+  test('race hardening: createPlayer against the deleted club cannot resurrect it', async () => {
+    // The route's getClub check bounds this window; the repo-level call simulates an
+    // in-flight registration landing after the delete. The PLAYER# row is accepted
+    // residue — the conditioned playerCount bump must NOT recreate a club item.
+    await repo.createPlayer(T, mkPlayer('doomed', 'ghost'));
+    assert.equal(await repo.getClub(T, 'doomed'), null, 'no phantom club item from the bump');
+  });
+
+  test('race hardening: createClearance into the deleted club fails cleanly', async () => {
+    await repo.createPlayer(T, mkPlayer('survivor', 'wants-out'));
+    await assert.rejects(
+      () => repo.createClearance(T, mkClearance('clr-late', 'wants-out', 'survivor', 'doomed')),
+      (err: Error) => err.name === 'DestinationClubGoneError',
+    );
+    // The rejected create mutated nothing: no stranded pending player, no orphan items.
+    assert.equal((await repo.getPlayer(T, 'survivor', 'wants-out'))?.status, 'active');
+    assert.deepEqual(await repo.listClearancesForSource(T, 'survivor'), []);
+    assert.deepEqual(await repo.listInboundForDest(T, 'doomed'), []);
+  });
+});
+
+describe('queryAll (LastEvaluatedKey pagination)', () => {
+  // A real >1MB page can't practically be seeded in dynalite, so a small `Limit`
+  // (passed straight through queryAll's input) forces multiple pages instead — the
+  // ExclusiveStartKey loop is the thing under test.
+  test('drains every page when a small Limit forces multiple pages', async () => {
+    const T = 'pagetenant';
+    await repo.createClub(T, {
+      id: 'pc',
+      name: 'Pages CC',
+      district: 'Test District',
+      sub: 's',
+      chair: 'Chair',
+      affiliation: 'not_started' as const,
+      cqi: 0,
+      docs: {},
+      players: 0,
+      teams: 0,
+      women: 0,
+      juniors: 0,
+      color: '#123456',
+      ground: {},
+      leagues: [],
+      version: 1,
+    });
+    for (let i = 0; i < 5; i++) {
+      await repo.createPlayer(T, {
+        naturalKey: `pager-${i}`,
+        clubId: 'pc',
+        firstName: 'Page',
+        lastName: `Turner${i}`,
+        dob: '1990-01-01',
+        isMinor: false,
+        consentAt: '2026-06-01T00:00:00.000Z',
+        createdAt: '2026-06-01T00:00:00.000Z',
+      });
+    }
+    const { playersListKey } = await import('../src/keys.js');
+    const { pk, skPrefix } = playersListKey(T, 'pc');
+    const items = await repo.queryAll({
+      TableName: TABLE,
+      KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
+      ExpressionAttributeValues: { ':p': pk, ':s': skPrefix },
+      Limit: 2, // 5 items at 2 per page = 3 pages
+    });
+    assert.equal(items.length, 5, 'all pages drained, not just the first');
+  });
+});
+
+describe('clubDocObjectKeys (S3 purge key collection)', () => {
+  // The dynalite harness has no S3, so the cascade tests can't observe which keys
+  // would be purged — assert the collection directly. Safeguarding's multi-file
+  // `files[]` shape is the one this function historically missed.
+  const clubWith = (docMeta: Record<string, unknown>) =>
+    ({ id: 'x', docMeta }) as unknown as Parameters<typeof repo.clubDocObjectKeys>[0];
+
+  test('collects single-file objectKeys', () => {
+    assert.deepEqual(
+      repo.clubDocObjectKeys(clubWith({ constitution: { objectKey: 't/x/const.pdf', size: 1 } })),
+      ['t/x/const.pdf'],
+    );
+  });
+
+  test('collects safeguarding files[] entries', () => {
+    assert.deepEqual(
+      repo.clubDocObjectKeys(
+        clubWith({
+          safeguarding: { files: [{ objectKey: 't/x/sg1.pdf' }, { objectKey: 't/x/sg2.pdf' }] },
+        }),
+      ),
+      ['t/x/sg1.pdf', 't/x/sg2.pdf'],
+    );
+  });
+
+  test('collects mixed shapes and skips malformed entries', () => {
+    assert.deepEqual(
+      repo.clubDocObjectKeys(
+        clubWith({
+          constitution: { objectKey: 't/x/const.pdf' },
+          safeguarding: { files: [{ objectKey: 't/x/sg1.pdf' }, {}], markedCompliant: true },
+          agm: {}, // admin marked-compliant sentinel — no file
+        }),
+      ),
+      ['t/x/const.pdf', 't/x/sg1.pdf'],
+    );
+  });
+
+  test('empty/absent docMeta yields no keys', () => {
+    assert.deepEqual(repo.clubDocObjectKeys(clubWith({})), []);
+    assert.deepEqual(
+      repo.clubDocObjectKeys({ id: 'x' } as unknown as Parameters<
+        typeof repo.clubDocObjectKeys
+      >[0]),
+      [],
+    );
   });
 });

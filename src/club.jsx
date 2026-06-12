@@ -28,6 +28,8 @@ import {
   overallProgress,
   affiliationSubmitted,
   fixtureCost,
+  DEFAULT_COST_PER_KM,
+  DEFAULT_CARS,
   formatDeadlineLong,
   formatDeadlineShort,
   daysUntil,
@@ -3244,7 +3246,12 @@ export function ClubFixturesView({ club, allSeries, clubs, toast, onSendFixtures
         awayMatches++;
         const home = clubBy(f.home);
         if (home && home.ground && club.ground) {
-          const c = fixtureCost(home, club, s.costPerKm || 4.5, s.carsPerAwayTrip || 3);
+          const c = fixtureCost(
+            home,
+            club,
+            s.costPerKm || DEFAULT_COST_PER_KM,
+            s.carsPerAwayTrip || DEFAULT_CARS,
+          );
           totalKm += c.roundTripKm;
           totalCost += c.fuelR;
         }
@@ -3258,6 +3265,14 @@ export function ClubFixturesView({ club, allSeries, clubs, toast, onSendFixtures
   const daysToNext = nextFixture
     ? Math.max(0, Math.ceil((new Date(nextFixture.date) - new Date(todayISO)) / 86400000))
     : null;
+  // An opponent id with no club behind it means the club was deleted — say so
+  // instead of the pre-schedule 'TBA'.
+  const nextOppId = nextFixture
+    ? nextFixture.home === club.id
+      ? nextFixture.away
+      : nextFixture.home
+    : null;
+  const nextOppName = clubBy(nextOppId)?.name || (nextOppId ? 'Removed club' : 'TBA');
 
   return (
     <div>
@@ -3319,7 +3334,8 @@ export function ClubFixturesView({ club, allSeries, clubs, toast, onSendFixtures
           <div className="club-fix-kpi-l">Season fuel</div>
           <div className="club-fix-kpi-n">R {Math.round(totalCost).toLocaleString()}</div>
           <div className="club-fix-kpi-meta">
-            est · {myReleased[0]?.carsPerAwayTrip || 3} cars × R {myReleased[0]?.costPerKm || 4.5}
+            est · {myReleased[0]?.carsPerAwayTrip || DEFAULT_CARS} cars × R{' '}
+            {myReleased[0]?.costPerKm || DEFAULT_COST_PER_KM}
             /km
           </div>
         </div>
@@ -3336,11 +3352,7 @@ export function ClubFixturesView({ club, allSeries, clubs, toast, onSendFixtures
             </div>
             <div className="club-fix-next-detail">
               <div className="club-fix-next-title">
-                {nextFixture.home === club.id ? 'vs' : 'away to'}{' '}
-                <strong>
-                  {clubBy(nextFixture.home === club.id ? nextFixture.away : nextFixture.home)
-                    ?.name || 'TBA'}
-                </strong>
+                {nextFixture.home === club.id ? 'vs' : 'away to'} <strong>{nextOppName}</strong>
               </div>
               <div className="club-fix-next-sub">
                 {new Date(nextFixture.date).toLocaleDateString('en-GB', {
@@ -3416,14 +3428,23 @@ export function ClubFixturesView({ club, allSeries, clubs, toast, onSendFixtures
                 <tbody>
                   {mine.map((f) => {
                     const isHome = f.home === club.id;
-                    const opp = clubBy(isHome ? f.away : f.home);
+                    const oppId = isHome ? f.away : f.home;
+                    const opp = clubBy(oppId);
+                    // Distinguish "deleted club" (id present, lookup empty) from
+                    // a genuinely unscheduled opponent.
+                    const oppFallback = oppId ? 'Removed club' : 'TBA';
                     const venueName = isHome
                       ? club.ground?.venue || 'Home ground TBA'
                       : opp?.ground?.venue || 'Opponent ground TBA';
                     let dist = null,
                       cost = null;
                     if (!isHome && opp && opp.ground && club.ground) {
-                      const c = fixtureCost(opp, club, s.costPerKm || 4.5, s.carsPerAwayTrip || 3);
+                      const c = fixtureCost(
+                        opp,
+                        club,
+                        s.costPerKm || DEFAULT_COST_PER_KM,
+                        s.carsPerAwayTrip || DEFAULT_CARS,
+                      );
                       dist = c.roundTripKm;
                       cost = c.fuelR;
                     }
@@ -3466,7 +3487,7 @@ export function ClubFixturesView({ club, allSeries, clubs, toast, onSendFixtures
                           </div>
                         </td>
                         <td>
-                          <ClubNameCell club={opp || { name: 'TBA', short: 'TBA' }} />
+                          <ClubNameCell club={opp || { name: oppFallback, short: 'TBA' }} />
                         </td>
                         <td>
                           {isHome ? (
@@ -3526,7 +3547,7 @@ export function ClubFixturesView({ club, allSeries, clubs, toast, onSendFixtures
 
       {/* Footnote */}
       <div className="club-fix-foot">
-        Travel cost is estimated at R {myReleased[0]?.costPerKm || 4.5}/km ×{' '}
+        Travel cost is estimated at R {myReleased[0]?.costPerKm || DEFAULT_COST_PER_KM}/km ×{' '}
         {myReleased[0]?.carsPerAwayTrip || 3} cars per away trip — published with the fixture
         release. Adjustments to schedule require a Dolphins office sign-off.
       </div>

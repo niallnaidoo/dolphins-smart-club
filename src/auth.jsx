@@ -8,8 +8,10 @@
  * sets the identity directly (see devAuth.js). Amplify is never touched.
  *
  * useAuth(): { status, email, memberships, signedOutReason, startSignIn, submitOtp,
- * signOutUser, devSignIn? }. signedOutReason ('expired' | '') lets Login explain a
- * forced sign-out (session lost mid-use, e.g. signed out in another tab).
+ * signOutUser, refreshSession, devSignIn? }. signedOutReason ('expired' | '') lets
+ * Login explain a forced sign-out (session lost mid-use, e.g. signed out in
+ * another tab). refreshSession() forces a token re-mint so membership changes
+ * land without a sign-out (PreTokenGen re-reads memberships on the forced mint).
  */
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { Amplify } from 'aws-amplify';
@@ -42,6 +44,9 @@ function LocalAuthProvider({ children }) {
     memberships: identity?.memberships ?? [],
     devSignIn,
     signOutUser,
+    // The dev identity is static — there's no token to re-mint, so a refresh can
+    // never pick up new memberships. False routes callers to the sign-out fallback.
+    refreshSession: async () => false,
     // no-ops so the Login OTP form never appears in local mode
     startSignIn: async () => {},
     submitOtp: async () => {},
@@ -166,6 +171,22 @@ function CloudAuthProvider({ children }) {
     [loadSession],
   );
 
+  /** Force Cognito to mint fresh tokens (PreTokenGen re-reads memberships on the
+   * forced mint), then fold them into React state. Returns true iff the refreshed
+   * session landed on signedIn — false means "still on the old claims" and callers
+   * should fall back to the sign-out path. */
+  const refreshSession = useCallback(async () => {
+    try {
+      await fetchAuthSession({ forceRefresh: true });
+    } catch (err) {
+      // Cloud-only path with no offline rehearsal — keep the failure observable so
+      // a field report ("CTA never appeared") is distinguishable from staleness.
+      console.warn('refreshSession: forced token refresh failed', err);
+      return false;
+    }
+    return loadSession();
+  }, [loadSession]);
+
   const signOutUser = useCallback(async () => {
     await signOut();
     loadSeq.current++; // cancel any in-flight revalidation — deliberate sign-out wins
@@ -183,6 +204,7 @@ function CloudAuthProvider({ children }) {
     startSignIn,
     submitOtp,
     signOutUser,
+    refreshSession,
   };
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

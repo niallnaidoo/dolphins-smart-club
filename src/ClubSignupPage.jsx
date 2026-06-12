@@ -5,11 +5,33 @@
  * same link doubles as the way back in: "Already registered? Sign in" routes to
  * the normal OTP login with the email pre-filled (Login.jsx reads ?email=).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { qk } from './query.js';
-import { getClubSignup, submitClubSignup, getTenant, ApiError } from './api.js';
+import {
+  getClubSignup,
+  submitClubSignup,
+  getTenant,
+  getActiveTenant,
+  normalizeZaCell,
+  ApiError,
+} from './api.js';
+import { useAuth, membershipFor } from './auth.jsx';
+
+/**
+ * Which CTA the done view shows for an already-signed-in visitor:
+ * 'admin'  — admin membership → straight to the admin console;
+ * 'club'   — rep whose refreshed clubIds include the new club → open it;
+ * null     — no membership / refresh hasn't landed → plain sign-in fallback.
+ * Pure so vitest can table-test the branches.
+ */
+export function signupDoneCta(membership, clubId) {
+  if (!membership) return null;
+  if (membership.role === 'admin') return 'admin';
+  if (clubId && (membership.clubIds ?? []).includes(clubId)) return 'club';
+  return null;
+}
 
 export function ClubSignupPage() {
   const [params] = useSearchParams();
@@ -20,8 +42,16 @@ export function ClubSignupPage() {
   const tenantQuery = useQuery({ queryKey: qk.tenant(), queryFn: getTenant, retry: 0 });
   const branding = tenantQuery.data?.branding;
 
+  // Signed-in visitors (e.g. a rep registering a second club) get their session
+  // refreshed after submit so the new membership lands without a sign-out.
+  const auth = useAuth();
+
   const [state, setState] = useState('loading'); // loading | ready | invalid | done
   const [orgName, setOrgName] = useState('');
+  // The link's tenant (from the GET) — the done view only offers signed-in CTAs
+  // when it matches the host's active tenant (a multi-union user signed into
+  // union B opening union A's link must get the plain sign-in fallback).
+  const [tenant, setTenant] = useState('');
   const [districts, setDistricts] = useState([]);
   const [form, setForm] = useState({
     repName: '',
@@ -31,9 +61,10 @@ export function ClubSignupPage() {
     district: '',
     consent: false,
   });
-  const [done, setDone] = useState(null); // { clubName, email, replayed }
+  const [done, setDone] = useState(null); // { clubId, clubName, email, replayed }
   const [error, setError] = useState('');
   const [nameError, setNameError] = useState('');
+  const [cellError, setCellError] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -47,6 +78,7 @@ export function ClubSignupPage() {
         const r = await getClubSignup(token);
         if (!live) return;
         setOrgName(r.orgName || '');
+        setTenant(r.tenant || '');
         setDistricts(r.districts || []);
         setState('ready');
       } catch {
@@ -58,6 +90,24 @@ export function ClubSignupPage() {
     };
   }, [token]);
 
+  // PreTokenGen's membership read is eventually consistent: the forced refresh in
+  // submit can mint a token that predates the new membership. If the done view is
+  // showing the fallback to a signed-in rep on this tenant's host, retry the
+  // refresh ONCE after ~1s (the live context re-renders the CTA when it lands).
+  const retriedRefresh = useRef(false);
+  useEffect(() => {
+    if (state !== 'done' || !done?.clubId || retriedRefresh.current) return;
+    if (auth.status !== 'signedIn' || tenant !== getActiveTenant()) return;
+    if (signupDoneCta(membershipFor(auth.memberships, tenant), done.clubId)) return;
+    // Mark "retried" only when the timer actually fires — a dep change mid-wait
+    // (context identity churn) cancels and reschedules rather than losing the retry.
+    const t = setTimeout(() => {
+      retriedRefresh.current = true;
+      auth.refreshSession?.().catch(() => false);
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [state, done, tenant, auth]);
+
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   // Sign-in is the normal OTP login at "/" — carry the typed email so it's pre-filled.
   const gotoSignIn = (email) => navigate(email ? `/?email=${encodeURIComponent(email)}` : '/');
@@ -66,19 +116,36 @@ export function ClubSignupPage() {
     e.preventDefault();
     setError('');
     setNameError('');
-    setBusy(true);
+    setCellError('');
     const email = form.repEmail.trim().toLowerCase();
+    // Cell is optional, but a non-empty value must normalize (same rule as the
+    // server) — send the canonical 0XXXXXXXXX form, never the raw input.
+    const rawCell = form.repCell.trim();
+    const cell = rawCell ? normalizeZaCell(rawCell) : undefined;
+    if (rawCell && !cell) {
+      setCellError('Enter a valid South African cell number, e.g. 083 555 0001.');
+      return;
+    }
+    setBusy(true);
     try {
       const res = await submitClubSignup(token, {
         clubName: form.clubName.trim(),
         district: form.district,
         repName: form.repName.trim(),
         repEmail: email,
-        repCell: form.repCell.trim() || undefined,
+        repCell: cell,
         consent: form.consent === true,
       });
-      // 201 echoes { clubName, email }; a 200 replay carries only { clubId, replayed }.
+      // Already signed in (e.g. a rep adding a second club): force a token
+      // re-mint so the new membership lands without a sign-out — PreTokenGen
+      // re-reads memberships on the forced mint. Failure just leaves the
+      // sign-in fallback CTA; never block the success screen on it.
+      if (auth.status === 'signedIn') {
+        await auth.refreshSession?.().catch(() => false);
+      }
+      // 201 echoes { clubId, clubName, email }; a 200 replay carries only { clubId, replayed }.
       setDone({
+        clubId: res?.clubId ?? null,
         clubName: res?.clubName ?? form.clubName.trim(),
         email: res?.email ?? email,
         replayed: !!res?.replayed,
@@ -121,6 +188,14 @@ export function ClubSignupPage() {
   }
 
   if (state === 'done') {
+    // Signed-in CTAs only when this link's tenant is the host's active tenant —
+    // a multi-union user on the wrong host gets the plain sign-in fallback (a
+    // navigate would drop them into the wrong union's shell).
+    const membership =
+      auth.status === 'signedIn' && tenant && tenant === getActiveTenant()
+        ? membershipFor(auth.memberships, tenant)
+        : null;
+    const cta = signupDoneCta(membership, done.clubId);
     return (
       <Frame branding={branding}>
         <h1 className="ps-title" style={{ fontSize: 22 }}>
@@ -130,19 +205,49 @@ export function ClubSignupPage() {
           {done.replayed
             ? `${done.clubName} was already registered with this email — you're all set to sign in.`
             : `${done.clubName} is registered with ${orgName || 'the union'}.`}{' '}
-          Sign-in is passwordless: enter your email and we&apos;ll email you a one-time code.
+          {cta === null &&
+            "Sign-in is passwordless: enter your email and we'll email you a one-time code."}
         </p>
-        <button
-          className="btn btn-teal"
-          type="button"
-          onClick={() => gotoSignIn(done.email)}
-          style={{ width: '100%', marginTop: 8 }}
-        >
-          Continue to sign in
-        </button>
-        <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 14, lineHeight: 1.5 }}>
-          Already signed in on this device? Sign out and back in to see your new club.
-        </p>
+        {cta === 'admin' && (
+          <button
+            className="btn btn-teal"
+            type="button"
+            onClick={() => navigate('/')}
+            style={{ width: '100%', marginTop: 8 }}
+          >
+            Open the admin console
+          </button>
+        )}
+        {cta === 'club' && (
+          <>
+            <button
+              className="btn btn-teal"
+              type="button"
+              onClick={() => navigate(`/club/${done.clubId}`)}
+              style={{ width: '100%', marginTop: 8 }}
+            >
+              Go to {done.clubName}
+            </button>
+            <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 14, lineHeight: 1.5 }}>
+              You&apos;re signed in and your session was refreshed — the new club is ready.
+            </p>
+          </>
+        )}
+        {cta === null && (
+          <>
+            <button
+              className="btn btn-teal"
+              type="button"
+              onClick={() => gotoSignIn(done.email)}
+              style={{ width: '100%', marginTop: 8 }}
+            >
+              Continue to sign in
+            </button>
+            <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 14, lineHeight: 1.5 }}>
+              Already signed in on this device? Sign out and back in to see your new club.
+            </p>
+          </>
+        )}
       </Frame>
     );
   }
@@ -167,7 +272,12 @@ export function ClubSignupPage() {
             value={form.repEmail}
             onChange={set('repEmail')}
           />
-          <Field label="Cell" value={form.repCell} onChange={set('repCell')} />
+          <div>
+            <Field label="Cell" value={form.repCell} onChange={set('repCell')} />
+            {cellError && (
+              <div style={{ color: 'var(--coral)', fontSize: 12.5, marginTop: 4 }}>{cellError}</div>
+            )}
+          </div>
         </Row>
         <Field label="Club name" required value={form.clubName} onChange={set('clubName')} />
         {nameError && (

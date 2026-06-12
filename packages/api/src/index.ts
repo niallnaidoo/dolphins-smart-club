@@ -274,6 +274,21 @@ const SIGNUP_NAME_MAX = 80;
 const SIGNUP_CELL_MAX = 20;
 
 /**
+ * Normalize a South African cell number to the canonical stored form `0XXXXXXXXX`
+ * (what the admin contact modal and the WhatsApp `toE164` conversion expect), or
+ * null when it isn't one. Kept identical to src/api.js (the form validates with
+ * the same rule before submitting — EMAIL_RE precedent). The `[6-8]` range is a
+ * deliberate permissive SUPERSET of real mobile prefixes (it admits 080x/086/087
+ * non-cell ranges) — don't "tighten" it: WhatsApp sends already skip undeliverable
+ * numbers, and a false reject here locks a real chair out of signup.
+ */
+function normalizeZaCell(raw: string): string | null {
+  const digits = raw.replace(/[\s\-().]/g, '');
+  const m = /^(?:\+?27|0)([6-8]\d{8})$/.exec(digits);
+  return m ? `0${m[1]}` : null;
+}
+
+/**
  * Resolve a club-signup token to its tenant config, or 404. Requires
  * `kind === 'club-signup'` (a player reg-link token never opens signup), a live
  * config — an erased tenant's signup token must die with it even if the TOKEN#
@@ -346,6 +361,12 @@ app.post('/club-signup', async (c) => {
     throw new HttpError(400, `names must be ${SIGNUP_NAME_MAX} characters or fewer`);
   }
   if (repCell.length > SIGNUP_CELL_MAX) throw new HttpError(400, 'repCell too long');
+  // Optional field, but a present cell must normalize: the stored chair cell feeds
+  // WhatsApp sends and the admin contact modal, which expect the 0XXXXXXXXX form.
+  const repCellNorm = repCell ? normalizeZaCell(repCell) : undefined;
+  if (repCell && !repCellNorm) {
+    throw new HttpError(400, 'repCell must be a valid South African cell number');
+  }
   // The slug becomes the club id; a name like "!!!" slugs to '' and must not fall
   // through to buildClubFromSpec's defaults (public input never gets fallbacks).
   const slug = clubIdFromName(clubName);
@@ -369,7 +390,7 @@ app.post('/club-signup', async (c) => {
     district,
     chair: repName,
     chairEmail: email,
-    chairCell: repCell || undefined,
+    chairCell: repCellNorm ?? undefined,
   });
   club.onboardedVia = 'self-signup';
   club.signupConsentAt = now();
@@ -644,6 +665,61 @@ app.patch('/clubs/:id', async (c) => {
   return c.json(withPlayerCount(updated));
 });
 
+/**
+ * DELETE /clubs/:id — admin-only club deletion (junk/abandoned signups, POPIA
+ * erasure of the club's player data).
+ *
+ * The membership sweep runs BEFORE the data cascade so a crash leaves the club
+ * intact and re-deletable (the sweep itself is idempotent), never a half-erased
+ * club whose reps still hold access. It's a bounded N+1 over the tenant roster
+ * (team-sized, same shape as GET /admin/users) because the markers don't carry
+ * clubIds. Only rep memberships can reference a club (admins force clubIds: []),
+ * so the last-admin guard never applies here. Re-delete (or unknown id) is a 404.
+ */
+app.delete('/clubs/:id', requireAdmin, async (c) => {
+  const ra = c.get('requestAuth')!;
+  const id = c.req.param('id');
+  const club = await repo.getClub(ra.tenant, id);
+  if (!club) throw new HttpError(404, 'club not found');
+
+  let users = 0;
+  for (const entry of await repo.listTenantUsers(ra.tenant)) {
+    const profile = await repo.getUser(entry.sub);
+    const membership = profile?.memberships.find((m) => m.tenantId === ra.tenant);
+    if (!profile || !membership || membership.role !== 'rep') continue;
+    if (!membership.clubIds.includes(id)) continue;
+    users++;
+
+    const clubIds = membership.clubIds.filter((cid) => cid !== id);
+    const others = profile.memberships.filter((m) => m.tenantId !== ra.tenant);
+    if (clubIds.length > 0) {
+      // Mere rescope: the rep keeps other clubs in this tenant. No sign-out — same as
+      // a PATCH /admin/users scope edit (narrowing clubIds isn't a role change; the
+      // next token refresh picks it up).
+      await repo.putUser({ ...profile, memberships: [...others, { ...membership, clubIds }] });
+      continue;
+    }
+    // Empty clubIds would violate the rep-≥1-club invariant — the membership goes.
+    if (others.length === 0) {
+      // Full offboard: same pieces as DELETE /admin/users/:sub. The sign-out AFTER the
+      // Cognito delete is a guaranteed swallowed UserNotFoundException — kept in that
+      // order so the refresh-token revoke still runs when the (best-effort, logged-not-
+      // thrown) delete itself failed and the account survived.
+      await repo.deleteUser(entry.sub);
+      await adminDeleteCognitoUser(cognito, USER_POOL_ID, profile.email);
+      await adminGlobalSignOut(cognito, USER_POOL_ID, profile.email);
+    } else {
+      // Memberships in OTHER tenants remain: keep the account, drop this tenant's
+      // membership, and revoke refresh tokens so the removed access can't be re-minted.
+      await repo.putUser({ ...profile, memberships: others });
+      await adminGlobalSignOut(cognito, USER_POOL_ID, profile.email);
+    }
+  }
+
+  const removed = await repo.eraseClubData(ra.tenant, club);
+  return c.json({ ok: true, removed: { ...removed, users } });
+});
+
 /** List a club's player registrations (rep: own only; admin: any in tenant). */
 app.get('/clubs/:id/players', async (c) => {
   const ra = c.get('requestAuth')!;
@@ -887,6 +963,9 @@ app.post('/clubs/:id/clearances', async (c) => {
     // same player both pass the listClearancesForSource check; the atomic guard rejects
     // the loser.
     if (err instanceof repo.DuplicatePendingClearanceError) throw new HttpError(409, err.message);
+    // Same shape for the getClub pre-checks: an admin club delete landing between them
+    // and the write fails the destination existence check instead of orphaning a mirror.
+    if (err instanceof repo.DestinationClubGoneError) throw new HttpError(409, err.message);
     throw err;
   }
   return c.json(clearance, 201);
@@ -947,6 +1026,7 @@ app.patch('/clubs/:id/clearances/:cid', async (c) => {
   } catch (err) {
     if (err instanceof VersionConflictError) throw new HttpError(409, 'clearance changed; refetch');
     if (err instanceof repo.PlayerExistsAtDestinationError) throw new HttpError(409, err.message);
+    if (err instanceof repo.DestinationClubGoneError) throw new HttpError(409, err.message);
     throw err;
   }
 });
@@ -1702,6 +1782,7 @@ app.post('/admin/clearances/:cid/override', async (c) => {
   } catch (err) {
     if (err instanceof VersionConflictError) throw new HttpError(409, 'clearance changed; refetch');
     if (err instanceof repo.PlayerExistsAtDestinationError) throw new HttpError(409, err.message);
+    if (err instanceof repo.DestinationClubGoneError) throw new HttpError(409, err.message);
     throw err;
   }
 });
