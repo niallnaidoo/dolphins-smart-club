@@ -13,6 +13,7 @@ import {
   DeleteCommand,
   BatchWriteCommand,
   TransactWriteCommand,
+  type QueryCommandInput,
 } from '@aws-sdk/lib-dynamodb';
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import {
@@ -90,12 +91,29 @@ async function deleteUploadObjects(objectKeys: string[]): Promise<void> {
   }
 }
 
-/** Pull every stored objectKey off a club (docMeta) — used to purge S3 on erasure. */
-function clubDocObjectKeys(club: Club): string[] {
-  const docMeta = (club.docMeta ?? {}) as Record<string, { objectKey?: string } | undefined>;
-  return Object.values(docMeta)
-    .map((m) => m?.objectKey)
-    .filter((k): k is string => typeof k === 'string');
+/**
+ * Pull every stored objectKey off a club (docMeta) — used to purge S3 on erasure.
+ * Safeguarding is the one multi-file doc (`{ files: [...] }` instead of a single
+ * `objectKey`), so its per-file keys are collected too — mirroring how the API's
+ * assertDocMetaObjectKeys walks a docMeta patch. Missing them would leave
+ * safeguarding certificates (PII) in the bucket after an erase. Exported for the
+ * test suite — the dynalite harness has no S3, so collection is asserted directly.
+ */
+export function clubDocObjectKeys(club: Club): string[] {
+  const docMeta = (club.docMeta ?? {}) as Record<
+    string,
+    { objectKey?: string; files?: Array<{ objectKey?: string }> } | undefined
+  >;
+  const keys: string[] = [];
+  for (const m of Object.values(docMeta)) {
+    if (typeof m?.objectKey === 'string') keys.push(m.objectKey);
+    if (Array.isArray(m?.files)) {
+      for (const f of m.files) {
+        if (typeof f?.objectKey === 'string') keys.push(f.objectKey);
+      }
+    }
+  }
+  return keys;
 }
 
 /** Thrown when a version-checked write loses a race. Handlers map this to HTTP 409. */
@@ -123,6 +141,25 @@ const stripKeys = <T>(item: Record<string, unknown> | undefined): T | null => {
   const { pk, sk, gsi1pk, gsi1sk, ...rest } = item;
   return rest as T;
 };
+
+/**
+ * Drain a Query across LastEvaluatedKey pages. A single Query response is capped at
+ * 1 MB, so any enumeration that feeds an erase cascade MUST page — a >1MB partition
+ * would otherwise silently truncate to its first page and leave residue an erase
+ * promised to remove. Passes the input through untouched, so callers may set `Limit`
+ * for smaller pages — the int tests use that to drive multi-page reads against
+ * dynalite, where seeding a real >1MB partition isn't practical (hence the export).
+ */
+export async function queryAll(input: QueryCommandInput): Promise<Record<string, unknown>[]> {
+  const items: Record<string, unknown>[] = [];
+  let startKey: Record<string, unknown> | undefined;
+  do {
+    const res = await ddb.send(new QueryCommand({ ...input, ExclusiveStartKey: startKey }));
+    items.push(...(res.Items ?? []));
+    startKey = res.LastEvaluatedKey;
+  } while (startKey);
+  return items;
+}
 
 // ── Tenant config ──
 
@@ -515,15 +552,13 @@ async function listClubInviteKeys(
   clubId: string,
 ): Promise<Array<{ pk: string; sk: string }>> {
   const { pk } = clubKey(tenant, clubId);
-  const res = await ddb.send(
-    new QueryCommand({
-      TableName: TABLE,
-      KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
-      ExpressionAttributeValues: { ':p': pk, ':s': 'INVITE#' },
-      ProjectionExpression: 'pk, sk',
-    }),
-  );
-  return (res.Items ?? []).map((i) => ({ pk: i.pk as string, sk: i.sk as string }));
+  const items = await queryAll({
+    TableName: TABLE,
+    KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
+    ExpressionAttributeValues: { ':p': pk, ':s': 'INVITE#' },
+    ProjectionExpression: 'pk, sk',
+  });
+  return items.map((i) => ({ pk: i.pk as string, sk: i.sk as string }));
 }
 
 // ── Series ──
@@ -607,14 +642,12 @@ export async function deleteSeries(tenant: string, seriesId: string): Promise<vo
 
 export async function listPlayers(tenant: string, clubId: string): Promise<PlayerRegistration[]> {
   const { pk, skPrefix } = playersListKey(tenant, clubId);
-  const res = await ddb.send(
-    new QueryCommand({
-      TableName: TABLE,
-      KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
-      ExpressionAttributeValues: { ':p': pk, ':s': skPrefix },
-    }),
-  );
-  return (res.Items ?? []).map((i) => stripKeys<PlayerRegistration>(i)!);
+  const items = await queryAll({
+    TableName: TABLE,
+    KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
+    ExpressionAttributeValues: { ':p': pk, ':s': skPrefix },
+  });
+  return items.map((i) => stripKeys<PlayerRegistration>(i)!);
 }
 
 /**
@@ -636,14 +669,24 @@ export async function createPlayer(tenant: string, player: PlayerRegistration): 
     }),
   );
   // Only reached if the registration was new (the put above didn't throw).
-  await ddb.send(
-    new UpdateCommand({
-      TableName: TABLE,
-      Key: clubKey(tenant, player.clubId),
-      UpdateExpression: 'ADD playerCount :one',
-      ExpressionAttributeValues: { ':one': 1 },
-    }),
-  );
+  // Conditioned on the club still existing: a bare ADD UPSERTS, so an in-flight
+  // registration racing an admin club delete would resurrect a phantom club item
+  // (pk + playerCount only) and break the re-deletable invariant. The count is
+  // display-only and recomputable, so the failed bump is swallowed; the orphaned
+  // PLAYER# row is the accepted race residue (the route's getClub check bounds it).
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: TABLE,
+        Key: clubKey(tenant, player.clubId),
+        UpdateExpression: 'ADD playerCount :one',
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeValues: { ':one': 1 },
+      }),
+    );
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name !== 'ConditionalCheckFailedException') throw err;
+  }
 }
 
 export async function getPlayer(
@@ -718,14 +761,12 @@ export async function listClearancesForSource(
   clubId: string,
 ): Promise<PlayerClearance[]> {
   const { pk, skPrefix } = clearancesListKey(tenant, clubId);
-  const res = await ddb.send(
-    new QueryCommand({
-      TableName: TABLE,
-      KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
-      ExpressionAttributeValues: { ':p': pk, ':s': skPrefix },
-    }),
-  );
-  return (res.Items ?? []).map((i) => stripKeys<PlayerClearance>(i)!);
+  const items = await queryAll({
+    TableName: TABLE,
+    KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
+    ExpressionAttributeValues: { ':p': pk, ':s': skPrefix },
+  });
+  return items.map((i) => stripKeys<PlayerClearance>(i)!);
 }
 
 /** Clearances incoming to a club (it is the destination) — read from its own mirror items. */
@@ -734,14 +775,12 @@ export async function listInboundForDest(
   clubId: string,
 ): Promise<PlayerClearance[]> {
   const { pk, skPrefix } = inboundClearancesListKey(tenant, clubId);
-  const res = await ddb.send(
-    new QueryCommand({
-      TableName: TABLE,
-      KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
-      ExpressionAttributeValues: { ':p': pk, ':s': skPrefix },
-    }),
-  );
-  return (res.Items ?? []).map((i) => stripKeys<PlayerClearance>(i)!);
+  const items = await queryAll({
+    TableName: TABLE,
+    KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
+    ExpressionAttributeValues: { ':p': pk, ':s': skPrefix },
+  });
+  return items.map((i) => stripKeys<PlayerClearance>(i)!);
 }
 
 /** Every clearance in the tenant (admin console) — one row per request via the gsi1. */
@@ -800,6 +839,11 @@ export async function createClearance(tenant: string, c: PlayerClearance): Promi
   };
   try {
     if (localEndpoint) {
+      // No ConditionCheck outside a transaction, so a plain existence read substitutes
+      // for the destination-club guard (TOCTOU-wide, but this path is offline/test
+      // only). It must run FIRST so a rejected create mutates nothing — not even the
+      // player's status flip.
+      if (!(await getClub(tenant, c.toClubId))) throw new DestinationClubGoneError();
       // Guard FIRST (see doc): a duplicate fails here before any clearance item lands.
       await ddb.send(new UpdateCommand(playerStatusUpdate));
       await ddb.send(
@@ -816,6 +860,17 @@ export async function createClearance(tenant: string, c: PlayerClearance): Promi
       new TransactWriteCommand({
         TransactItems: [
           {
+            // A clearance must never be created INTO a club mid-delete: the orphaned
+            // mirror would permanently strand the source player as 'clearance-pending'
+            // (this very dedup guard would block any retry). Checking the destination
+            // club key here aborts the whole create instead.
+            ConditionCheck: {
+              TableName: TABLE,
+              Key: clubKey(tenant, c.toClubId),
+              ConditionExpression: 'attribute_exists(pk)',
+            },
+          },
+          {
             Put: {
               TableName: TABLE,
               Item: canonical,
@@ -829,7 +884,16 @@ export async function createClearance(tenant: string, c: PlayerClearance): Promi
     );
   } catch (err: unknown) {
     const name = (err as { name?: string }).name;
-    if (name === 'ConditionalCheckFailedException' || name === 'TransactionCanceledException') {
+    if (name === 'TransactionCanceledException') {
+      // CancellationReasons line up with TransactItems: index 0 is the destination
+      // club's existence check — its failure means the club is mid-delete, not a
+      // duplicate request. Any other conditional failure keeps the duplicate mapping.
+      const reasons = (err as { CancellationReasons?: Array<{ Code?: string }> })
+        .CancellationReasons;
+      if (reasons?.[0]?.Code === 'ConditionalCheckFailed') throw new DestinationClubGoneError();
+      throw new DuplicatePendingClearanceError();
+    }
+    if (name === 'ConditionalCheckFailedException') {
       throw new DuplicatePendingClearanceError();
     }
     throw err;
@@ -891,6 +955,21 @@ export class DuplicatePendingClearanceError extends Error {
   constructor() {
     super('a clearance request for this player is already pending');
     this.name = 'DuplicatePendingClearanceError';
+  }
+}
+
+/**
+ * Raised when a clearance write's DESTINATION club no longer exists (deleted
+ * mid-flight). Failing the WHOLE write is the correct behavior: a mirror or moved
+ * player landing in a deleted partition would be orphaned residue, and a pending
+ * mirror in particular would permanently strand the source player as
+ * 'clearance-pending' (createClearance's dedup guard blocks any retry). Handlers
+ * map this to HTTP 409.
+ */
+export class DestinationClubGoneError extends Error {
+  constructor() {
+    super('destination club no longer exists');
+    this.name = 'DestinationClubGoneError';
   }
 }
 
@@ -958,6 +1037,12 @@ export async function resolveClearance(
     TableName: TABLE,
     Key: clubKey(tenant, current.toClubId),
     UpdateExpression: 'ADD playerCount :one',
+    // A bare ADD UPSERTS, so a transfer racing an admin club delete would resurrect a
+    // phantom destination club item. Inside the transaction this condition doubles as
+    // the destination-existence guard: a club deleted mid-move cancels the WHOLE move
+    // (correct — the player must not land in a deleted partition). A separate
+    // ConditionCheck can't carry this (one operation per item per transaction).
+    ConditionExpression: 'attribute_exists(pk)',
     ExpressionAttributeValues: { ':one': 1 },
   };
   const canonicalPut = {
@@ -996,7 +1081,14 @@ export async function resolveClearance(
     }
     await ddb.send(new DeleteCommand(sourceDelete));
     await ddb.send(new UpdateCommand(sourceCount));
-    await ddb.send(new UpdateCommand(destCount));
+    // Offline the conditioned bump runs AFTER the move already landed, so a deleted
+    // destination can only be swallowed here (the count is display-only); production's
+    // transaction aborts the whole move instead.
+    try {
+      await ddb.send(new UpdateCommand(destCount));
+    } catch (err: unknown) {
+      if ((err as { name?: string }).name !== 'ConditionalCheckFailedException') throw err;
+    }
     await ddb.send(new PutCommand(mirrorPut));
     return next;
   }
@@ -1025,6 +1117,10 @@ export async function resolveClearance(
       // only the message differs; the caller is told to refetch either way.
       const atDest = await getPlayer(tenant, current.toClubId, player.naturalKey);
       if (atDest) throw new PlayerExistsAtDestinationError();
+      // Third possibility since destCount gained its existence condition: the
+      // destination club was deleted mid-move and the transaction (correctly)
+      // refused to land the player in its partition.
+      if (!(await getClub(tenant, current.toClubId))) throw new DestinationClubGoneError();
       throw new VersionConflictError();
     }
     throw err;
@@ -1034,9 +1130,15 @@ export async function resolveClearance(
 
 // ── Registration tokens (global, self-describing) ──
 
+/**
+ * Two token shapes share the TOKEN# keyspace: player reg-links carry a `clubId`
+ * (no `kind`), club signup links carry `kind: 'club-signup'` (no clubId). Each
+ * consumer checks the field it requires, so neither token works on the other's
+ * endpoints.
+ */
 export async function getToken(
   token: string,
-): Promise<{ tenant: string; clubId: string; createdAt: string } | null> {
+): Promise<{ tenant: string; clubId?: string; kind?: 'club-signup'; createdAt: string } | null> {
   const res = await ddb.send(new GetCommand({ TableName: TABLE, Key: tokenKey(token) }));
   return stripKeys(res.Item);
 }
@@ -1055,9 +1157,103 @@ export async function putToken(
   );
 }
 
+/** Store a tenant-wide club self-signup token (kind-tagged, no clubId). */
+export async function putSignupToken(
+  token: string,
+  tenant: string,
+  createdAt: string,
+): Promise<void> {
+  await ddb.send(
+    new PutCommand({
+      TableName: TABLE,
+      Item: { ...tokenKey(token), tenant, kind: 'club-signup', createdAt },
+    }),
+  );
+}
+
 /** Revoke a token so a regenerated reg-link invalidates the previous one. */
 export async function deleteToken(token: string): Promise<void> {
   await ddb.send(new DeleteCommand({ TableName: TABLE, Key: tokenKey(token) }));
+}
+
+const SIGNUP_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Hourly signup rate cap, kept on the TOKEN# item itself (no extra row to revoke).
+ * Returns whether this signup is allowed. Two conditional updates, no read:
+ *   1. start a fresh window (count = 1) when none exists or the current one aged out;
+ *   2. otherwise increment under `signupCount < limit`.
+ * Both writes are condition-guarded so concurrent requests can't blow past the cap
+ * mid-window. At a window boundary two racers can both "win" the reset (the second
+ * overwrites count back to 1) — that under-counts by the race width, which only ever
+ * ADMITS a request the cap might have refused; it never blocks a legitimate one.
+ * `attribute_exists(pk)` in step 1 (and the attribute reads in step 2) make a revoked
+ * token fail both conditions → false. The caller surfaces false as a 429, so a token
+ * revoked between route validation and this bump reads as "try later" rather than
+ * "link dead" — a one-request-wide race, denied either way; the next attempt 404s
+ * at validation.
+ */
+export async function bumpSignupTokenCounter(
+  token: string,
+  nowIso: string,
+  limit: number,
+): Promise<boolean> {
+  const cutoff = new Date(new Date(nowIso).getTime() - SIGNUP_WINDOW_MS).toISOString();
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: TABLE,
+        Key: tokenKey(token),
+        UpdateExpression: 'SET signupWindowStart = :now, signupCount = :one',
+        ConditionExpression:
+          'attribute_exists(pk) AND (attribute_not_exists(signupWindowStart) OR signupWindowStart < :cutoff)',
+        ExpressionAttributeValues: { ':now': nowIso, ':one': 1, ':cutoff': cutoff },
+      }),
+    );
+    return true;
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name !== 'ConditionalCheckFailedException') throw err;
+  }
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: TABLE,
+        Key: tokenKey(token),
+        UpdateExpression: 'SET signupCount = signupCount + :one',
+        ConditionExpression: 'signupWindowStart >= :cutoff AND signupCount < :limit',
+        ExpressionAttributeValues: { ':one': 1, ':cutoff': cutoff, ':limit': limit },
+      }),
+    );
+    return true;
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name === 'ConditionalCheckFailedException') return false;
+    throw err;
+  }
+}
+
+/**
+ * SET or REMOVE the tenant's club-signup-link pointer via a targeted UpdateExpression
+ * (modeled on updateSupportCopy) — never a whole-config read-modify-write, so a
+ * concurrent Settings save can't clobber it (TenantConfig has no version guard).
+ * Throws ConditionalCheckFailedException when the CONFIG row doesn't exist.
+ */
+export async function updateClubSignupLink(
+  tenant: string,
+  link: { token: string; createdAt: string } | null,
+): Promise<void> {
+  await ddb.send(
+    new UpdateCommand({
+      TableName: TABLE,
+      Key: tenantConfigKey(tenant),
+      ...(link
+        ? {
+            UpdateExpression: 'SET clubSignupLink = :v',
+            ExpressionAttributeValues: { ':v': link },
+          }
+        : { UpdateExpression: 'REMOVE clubSignupLink' }),
+      ConditionExpression: 'attribute_exists(pk)',
+    }),
+  );
 }
 
 // ── Users ──
@@ -1372,15 +1568,13 @@ export async function deleteUser(sub: string): Promise<void> {
 export async function listTenantUsers(
   tenant: string,
 ): Promise<Array<{ sub: string; email: string; role: string }>> {
-  const res = await ddb.send(
-    new QueryCommand({
-      TableName: TABLE,
-      IndexName: 'gsi1',
-      KeyConditionExpression: 'gsi1pk = :p',
-      ExpressionAttributeValues: { ':p': usersListGsi1pk(tenant) },
-    }),
-  );
-  return (res.Items ?? []).map((i) => ({
+  const items = await queryAll({
+    TableName: TABLE,
+    IndexName: 'gsi1',
+    KeyConditionExpression: 'gsi1pk = :p',
+    ExpressionAttributeValues: { ':p': usersListGsi1pk(tenant) },
+  });
+  return items.map((i) => ({
     sub: String(i.sub),
     email: String(i.email),
     role: String(i.role),
@@ -1389,29 +1583,53 @@ export async function listTenantUsers(
 
 // ── Tenant erasure (POPIA offboarding) ──
 
+/** Retries per chunk for UnprocessedItems before batchDelete gives up and throws. */
+const BATCH_DELETE_RETRIES = 5;
+
+/**
+ * Batch-delete keys in chunks of 25 (the BatchWrite limit). BatchWrite reports
+ * throttled writes via UnprocessedItems instead of throwing, so each chunk retries
+ * its leftovers with bounded backoff — silently dropping them would leave residue
+ * an erase promised to remove (POPIA) and break the re-deletable invariant the
+ * club/tenant cascades rely on. Keys still unprocessed after the retries are an
+ * error, not a shrug: the caller must know the erase did NOT complete.
+ */
 async function batchDelete(keys: Array<{ pk: string; sk: string }>): Promise<void> {
   for (let i = 0; i < keys.length; i += 25) {
-    const batch = keys.slice(i, i + 25);
-    if (batch.length === 0) continue;
-    await ddb.send(
-      new BatchWriteCommand({
-        RequestItems: { [TABLE]: batch.map((Key) => ({ DeleteRequest: { Key } })) },
-      }),
-    );
+    let requests = keys.slice(i, i + 25).map((Key) => ({ DeleteRequest: { Key } }));
+    for (let attempt = 0; requests.length > 0; attempt++) {
+      const res = await ddb.send(new BatchWriteCommand({ RequestItems: { [TABLE]: requests } }));
+      const unprocessed = res.UnprocessedItems?.[TABLE] ?? [];
+      if (unprocessed.length === 0) break;
+      if (attempt >= BATCH_DELETE_RETRIES) {
+        throw new Error(
+          `batchDelete: ${unprocessed.length} keys still unprocessed after ${BATCH_DELETE_RETRIES} retries`,
+        );
+      }
+      // Linear backoff is enough: erases are rare, admin-triggered, and not latency-bound.
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+      requests = unprocessed as typeof requests;
+    }
   }
 }
 
 /**
  * Delete a tenant's data without a table Scan: query each known partition/index
  * (config, clubs+players, series, user markers) and batch-delete. Returns the
- * count removed. Reg-link TOKEN# items are global and not tenant-enumerable —
- * they harmlessly resolve to a now-deleted club (404) after erasure.
+ * count removed. Player reg-link TOKEN# items are global and not tenant-enumerable —
+ * they harmlessly resolve to a now-deleted club (404) after erasure. The club
+ * SIGNUP token, unlike those, IS tenant-enumerable via the CONFIG pointer, and
+ * left alive it would still pass the signup GET's token lookup — so it's revoked
+ * here, before the CONFIG row (and with it the pointer) is deleted.
  *
  * Note: this deletes only the tenant's marker for a user, not the user's META
  * record or Cognito account — a multi-union user keeps their other memberships.
  * The erase-tenant CLI removes single-tenant users' accounts separately.
  */
 export async function eraseTenantData(tenant: string): Promise<number> {
+  const config = await getTenantConfig(tenant);
+  if (config?.clubSignupLink?.token) await deleteToken(config.clubSignupLink.token);
+
   const keys: Array<{ pk: string; sk: string }> = [tenantConfigKey(tenant)];
   const objectKeys: string[] = [];
 
@@ -1478,4 +1696,97 @@ export async function clearCohort(tenant: string): Promise<number> {
   await batchDelete(keys);
   await deleteUploadObjects(objectKeys);
   return keys.length;
+}
+
+/**
+ * Erase ONE club's data (admin club deletion — junk/abandoned signups, POPIA
+ * "right to erasure" for the club's players). The caller passes the already-read
+ * club so this never re-reads or guesses; user memberships are the ROUTE's job
+ * (it must sweep them BEFORE calling this).
+ *
+ * Clearances span two partitions, so each direction also derives its counterpart
+ * key: a source clearance's mirror lives under the DESTINATION club, an inbound
+ * mirror's canonical under the SOURCE club — leaving either behind would point a
+ * surviving club at a dead one forever. A pending inbound mirror additionally
+ * holds the source club's player at 'clearance-pending' (createClearance's dedup
+ * guard would block them permanently), so those players get a best-effort
+ * conditional reset to 'active' — a RESET, not a restore: the prior status isn't
+ * stored, matching resolveClearance's own convention.
+ *
+ * Ordering is the re-deletable invariant: every step is idempotent and the club
+ * META is deleted via a separate DeleteCommand only AFTER batchDelete fully
+ * succeeds (BatchWrite is unordered within a chunk, so "META last in the array"
+ * would not actually be last). A crash at any point leaves a club that still
+ * 200s on re-delete; only a complete cascade makes the club 404.
+ */
+export async function eraseClubData(
+  tenant: string,
+  club: Club,
+): Promise<{ players: number; clearances: number }> {
+  // Revoke the reg-link token FIRST so the public registration route dies before the
+  // cascade runs (same order eraseTenantData uses for the club-signup token).
+  if (club.playerRegLink?.token) await deleteToken(club.playerRegLink.token);
+
+  const keys: Array<{ pk: string; sk: string }> = [];
+  const objectKeys: string[] = [...clubDocObjectKeys(club)];
+
+  const players = await listPlayers(tenant, club.id);
+  for (const p of players) {
+    keys.push(playerKey(tenant, club.id, p.naturalKey));
+    if (p.idDocMeta?.objectKey) objectKeys.push(p.idDocMeta.objectKey);
+  }
+
+  // This club as SOURCE: canonical here, mirror under the destination club.
+  const outgoing = await listClearancesForSource(tenant, club.id);
+  for (const x of outgoing) {
+    keys.push(clearanceKey(tenant, club.id, x.id));
+    keys.push(inboundClearanceKey(tenant, x.toClubId, x.id));
+  }
+
+  // This club as DESTINATION: mirror here, canonical under the source club. Deleting
+  // that canonical erases the surviving source club's transfer audit trail — accepted
+  // and erasure-friendly (documented). Unstick still-pending source players (see doc).
+  const inbound = await listInboundForDest(tenant, club.id);
+  for (const x of inbound) {
+    keys.push(inboundClearanceKey(tenant, club.id, x.id));
+    keys.push(clearanceKey(tenant, x.fromClubId, x.id));
+    if (x.status === 'pending') {
+      try {
+        await ddb.send(
+          new UpdateCommand({
+            TableName: TABLE,
+            Key: playerKey(tenant, x.fromClubId, x.playerNaturalKey),
+            UpdateExpression: 'SET #s = :active ADD version :one',
+            // Only flip a player this clearance actually holds pending — a player who
+            // moved/changed since must not be clobbered. Best-effort: the failed
+            // condition means there is nothing to unstick.
+            ConditionExpression: 'attribute_exists(sk) AND #s = :pending',
+            ExpressionAttributeNames: { '#s': 'status' },
+            ExpressionAttributeValues: {
+              ':active': 'active',
+              ':pending': 'clearance-pending',
+              ':one': 1,
+            },
+          }),
+        );
+      } catch (err: unknown) {
+        if ((err as { name?: string }).name !== 'ConditionalCheckFailedException') throw err;
+      }
+    }
+  }
+
+  // Invite markers aren't in the gsi1 listing — enumerate + delete them explicitly
+  // (they carry recipient contact in their stored results).
+  for (const k of await listClubInviteKeys(tenant, club.id)) keys.push(k);
+
+  await batchDelete(keys);
+  // S3 purge BEFORE the META delete: the objectKeys are only derivable while the
+  // club/player records exist, so a crash after META landed would strand the doc
+  // PII unreachably. deleteUploadObjects never throws and S3 deletes are
+  // idempotent, so running it first changes nothing else.
+  await deleteUploadObjects(objectKeys);
+  // META last, and only after everything else succeeded (see doc): the META item is
+  // the re-deletability anchor — while it exists, the delete can always be retried.
+  await ddb.send(new DeleteCommand({ TableName: TABLE, Key: clubKey(tenant, club.id) }));
+  return { players: players.length, clearances: outgoing.length + inbound.length };
 }
