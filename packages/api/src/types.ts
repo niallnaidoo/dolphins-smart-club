@@ -139,7 +139,7 @@ export interface Club {
   onboardedAt?: string;
   /** Provenance: set when the club was created via the public signup link, not by an admin. */
   onboardedVia?: 'self-signup';
-  /** When the signing-up rep ticked the POPIA consent line (ISO). Only on self-signups. */
+  /** When the rep submitted the self-signup (implied POPIA consent, ISO). Only on self-signups. */
   signupConsentAt?: string;
   /** Optimistic-concurrency version + audit trail. */
   version: number;

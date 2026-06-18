@@ -482,7 +482,6 @@ app.post('/club-signup', async (c) => {
       repName?: string;
       repEmail?: string;
       repCell?: string;
-      consent?: boolean;
     }>()
     .catch(() => null);
   if (!body) throw new HttpError(400, 'invalid request body');
@@ -494,7 +493,6 @@ app.post('/club-signup', async (c) => {
   if (!clubName || !district || !repName || !email) {
     throw new HttpError(400, 'clubName, district, repName and repEmail are required');
   }
-  if (body.consent !== true) throw new HttpError(400, 'consent required (POPIA)');
   if (!EMAIL_RE.test(email)) throw new HttpError(400, 'valid repEmail required');
   if (!VALID_DISTRICTS.has(district)) throw new HttpError(400, `unknown district: ${district}`);
   if (clubName.length > SIGNUP_NAME_MAX || repName.length > SIGNUP_NAME_MAX) {
@@ -533,6 +531,8 @@ app.post('/club-signup', async (c) => {
     chairCell: repCellNorm ?? undefined,
   });
   club.onboardedVia = 'self-signup';
+  // Implied POPIA consent: submitting the self-signup form (which carries a notice that
+  // the union stores these details to administer affiliation) records consent at submit.
   club.signupConsentAt = now();
   club.changedBy = email;
   try {

@@ -55,8 +55,7 @@ Body:
   "district": "…", // required, one of the catalogue districts
   "repName": "…", // required, ≤ 80 chars — becomes the club's chair contact
   "repEmail": "…", // required — becomes the rep's login identity (normalized lowercase)
-  "repCell": "…", // optional, ≤ 20 chars
-  "consent": true, // required POPIA consent (see popia-compliance.md)
+  "repCell": "…" // optional, ≤ 20 chars
 }
 ```
 
@@ -64,7 +63,9 @@ Behaviour:
 
 - **Club:** built like the old admin onboard (slug id, neutral affiliation state), with the
   rep landing on `exco.chair`, plus provenance: `onboardedVia: "self-signup"`,
-  `signupConsentAt`, `changedBy: <repEmail>`.
+  `signupConsentAt`, `changedBy: <repEmail>`. Consent is **implied by submitting** the form
+  (which carries a storage notice, no checkbox); `signupConsentAt` is stamped server-side at
+  submit time (see popia-compliance.md).
 - **Account:** idempotent Cognito provisioning + membership write. A brand-new email gets a
   `rep` membership (`invitedBy: "self-signup"`); an existing rep in the tenant has the new
   club **appended** to their `clubIds` (never duplicated); an existing **admin** keeps their

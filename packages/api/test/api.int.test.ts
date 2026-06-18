@@ -2230,7 +2230,6 @@ describe('public club self-registration (/club-signup)', () => {
     repName: 'Robin Rep',
     repEmail: 'robin@sharks.test',
     repCell: '083 555 0001',
-    consent: true,
     ...over,
   });
 
@@ -2303,7 +2302,7 @@ describe('public club self-registration (/club-signup)', () => {
     assert.equal(club.exco?.chair?.email, 'robin@sharks.test');
     assert.equal(club.exco?.chair?.cell, '0835550001', 'cell stored normalized (spaces stripped)');
     assert.equal(club.onboardedVia, 'self-signup');
-    assert.ok(club.signupConsentAt, 'POPIA consent timestamp stamped');
+    assert.ok(club.signupConsentAt, 'implied POPIA consent timestamp stamped on submit');
     assert.equal(club.changedBy, 'robin@sharks.test');
 
     // The rep's USER# membership was created (deterministic LOCAL_AUTH sub).
@@ -2359,8 +2358,6 @@ describe('public club self-registration (/club-signup)', () => {
       ['name slugs to empty', validBody({ clubName: '!!!', repEmail: 'bad1@su.test' })],
       ['bad email', validBody({ repEmail: 'not-an-email' })],
       ['unknown district', validBody({ district: 'Atlantis District', repEmail: 'bad2@su.test' })],
-      ['missing consent', { ...validBody({ repEmail: 'bad3@su.test' }), consent: undefined }],
-      ['consent false', validBody({ consent: false, repEmail: 'bad4@su.test' })],
       ['over-length name', validBody({ clubName: 'X'.repeat(81), repEmail: 'bad5@su.test' })],
       ['over-length cell', validBody({ repCell: '0'.repeat(21), repEmail: 'bad6@su.test' })],
     ];
@@ -2368,7 +2365,7 @@ describe('public club self-registration (/club-signup)', () => {
       assert.equal((await signupPost(body)).status, 400, label);
     }
     // None of the rejects minted a login.
-    for (const email of ['bad1@su.test', 'bad3@su.test', 'bad5@su.test']) {
+    for (const email of ['bad1@su.test', 'bad5@su.test']) {
       assert.equal(await repo.getUser(await subFor(email)), null, `${email} not minted`);
     }
   });
@@ -2802,7 +2799,6 @@ describe('DELETE /clubs/:id (admin club deletion)', () => {
         district: 'KCCD', // signup validates against VALID_DISTRICTS (seeded clubs don't)
         repName: 'Self Rep',
         repEmail: 'self-rep@seam.test',
-        consent: true,
       }),
     });
     assert.equal(signup.status, 201);

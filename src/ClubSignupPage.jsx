@@ -59,7 +59,6 @@ export function ClubSignupPage() {
     repCell: '',
     clubName: '',
     district: '',
-    consent: false,
   });
   const [done, setDone] = useState(null); // { clubId, clubName, email, replayed }
   const [error, setError] = useState('');
@@ -134,7 +133,6 @@ export function ClubSignupPage() {
         repName: form.repName.trim(),
         repEmail: email,
         repCell: cell,
-        consent: form.consent === true,
       });
       // Already signed in (e.g. a rep adding a second club): force a token
       // re-mint so the new membership lands without a sign-out — PreTokenGen
@@ -228,7 +226,7 @@ export function ClubSignupPage() {
             >
               Go to {done.clubName}
             </button>
-            <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 14, lineHeight: 1.5 }}>
+            <p style={{ fontSize: 12, color: 'var(--muted-on-dark)', marginTop: 14, lineHeight: 1.5 }}>
               You&apos;re signed in and your session was refreshed — the new club is ready.
             </p>
           </>
@@ -243,7 +241,7 @@ export function ClubSignupPage() {
             >
               Continue to sign in
             </button>
-            <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 14, lineHeight: 1.5 }}>
+            <p style={{ fontSize: 12, color: 'var(--muted-on-dark)', marginTop: 14, lineHeight: 1.5 }}>
               Already signed in on this device? Sign out and back in to see your new club.
             </p>
           </>
@@ -304,18 +302,10 @@ export function ClubSignupPage() {
             ))}
           </select>
         </label>
-        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            required
-            checked={form.consent}
-            onChange={(e) => setForm((f) => ({ ...f, consent: e.target.checked }))}
-            style={{ marginTop: 3 }}
-          />
-          <span style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.5 }}>
-            I consent to the union storing these details to administer my club&apos;s affiliation.
-          </span>
-        </label>
+        <p style={{ fontSize: 12.5, color: 'var(--muted-on-dark)', lineHeight: 1.5, margin: 0 }}>
+          By registering, you agree the union may store these details to administer your club&apos;s
+          affiliation.
+        </p>
         {error && <div style={{ color: 'var(--coral)', fontSize: 12.5 }}>{error}</div>}
         <button
           className="btn btn-teal"
@@ -333,7 +323,7 @@ export function ClubSignupPage() {
 
 function SignInLink({ onClick }) {
   return (
-    <div style={{ marginTop: 16, textAlign: 'center', fontSize: 12.5, color: 'var(--muted)' }}>
+    <div style={{ marginTop: 16, textAlign: 'center', fontSize: 12.5, color: 'var(--muted-on-dark)' }}>
       Already registered?{' '}
       <button
         type="button"

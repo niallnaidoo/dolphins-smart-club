@@ -63,8 +63,9 @@ debt.
 ## Lawful processing & consent
 
 - **Club reps** register their club via the public signup link and provide their own name,
-  email and cell. The form requires an explicit consent tick; `signupConsentAt` is stamped
-  server-side on the club record (see [signup.md](../api/signup.md)).
+  email and cell. The form carries a notice that the union stores these details to administer
+  affiliation; consent is implied by submitting (no checkbox), and `signupConsentAt` is
+  stamped server-side on the club record at submit time (see [signup.md](../api/signup.md)).
 - **Players** register via a public link. The registration captures consent at submission
   time (`consentAt`, stamped server-side).
 - **Minors** (computed from date of birth, under 18) require a **guardian name** before the

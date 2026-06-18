@@ -65,7 +65,7 @@ grows into the thousands. The admin dashboard's player counts come from the deno
   tabs) edit overlapping fields or regenerate fixtures.
 - **Audit:** `changedBy`/`changedAt` on the club record track affiliation changes; a
   self-registered club additionally records `onboardedVia: "self-signup"` and
-  `signupConsentAt` (compliance requirement).
+  `signupConsentAt` — implied POPIA consent stamped at submit time (compliance requirement).
 - **Server validation (enforced):** club-name **and slug** uniqueness per tenant (the public
   signup route checks both, and the conditional create catches the concurrent race), league
   keys valid against the frozen catalogue (`catalogue.ts`), representation percentages summing
