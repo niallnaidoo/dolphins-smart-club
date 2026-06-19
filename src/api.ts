@@ -11,23 +11,33 @@
  */
 
 import { devAuthHeader } from './devAuth';
+import type {
+  TenantConfig,
+  TutorialVideo,
+  UserProfile,
+  Club,
+  PlayerRegistration,
+  PlayerClearance,
+  Series,
+  SendResult,
+} from './types';
 
 const BASE = import.meta.env.VITE_API_URL ?? '';
 const LOCAL_AUTH = import.meta.env.VITE_LOCAL_AUTH === '1';
 
-let _tenant = null;
-let _getToken = async () => null;
+let _tenant: string | null = null;
+let _getToken: () => Promise<string | null> = async () => null;
 
 /** Set by config.js once the tenant slug is resolved. */
-export function setActiveTenant(slug) {
+export function setActiveTenant(slug: string) {
   _tenant = slug;
 }
-export function getActiveTenant() {
+export function getActiveTenant(): string | null {
   return _tenant;
 }
 
 /** Set by the AuthProvider so requests can attach the current ID token. */
-export function setTokenProvider(fn) {
+export function setTokenProvider(fn: () => Promise<string | null>) {
   _getToken = fn;
 }
 
@@ -36,32 +46,44 @@ export function setTokenProvider(fn) {
  * API rejects the token) so the UI can revalidate and fall back to the login
  * screen. Must be idempotent — query retries can fire it several times per expiry.
  */
-let _onAuthLost = null;
-export function setAuthLostHandler(fn) {
+let _onAuthLost: (() => void) | null = null;
+export function setAuthLostHandler(fn: () => void) {
   _onAuthLost = fn;
 }
 
 const SESSION_EXPIRED = 'Your session has expired — please sign in again.';
 
 export class ApiError extends Error {
-  constructor(status, message, code) {
+  status: number;
+  // Optional machine-readable discriminator from the error body (e.g. club
+  // signup's 'name_taken') so callers can branch on more than the status.
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
-    // Optional machine-readable discriminator from the error body (e.g. club
-    // signup's 'name_taken') so callers can branch on more than the status.
     this.code = code;
   }
 }
 
-async function request(path, { method = 'GET', body, auth = true, query } = {}) {
+interface RequestOptions {
+  method?: string;
+  body?: unknown;
+  auth?: boolean;
+  query?: Record<string, string | number | null | undefined>;
+}
+
+async function request<T = any>(
+  path: string,
+  { method = 'GET', body, auth = true, query }: RequestOptions = {},
+): Promise<T> {
   const url = new URL(BASE + path, BASE || window.location.origin);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
-      if (v != null) url.searchParams.set(k, v);
+      if (v != null) url.searchParams.set(k, String(v));
     }
   }
-  const headers = { 'content-type': 'application/json' };
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (_tenant) headers['x-tenant'] = _tenant;
   if (auth) {
     if (LOCAL_AUTH) {
@@ -87,7 +109,7 @@ async function request(path, { method = 'GET', body, auth = true, query } = {}) 
   });
   if (!res.ok) {
     let message = res.statusText;
-    let code;
+    let code: string | undefined;
     try {
       const data = await res.json();
       message = data.error || message;
@@ -106,7 +128,7 @@ async function request(path, { method = 'GET', body, auth = true, query } = {}) 
     }
     throw new ApiError(res.status, message, code);
   }
-  if (res.status === 204) return null;
+  if (res.status === 204) return null as T;
   return res.json();
 }
 
@@ -121,50 +143,63 @@ export const EMAIL_RE = /^[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}$/;
 // The [6-8] range is a deliberate permissive SUPERSET of real mobile prefixes (it
 // admits some non-mobile ranges like 080x/086/087) — don't "tighten" it; WhatsApp
 // sends already skip undeliverable numbers, and false rejections cost signups.
-export function normalizeZaCell(raw) {
+export function normalizeZaCell(raw: unknown): string | null {
   const digits = String(raw ?? '').replace(/[\s\-().]/g, '');
   const m = digits.match(/^(?:\+?27|0)([6-8]\d{8})$/);
   return m ? `0${m[1]}` : null;
 }
-export const getTenant = () => request('/tenant', { auth: false });
+export const getTenant = () => request<TenantConfig>('/tenant', { auth: false });
 // How-to-use-the-app tutorial videos ride the public /tenant payload (falls back to the
 // backend default set). Thin accessor for the public Tutorials page.
-export const getTutorials = async () => (await getTenant()).tutorials ?? [];
-export const putTenantConfig = (patch) => request('/tenant/config', { method: 'PUT', body: patch });
-export const putSupportContact = ({ name, email }) =>
-  request('/tenant/support', { method: 'PUT', body: { name, email } });
+export const getTutorials = async (): Promise<TutorialVideo[]> =>
+  (await getTenant()).tutorials ?? [];
+export const putTenantConfig = (patch: Partial<TenantConfig>) =>
+  request<TenantConfig>('/tenant/config', { method: 'PUT', body: patch });
+export const putSupportContact = ({ name, email }: { name: string; email: string }) =>
+  request<TenantConfig>('/tenant/support', { method: 'PUT', body: { name, email } });
 
 // ── Current user ──
-export const getMe = () => request('/me');
-export const patchMe = (patch) => request('/me', { method: 'PATCH', body: patch });
+export const getMe = () => request<UserProfile>('/me');
+export const patchMe = (patch: Partial<UserProfile>) =>
+  request<UserProfile>('/me', { method: 'PATCH', body: patch });
 
 // ── Clubs ──
-export const getClubs = () => request('/clubs');
-export const getClub = (id) => request(`/clubs/${id}`);
-export const patchClub = (id, patch) => request(`/clubs/${id}`, { method: 'PATCH', body: patch });
+export const getClubs = () => request<Club[]>('/clubs');
+export const getClub = (id: string) => request<Club>(`/clubs/${id}`);
+export const patchClub = (id: string, patch: Partial<Club>) =>
+  request<Club>(`/clubs/${id}`, { method: 'PATCH', body: patch });
 // Admin-only hard delete: cascades players/docs/clearances and offboards reps
 // server-side. Resolves to { ok, removed: { players, clearances, users } }.
-export const deleteClub = (id) => request(`/clubs/${id}`, { method: 'DELETE' });
-export const saveExco = (id, exco) => request(`/clubs/${id}/exco`, { method: 'POST', body: exco });
-export const generateRegLink = (id) => request(`/clubs/${id}/reg-link`, { method: 'POST' });
-export const getDocUploadUrl = (id, key, contentType) =>
-  request(`/clubs/${id}/docs/${key}/upload-url`, {
-    method: 'POST',
-    body: contentType ? { contentType } : undefined,
-  });
-export const markDocUploaded = (id, key, meta) =>
-  request(`/clubs/${id}/docs/${key}`, { method: 'PATCH', body: meta });
+export const deleteClub = (id: string) =>
+  request<{ ok: boolean; removed: { players: number; clearances: number; users: number } }>(
+    `/clubs/${id}`,
+    { method: 'DELETE' },
+  );
+export const saveExco = (id: string, exco: Record<string, unknown>) =>
+  request<Club>(`/clubs/${id}/exco`, { method: 'POST', body: exco });
+export const generateRegLink = (id: string) =>
+  request<{ token: string; createdAt: string }>(`/clubs/${id}/reg-link`, { method: 'POST' });
+export const getDocUploadUrl = (id: string, key: string, contentType?: string) =>
+  request<{ uploadUrl: string; objectKey: string; contentType: string }>(
+    `/clubs/${id}/docs/${key}/upload-url`,
+    {
+      method: 'POST',
+      body: contentType ? { contentType } : undefined,
+    },
+  );
+export const markDocUploaded = (id: string, key: string, meta: Record<string, unknown>) =>
+  request<Club>(`/clubs/${id}/docs/${key}`, { method: 'PATCH', body: meta });
 // objectKey selects one of a multi-file doc's stored files (safeguarding);
 // omitted for single-file docs.
-export const getDocViewUrl = (id, key, objectKey) =>
-  request(`/clubs/${id}/docs/${key}/view-url`, {
+export const getDocViewUrl = (id: string, key: string, objectKey?: string) =>
+  request<{ url: string }>(`/clubs/${id}/docs/${key}/view-url`, {
     method: 'POST',
     body: objectKey ? { objectKey } : undefined,
   });
-export const deleteDocFile = (id, key, objectKey) =>
-  request(`/clubs/${id}/docs/${key}/file`, { method: 'DELETE', body: { objectKey } });
-export const addClubNote = (id, text) =>
-  request(`/clubs/${id}/notes`, { method: 'POST', body: { text } });
+export const deleteDocFile = (id: string, key: string, objectKey: string) =>
+  request<Club>(`/clubs/${id}/docs/${key}/file`, { method: 'DELETE', body: { objectKey } });
+export const addClubNote = (id: string, text: string) =>
+  request<Club>(`/clubs/${id}/notes`, { method: 'POST', body: { text } });
 /**
  * Share the club's released fixtures with its registered players over the given
  * channels (['email'] | ['whatsapp'] | both). The schedule is built server-side; this
@@ -172,8 +207,11 @@ export const addClubNote = (id, text) =>
  * re-broadcasting. Resolves to { results: [{ channel, status, summary }] } — one
  * PII-free per-channel row whose `summary` carries the counts (e.g. "8 sent · 2 skipped").
  */
-export const sendClubFixtures = (id, { channels, idempotencyKey }) =>
-  request(`/clubs/${id}/send-fixtures`, {
+export const sendClubFixtures = (
+  id: string,
+  { channels, idempotencyKey }: { channels: string[]; idempotencyKey: string },
+) =>
+  request<{ results: SendResult[] }>(`/clubs/${id}/send-fixtures`, {
     method: 'POST',
     body: { channels, idempotencyKey },
   });
@@ -182,46 +220,63 @@ export const sendClubFixtures = (id, { channels, idempotencyKey }) =>
 // Players now self-register via the public link (see register* below). The in-portal chair
 // "Register player" form was retired, so its client wrappers (registerPlayer / id-doc
 // upload + mark) were removed; the backend routes remain for any future re-introduction.
-export const getPlayers = (clubId) => request(`/clubs/${clubId}/players`);
-export const getPlayerIdDocViewUrl = (clubId, naturalKey) =>
-  request(`/clubs/${clubId}/players/${naturalKey}/id-doc/view-url`, { method: 'POST' });
+export const getPlayers = (clubId: string) =>
+  request<PlayerRegistration[]>(`/clubs/${clubId}/players`);
+export const getPlayerIdDocViewUrl = (clubId: string, naturalKey: string) =>
+  request<{ url: string }>(`/clubs/${clubId}/players/${naturalKey}/id-doc/view-url`, {
+    method: 'POST',
+  });
 
 // Rep-safe {id,name} list of sibling clubs (for clearance source/destination choice).
-export const getClubDirectory = () => request('/clubs/directory');
+export const getClubDirectory = () => request<{ id: string; name: string }[]>('/clubs/directory');
 
 // ── Player clearances (inter-club transfers) ──
 // Returns { incoming, outbound } for a club: incoming = it must action (source),
 // outbound = players moving to it (destination).
-export const getClearances = (clubId) => request(`/clubs/${clubId}/clearances`);
+export const getClearances = (clubId: string) =>
+  request<{ incoming: PlayerClearance[]; outbound: PlayerClearance[] }>(
+    `/clubs/${clubId}/clearances`,
+  );
 // Destination club initiates: body { fromClubId, idNumber | playerNaturalKey, note? }.
-export const createClearance = (toClubId, body) =>
-  request(`/clubs/${toClubId}/clearances`, { method: 'POST', body });
-export const patchClearance = (fromClubId, clearanceId, body) =>
-  request(`/clubs/${fromClubId}/clearances/${clearanceId}`, { method: 'PATCH', body });
-export const getAllClearances = () => request('/admin/clearances');
-export const overrideClearance = (clearanceId, body) =>
-  request(`/admin/clearances/${clearanceId}/override`, { method: 'POST', body });
+export const createClearance = (toClubId: string, body: unknown) =>
+  request<PlayerClearance>(`/clubs/${toClubId}/clearances`, { method: 'POST', body });
+export const patchClearance = (fromClubId: string, clearanceId: string, body: unknown) =>
+  request<PlayerClearance>(`/clubs/${fromClubId}/clearances/${clearanceId}`, {
+    method: 'PATCH',
+    body,
+  });
+export const getAllClearances = () => request<PlayerClearance[]>('/admin/clearances');
+export const overrideClearance = (clearanceId: string, body: unknown) =>
+  request<PlayerClearance>(`/admin/clearances/${clearanceId}/override`, { method: 'POST', body });
 
 // ── Series ──
-export const getSeriesList = () => request('/series');
-export const createSeries = (series) => request('/series', { method: 'POST', body: series });
-export const patchSeries = (id, patch) =>
-  request(`/series/${id}`, { method: 'PATCH', body: patch });
-export const deleteSeriesReq = (id) => request(`/series/${id}`, { method: 'DELETE' });
-export const duplicateSeriesReq = (id) => request(`/series/${id}/duplicate`, { method: 'POST' });
+export const getSeriesList = () => request<Series[]>('/series');
+export const createSeries = (series: unknown) =>
+  request<Series>('/series', { method: 'POST', body: series });
+export const patchSeries = (id: string, patch: unknown) =>
+  request<Series>(`/series/${id}`, { method: 'PATCH', body: patch });
+export const deleteSeriesReq = (id: string) => request(`/series/${id}`, { method: 'DELETE' });
+export const duplicateSeriesReq = (id: string) =>
+  request<Series>(`/series/${id}/duplicate`, { method: 'POST' });
 
 // ── Users (admin) ──
 // List every tenant user with role, club scope and sign-in status.
-export const getUsers = () => request('/admin/users');
+export const getUsers = () => request<any[]>('/admin/users');
 /**
  * Provision an admin/rep for this tenant. The body carries { email, role, clubIds?, channels?,
  * link? } — channels selects email/WhatsApp sends and link is the tenant-origin login URL used
  * in the notification (and echoed back). Resolves to { sub, email, loginUrl, results? }.
  */
-export const inviteUser = (body) => request('/admin/users', { method: 'POST', body });
-export const patchUser = (sub, body) => request(`/admin/users/${sub}`, { method: 'PATCH', body });
-export const removeUser = (sub) => request(`/admin/users/${sub}`, { method: 'DELETE' });
-export const resendInvite = (sub) => request(`/admin/users/${sub}/resend`, { method: 'POST' });
+export const inviteUser = (body: unknown) =>
+  request<{ sub: string; email: string; loginUrl: string; results?: SendResult[] }>(
+    '/admin/users',
+    { method: 'POST', body },
+  );
+export const patchUser = (sub: string, body: unknown) =>
+  request(`/admin/users/${sub}`, { method: 'PATCH', body });
+export const removeUser = (sub: string) => request(`/admin/users/${sub}`, { method: 'DELETE' });
+export const resendInvite = (sub: string) =>
+  request(`/admin/users/${sub}/resend`, { method: 'POST' });
 
 // ── Club self-registration link (admin) ──
 // One tenant-wide link clubs use to register themselves (/signup?t=<token>).
@@ -231,25 +286,28 @@ export const generateClubSignupLink = () => request('/admin/club-signup-link', {
 export const revokeClubSignupLink = () => request('/admin/club-signup-link', { method: 'DELETE' });
 
 // ── Public registration ──
-export const getRegistration = (clubId, token) =>
+export const getRegistration = (clubId: string, token: string) =>
   request(`/register/${clubId}`, { auth: false, query: { t: token } });
-export const submitRegistration = (clubId, token, body) =>
+export const submitRegistration = (clubId: string, token: string, body: unknown) =>
   request(`/register/${clubId}`, { method: 'POST', auth: false, query: { t: token }, body });
 // Token-scoped presign for the self-registering player's ID document (no auth). Returns
 // { uploadUrl, objectKey, contentType }; PUT the file via uploadToPresigned, then send the
 // resulting { objectKey, size, contentType } as idDocMeta on submitRegistration.
-export const getRegistrationIdDocUploadUrl = (clubId, token, contentType) =>
-  request(`/register/${clubId}/id-doc/upload-url`, {
-    method: 'POST',
-    auth: false,
-    query: { t: token },
-    body: { contentType },
-  });
+export const getRegistrationIdDocUploadUrl = (clubId: string, token: string, contentType: string) =>
+  request<{ uploadUrl: string; objectKey: string; contentType: string }>(
+    `/register/${clubId}/id-doc/upload-url`,
+    {
+      method: 'POST',
+      auth: false,
+      query: { t: token },
+      body: { contentType },
+    },
+  );
 
 // ── Public club signup (the tenant-wide self-registration link) ──
-export const getClubSignup = (token) =>
+export const getClubSignup = (token: string) =>
   request('/club-signup', { auth: false, query: { t: token } });
-export const submitClubSignup = (token, body) =>
+export const submitClubSignup = (token: string, body: unknown) =>
   request('/club-signup', { method: 'POST', auth: false, query: { t: token }, body });
 
 /**
@@ -257,7 +315,11 @@ export const submitClubSignup = (token, body) =>
  * match what the URL was signed with — compliance docs and player ID docs both sign
  * with the file's own type, so pass the contentType echoed by the upload-url route.
  */
-export async function uploadToPresigned(uploadUrl, file, contentType = 'application/pdf') {
+export async function uploadToPresigned(
+  uploadUrl: string,
+  file: Blob,
+  contentType = 'application/pdf',
+) {
   const res = await fetch(uploadUrl, {
     method: 'PUT',
     headers: { 'content-type': contentType },

@@ -1,5 +1,7 @@
 /* ─── Sample data ─── */
 
+import type { Club } from './types';
+
 // 2026/27 season submission deadline — editable by the Dolphins admin via
 // the "Edit deadline" button on the cohort dashboard. Stored as ISO date so
 // date inputs and helpers work naturally.
@@ -35,7 +37,7 @@ export function daysUntil(iso) {
   const target = new Date(iso + 'T00:00:00');
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const diff = Math.ceil((target - today) / 86400000);
+  const diff = Math.ceil((target.getTime() - today.getTime()) / 86400000);
   return Math.max(0, diff);
 }
 
@@ -338,7 +340,7 @@ export function resolvePreviewSource(meta, isLocalDemo) {
 
 // Sample clubs — names drawn from the actual Dolphins CQI list
 // Each carries denormalised submission state so the admin views can score them.
-export const SAMPLE_CLUBS = [
+export const SAMPLE_CLUBS: Club[] = [
   {
     id: 'ukzn',
     name: 'UKZN CC',
@@ -1093,12 +1095,16 @@ export function fixtureCost(
 // falls back to a format-based default: tournaments are bounded events (spread),
 // series run weekly (reference). Shared by the create form and `regenerate` so
 // the two paths can never interpret a stored series differently.
-export function resolveSpread({ dateMode, kind } = {}) {
+export function resolveSpread({ dateMode, kind }: { dateMode?: string; kind?: string } = {}) {
   return (dateMode || (kind === 'tournament' ? 'spread' : 'reference')) === 'spread';
 }
 
 // Round-robin: each team plays every other team once. Home/away alternates fairly.
-export function generateRoundRobin(teamIds, startDateISO, options = {}) {
+export function generateRoundRobin(
+  teamIds: (string | null)[],
+  startDateISO: string,
+  options: { endDateISO?: string; spread?: boolean } = {},
+) {
   if (teamIds.length < 2) return [];
   const teams = [...teamIds];
   if (teams.length % 2 === 1) teams.push(null); // bye
