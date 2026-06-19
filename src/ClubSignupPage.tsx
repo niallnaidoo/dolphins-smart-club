@@ -6,6 +6,7 @@
  * the normal OTP login with the email pre-filled (Login.jsx reads ?email=).
  */
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode, ChangeEventHandler } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { qk } from './query';
@@ -339,7 +340,7 @@ export function ClubSignupPage() {
   );
 }
 
-function SignInLink({ onClick }) {
+function SignInLink({ onClick }: { onClick: () => void }) {
   return (
     <div
       style={{ marginTop: 16, textAlign: 'center', fontSize: 12.5, color: 'var(--muted-on-dark)' }}
@@ -364,7 +365,15 @@ function SignInLink({ onClick }) {
   );
 }
 
-function Frame({ branding, children, wide }) {
+function Frame({
+  branding,
+  children,
+  wide,
+}: {
+  branding?: { logoUrl?: string; name?: string; copy?: Record<string, string> } | null;
+  children?: ReactNode;
+  wide?: boolean;
+}) {
   return (
     <div className="ps-screen">
       <div className="ps-brand">
@@ -392,11 +401,23 @@ function Frame({ branding, children, wide }) {
   );
 }
 
-function Row({ children }) {
+function Row({ children }: { children?: ReactNode }) {
   return <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>{children}</div>;
 }
 
-function Field({ label, type = 'text', required, value, onChange }) {
+function Field({
+  label,
+  type = 'text',
+  required,
+  value,
+  onChange,
+}: {
+  label: ReactNode;
+  type?: string;
+  required?: boolean;
+  value: string;
+  onChange: ChangeEventHandler<HTMLInputElement>;
+}) {
   return (
     <label style={{ display: 'block' }}>
       <span className="reg-label">

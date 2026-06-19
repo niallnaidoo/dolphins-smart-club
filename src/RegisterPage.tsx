@@ -7,6 +7,7 @@
  * name. A successful submit increments the club's derived player count.
  */
 import { useEffect, useState } from 'react';
+import type { ReactNode, ChangeEventHandler, InputHTMLAttributes } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import {
   getRegistration,
@@ -69,7 +70,7 @@ export function RegisterPage() {
   const [clubName, setClubName] = useState('');
   const [leagues, setLeagues] = useState([]);
   const [d, setD] = useState(EMPTY);
-  const [idFile, setIdFile] = useState(null);
+  const [idFile, setIdFile] = useState<File | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -435,7 +436,7 @@ export function RegisterPage() {
   );
 }
 
-function CenterCard({ children, wide }) {
+function CenterCard({ children, wide }: { children?: ReactNode; wide?: boolean }) {
   return (
     <div className="ps-screen">
       <div className={`ps-cards ${wide ? 'reg-cards' : 'reg-cards-sm'}`}>
@@ -445,7 +446,7 @@ function CenterCard({ children, wide }) {
   );
 }
 
-function Section({ title, children }) {
+function Section({ title, children }: { title: ReactNode; children?: ReactNode }) {
   return (
     <div className="reg-section">
       <div className="reg-section-title">{title}</div>
@@ -454,7 +455,7 @@ function Section({ title, children }) {
   );
 }
 
-function Label({ label, required }) {
+function Label({ label, required }: { label: ReactNode; required?: boolean }) {
   return (
     <span className="reg-label">
       {label}
@@ -463,7 +464,26 @@ function Label({ label, required }) {
   );
 }
 
-function Field({ label, type = 'text', required, value, onChange, placeholder, inputMode, span }) {
+interface FieldProps {
+  label: ReactNode;
+  type?: string;
+  required?: boolean;
+  value: string;
+  onChange: ChangeEventHandler<HTMLInputElement>;
+  placeholder?: string;
+  inputMode?: InputHTMLAttributes<HTMLInputElement>['inputMode'];
+  span?: boolean;
+}
+function Field({
+  label,
+  type = 'text',
+  required,
+  value,
+  onChange,
+  placeholder,
+  inputMode,
+  span,
+}: FieldProps) {
   return (
     <label className={span ? 'reg-span' : undefined} style={{ display: 'block' }}>
       <Label label={label} required={required} />
@@ -481,7 +501,16 @@ function Field({ label, type = 'text', required, value, onChange, placeholder, i
   );
 }
 
-function Select({ label, required, value, onChange, placeholder, children, span }) {
+interface SelectProps {
+  label: ReactNode;
+  required?: boolean;
+  value: string;
+  onChange: ChangeEventHandler<HTMLSelectElement>;
+  placeholder?: string;
+  children?: ReactNode;
+  span?: boolean;
+}
+function Select({ label, required, value, onChange, placeholder, children, span }: SelectProps) {
   return (
     <label className={span ? 'reg-span' : undefined} style={{ display: 'block' }}>
       <Label label={label} required={required} />
@@ -499,7 +528,19 @@ function Select({ label, required, value, onChange, placeholder, children, span 
   );
 }
 
-function Seg({ label, options, value, onPick, span }) {
+function Seg({
+  label,
+  options,
+  value,
+  onPick,
+  span,
+}: {
+  label: ReactNode;
+  options: string[];
+  value: string;
+  onPick: (v: string) => void;
+  span?: boolean;
+}) {
   return (
     <div className={span ? 'reg-span' : undefined}>
       <Label label={label} />
@@ -519,7 +560,15 @@ function Seg({ label, options, value, onPick, span }) {
   );
 }
 
-function Check({ label, checked, onChange }) {
+function Check({
+  label,
+  checked,
+  onChange,
+}: {
+  label: ReactNode;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
   return (
     <label className="rp-check rp-pill" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />

@@ -47,6 +47,12 @@ module.exports = {
         // exceljs interop, dynamic CQI answer maps) — keep visible as a warning
         // during the migration rather than failing the build.
         '@typescript-eslint/no-explicit-any': 'warn',
+        // The `cond && fn()` / `cond ? a() : b()` short-circuit-call idiom is used
+        // throughout this codebase; allow it (still catches genuinely dead exprs).
+        '@typescript-eslint/no-unused-expressions': [
+          'error',
+          { allowShortCircuit: true, allowTernary: true },
+        ],
       },
     },
     {

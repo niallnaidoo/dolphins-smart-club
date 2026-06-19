@@ -192,7 +192,7 @@ export const markDocUploaded = (id: string, key: string, meta: Record<string, un
 // objectKey selects one of a multi-file doc's stored files (safeguarding);
 // omitted for single-file docs.
 export const getDocViewUrl = (id: string, key: string, objectKey?: string) =>
-  request<{ url: string }>(`/clubs/${id}/docs/${key}/view-url`, {
+  request<{ viewUrl: string }>(`/clubs/${id}/docs/${key}/view-url`, {
     method: 'POST',
     body: objectKey ? { objectKey } : undefined,
   });
