@@ -43,6 +43,10 @@ module.exports = {
           'warn',
           { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
         ],
+        // Intentional `any` at unavoidable boundaries (generic request<T> default,
+        // exceljs interop, dynamic CQI answer maps) — keep visible as a warning
+        // during the migration rather than failing the build.
+        '@typescript-eslint/no-explicit-any': 'warn',
       },
     },
     {

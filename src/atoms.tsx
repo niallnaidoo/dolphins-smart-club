@@ -799,7 +799,7 @@ export function useToast(): [
           // updates in this handler, so the new toast wins cleanly.
           onClick={() => {
             clear();
-            action.onClick && action.onClick();
+            if (action.onClick) action.onClick();
           }}
           style={{
             background: 'transparent',
