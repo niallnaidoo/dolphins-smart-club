@@ -1,0 +1,48 @@
+{
+  /*
+   * Frontend (browser) app config. The type-check gate runs:
+   *   tsc --noEmit -p tsconfig.app.json
+   * NOT solution-style build mode (`tsc -b`) — that would require `composite: true`
+   * + .tsbuildinfo emit and would pull the SST config into the gate. The existing
+   * root tsconfig.json is left untouched (it owns sst.config.ts).
+   *
+   * Strictness starts LOW (strict:false) and is ratcheted up flag-by-flag in Phase 4
+   * once every src file is .ts/.tsx. `allowJs` lets .js/.jsx and .ts/.tsx coexist so
+   * the app stays runnable after each single-file rename.
+   */
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "types": ["vite/client", "node"],
+
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+    "noEmit": true,
+
+    "allowJs": true,
+    "checkJs": false,
+
+    // Strict ratchet status (Phase 4): the zero-cost sub-flags below are ON.
+    // Two flags remain OFF as a reviewed follow-up — enable one at a time and fix
+    // the fallout (counts measured 2026-06, pre-fix):
+    //   "strictNullChecks": true  → ~185 fixes (mostly typing useState/useRef nulls
+    //                               in admin/club/main; catches real null derefs)
+    //   "noImplicitAny": true     → ~836 fixes (param/prop annotations, ~85% in the
+    //                               three large feature modules)
+    // Flip "strict": true once both pass (it implies them + useUnknownInCatchVariables).
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "noImplicitThis": true,
+    "alwaysStrict": true
+  },
+  "include": ["src"]
+}
