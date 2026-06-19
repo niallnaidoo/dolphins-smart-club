@@ -110,7 +110,12 @@ function CloudAuthProvider({ children }: { children?: ReactNode }) {
       setEmail(String(payload.email ?? ''));
       try {
         setMemberships(JSON.parse((payload.memberships as string) ?? '[]'));
-      } catch {
+      } catch (err) {
+        // A malformed/truncated memberships claim leaves the user signed in with
+        // no access; log it so the empty-dashboard symptom is diagnosable rather
+        // than a silent swallow. (The claim is always a JSON string — see
+        // pre-token-gen.ts — so this is the rare corruption path, not the norm.)
+        console.warn('auth: failed to parse memberships claim; treating as none', err);
         setMemberships([]);
       }
       setSignedOutReason('');

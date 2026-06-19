@@ -10,7 +10,6 @@
  * is no edge function, so first paint shows the neutral default until JS themes it —
  * never the *wrong* brand, but a brief neutral flash is expected. See docs/architecture/0002.
  */
-import { setActiveTenant, getTenant } from './api';
 
 // Host → tenant slug (JSON env, mirrors TENANT_HOST_MAP in sst.config.ts). Empty off-prod.
 const HOST_TENANT_MAP = (() => {
@@ -49,18 +48,4 @@ export function applyTheme(branding?: { colors?: Record<string, string>; title?:
     root.style.setProperty(token, value);
   }
   if (branding.title) document.title = branding.title;
-}
-
-/** Resolve the slug, register it with the API client, and fetch + apply branding. */
-export async function bootstrapTenant() {
-  const slug = resolveTenantSlug();
-  setActiveTenant(slug);
-  try {
-    const config = await getTenant();
-    applyTheme(config.branding);
-    return config;
-  } catch {
-    // No backend yet / unknown tenant: keep the neutral default theme.
-    return { tenant: slug, branding: null, submissionDeadline: null };
-  }
 }
