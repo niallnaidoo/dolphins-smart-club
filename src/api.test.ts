@@ -31,8 +31,8 @@ const errResponse = (status, body) => ({
 let onAuthLost;
 
 beforeEach(() => {
-  globalThis.window ??= { location: { origin: 'http://localhost' } };
-  globalThis.fetch = vi.fn(async () => okResponse());
+  (globalThis as any).window ??= { location: { origin: 'http://localhost' } };
+  globalThis.fetch = vi.fn(async () => okResponse()) as unknown as typeof fetch;
   onAuthLost = vi.fn();
   setAuthLostHandler(onAuthLost);
   setTokenProvider(async () => 'test-token');
@@ -41,7 +41,7 @@ beforeEach(() => {
 describe('request auth contract', () => {
   it('attaches the bearer token to authed requests', async () => {
     await getMe();
-    const [, init] = fetch.mock.calls[0];
+    const [, init] = (fetch as any).mock.calls[0];
     expect(init.headers.authorization).toBe('Bearer test-token');
   });
 
@@ -65,7 +65,7 @@ describe('request auth contract', () => {
   });
 
   it('server-side 401: fires handler and replaces the raw API copy', async () => {
-    fetch.mockResolvedValueOnce(errResponse(401, { error: 'missing bearer token' }));
+    (fetch as any).mockResolvedValueOnce(errResponse(401, { error: 'missing bearer token' }));
     const err = await getMe().catch((e) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(401);
@@ -74,7 +74,7 @@ describe('request auth contract', () => {
   });
 
   it('non-401 errors keep the API copy and leave the session alone', async () => {
-    fetch.mockResolvedValueOnce(errResponse(409, { error: 'version conflict' }));
+    (fetch as any).mockResolvedValueOnce(errResponse(409, { error: 'version conflict' }));
     const err = await getMe().catch((e) => e);
     expect(err.status).toBe(409);
     expect(err.message).toBe('version conflict');
@@ -84,12 +84,12 @@ describe('request auth contract', () => {
   it('public routes (auth: false) never touch the token provider or handler', async () => {
     const provider = vi.fn(async () => 'test-token');
     setTokenProvider(provider);
-    fetch.mockResolvedValueOnce(errResponse(401, { error: 'missing bearer token' }));
+    (fetch as any).mockResolvedValueOnce(errResponse(401, { error: 'missing bearer token' }));
     const err = await getTenant().catch((e) => e);
     expect(provider).not.toHaveBeenCalled();
     expect(onAuthLost).not.toHaveBeenCalled();
     expect(err.message).toBe('missing bearer token');
-    const [, init] = fetch.mock.calls[0];
+    const [, init] = (fetch as any).mock.calls[0];
     expect(init.headers.authorization).toBeUndefined();
   });
 });
