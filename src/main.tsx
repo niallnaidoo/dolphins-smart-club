@@ -1,4 +1,5 @@
 import { useState as useStateApp, useMemo as useMemoApp, useEffect } from 'react';
+import type { ReactNode } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
 import { createRoot } from 'react-dom/client';
 import { createPortal } from 'react-dom';
@@ -234,7 +235,19 @@ function HelpModal({ onClose, support }) {
 }
 
 /* ─── TaskModal — wraps the affiliation form & documents view ─── */
-function TaskModal({ eyebrow, title, onClose, narrow, children }) {
+function TaskModal({
+  eyebrow,
+  title,
+  onClose,
+  narrow,
+  children,
+}: {
+  eyebrow?: ReactNode;
+  title?: ReactNode;
+  onClose: () => void;
+  narrow?: boolean;
+  children?: ReactNode;
+}) {
   useEscapeClose(onClose);
   // Portal to document.body so the fixed backdrop centers against the viewport, not the
   // residual transform left on `.main > *` by the fadeUp animation (see admin.jsx fix-confirm).
@@ -262,7 +275,7 @@ function TaskModal({ eyebrow, title, onClose, narrow, children }) {
 }
 
 /* ─── Splash / status screens ─── */
-function Splash({ message, action }) {
+function Splash({ message, action }: { message?: ReactNode; action?: ReactNode }) {
   return (
     <div className="ps-screen">
       <div className="ps-intro" style={{ textAlign: 'center' }}>
@@ -443,7 +456,11 @@ function AuthedApp({ tenantConfig }) {
 
   // ── Series mutations (preserve prototype signatures; back with the API) ──
   const invalidate = (key) => queryClient.invalidateQueries({ queryKey: key });
-  async function withToast(fn, errMsg, opts = {}) {
+  async function withToast(
+    fn: () => Promise<any>,
+    errMsg?: string,
+    opts: { rawConflict?: boolean; invalidate?: any[] } = {},
+  ) {
     try {
       return await fn();
     } catch (err) {
@@ -1264,6 +1281,16 @@ function Shell({
   }
 
   // — NAV —
+  // A left-nav entry. `action` (when present) replaces view-switching with a side effect.
+  // eslint-disable-next-line no-unused-vars
+  interface NavItem {
+    v: string;
+    label: string;
+    icon: () => ReactNode;
+    num?: number | string;
+    dot?: string;
+    action?: () => void;
+  }
   // Clearance badge counts: admin sees cohort-wide; a club counts only requests it must action.
   // Clearances no longer carry a time limit, so there is no "overdue" tier — just pending.
   const adminPendingClearances = allClearances.filter((r) => r.status === 'pending').length;
@@ -1273,7 +1300,7 @@ function Shell({
 
   // Nav items are listed in their natural journey order here, then sorted alphabetically
   // by label for display (see the `.sort` below) — same for clubNav.
-  const adminNav = [
+  const adminNav: NavItem[] = [
     { v: 'dashboard', label: 'Cohort Dashboard', icon: Icon.Dashboard },
     { v: 'clubs_list', label: 'All Clubs', icon: Icon.Clubs, num: clubs.length },
     { v: 'players', label: 'Players', icon: Icon.Users },
@@ -1316,7 +1343,7 @@ function Shell({
   // Built only for the club role (admins never use it). activeClub is guaranteed
   // defined past the guard above for the club role, but is undefined for an admin
   // with a blank cohort — so guard the whole array to avoid a deref crash.
-  const clubNav =
+  const clubNav: NavItem[] =
     role === 'club' && activeClub
       ? [
           { v: 'home', label: 'Home', icon: Icon.Dashboard },
