@@ -42,7 +42,7 @@ export function resolveTenantSlug() {
 }
 
 /** Inject a tenant's color tokens + title onto :root. Missing tokens fall back to the default theme. */
-export function applyTheme(branding) {
+export function applyTheme(branding?: { colors?: Record<string, string>; title?: string } | null) {
   if (!branding) return;
   const root = document.documentElement;
   for (const [token, value] of Object.entries(branding.colors ?? {})) {
