@@ -1448,6 +1448,83 @@ describe('public registration ID-doc upload-url', () => {
   });
 });
 
+describe('POST /register/:clubId (public self-registration body)', () => {
+  // The live registration path — exercised here at the body level (the suite otherwise only
+  // covers the id-doc/upload-url subroute). Confirms nationality is required + persisted.
+  const regClub = {
+    id: 'regbody',
+    name: 'Reg Body CC',
+    district: 'Test District',
+    sub: 'sub-1',
+    chair: 'Chair',
+    affiliation: 'not_started' as const,
+    cqi: 0,
+    docs: {},
+    players: 0,
+    teams: 0,
+    women: 0,
+    juniors: 0,
+    color: '#222222',
+    ground: {},
+    leagues: [],
+    version: 1,
+  };
+  let teamKey: string;
+  let objectKey: string;
+
+  before(async () => {
+    await repo.createClub('dolphins', regClub);
+    await repo.putToken('reg-body-token', 'dolphins', 'regbody', '2026-06-01T00:00:00.000Z');
+    teamKey = ((await repo.getTenantConfig('dolphins'))?.leagues ?? [])[0]?.key ?? '';
+    assert.ok(teamKey, 'precondition: tenant has a league catalogue');
+    // Mint a real id-doc objectKey via the existing presign route (proven above).
+    const up = await app.request('/register/regbody/id-doc/upload-url?t=reg-body-token', {
+      method: 'POST',
+      body: JSON.stringify({ contentType: 'image/png' }),
+    });
+    objectKey = ((await up.json()) as { objectKey: string }).objectKey;
+  });
+
+  const body = (extra: Record<string, unknown> = {}) => ({
+    firstName: 'Tariro',
+    lastName: 'Moyo',
+    idType: 'passport',
+    idNumber: 'PP0099',
+    dob: '1998-04-10',
+    nationality: 'Zimbabwean',
+    race: 'African',
+    gender: 'Female',
+    cell: '0833334444',
+    team: teamKey,
+    district: 'Ethekwini',
+    idDocMeta: { objectKey, size: 100, contentType: 'image/png' },
+    ...extra,
+  });
+
+  test('accepts a self-registration with nationality and persists it (201)', async () => {
+    const res = await app.request('/register/regbody?t=reg-body-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body()),
+    });
+    assert.equal(res.status, 201);
+    const players = (await (
+      await app.request('/clubs/regbody/players', { headers: headers(ADMIN) })
+    ).json()) as { nationality?: string; lastName: string }[];
+    const stored = players.find((p) => p.lastName === 'Moyo');
+    assert.equal(stored?.nationality, 'Zimbabwean', 'nationality persisted on the public path');
+  });
+
+  test('rejects a self-registration missing nationality (400)', async () => {
+    const res = await app.request('/register/regbody?t=reg-body-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body({ nationality: undefined, cell: '0833335555' })),
+    });
+    assert.equal(res.status, 400);
+  });
+});
+
 describe('/admin/users', () => {
   // A dedicated tenant so the admin marker GSI (which drives the last-admin counter)
   // is isolated from the other suites' users. FROM_EMAIL/WHATSAPP_* unset ⇒ notify/
@@ -2045,6 +2122,7 @@ describe('POST /clubs/:id/players (chair registration)', () => {
         idNumber: '0107224082088',
         race: 'African',
         gender: 'Male',
+        nationality: 'South African',
         cell: '0829014421',
         team: teamKey,
         district: 'Ethekwini',
@@ -2085,10 +2163,153 @@ describe('POST /clubs/:id/players (chair registration)', () => {
     assert.equal(res.status, 400);
   });
 
+  test('registers a non-SA player by passport with a manual DOB (idNumber normalised)', async () => {
+    const res = await reg({
+      idType: 'passport',
+      idNumber: ' a1234567 ',
+      dob: '1999-03-15',
+      nationality: 'Zimbabwean',
+      cell: '0820000010',
+    });
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as {
+      dob: string;
+      idType: string;
+      idNumber: string;
+      nationality: string;
+    };
+    assert.equal(body.dob, '1999-03-15');
+    assert.equal(body.idType, 'passport');
+    assert.equal(body.idNumber, 'A1234567'); // trimmed + upper-cased on store
+    assert.equal(body.nationality, 'Zimbabwean'); // non-SA nationality round-trips
+  });
+
+  test('a registration missing nationality is rejected (400)', async () => {
+    // 400 fires at the required-field gate before any createPlayer, so no unique cell is needed.
+    const res = await reg({ nationality: undefined });
+    assert.equal(res.status, 400);
+  });
+
+  test('a passport player without a DOB is rejected (400)', async () => {
+    const res = await reg({ idType: 'passport', idNumber: 'B7654321', cell: '0820000011' });
+    assert.equal(res.status, 400);
+  });
+
+  test('a passport minor without a guardian is rejected (400, POPIA)', async () => {
+    const res = await reg({
+      idType: 'passport',
+      idNumber: 'C2468013',
+      dob: '2015-01-01',
+      cell: '0820000012',
+    });
+    assert.equal(res.status, 400);
+  });
+
   test('a rep for another club cannot register here (403)', async () => {
     const other = devAuth([{ tenantId: 'dolphins', role: 'rep', clubIds: ['testers'] }]);
     const res = await reg({ cell: '0820000003' }, other);
     assert.equal(res.status, 403);
+  });
+});
+
+describe('PATCH /clubs/:id — affiliation field validation', () => {
+  const mkClub = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    name: id,
+    district: 'Test District',
+    sub: 's',
+    chair: 'Chair',
+    affiliation: 'not_started' as const,
+    cqi: 0,
+    docs: {},
+    players: 0,
+    teams: 0,
+    women: 0,
+    juniors: 0,
+    color: '#abcdef',
+    ground: {},
+    leagues: [],
+    version: 1,
+    ...extra,
+  });
+  let leagueKey: string;
+
+  before(async () => {
+    await repo.createClub('dolphins', mkClub('affclub'));
+    // A club that completed affiliation BEFORE the reason field existed (no reasonForInvolvement).
+    await repo.createClub(
+      'dolphins',
+      mkClub('legacyclub', {
+        affiliation: 'complete',
+        exco: { chair: { name: 'Old Chair', email: 'old@chair.co.za', cell: '0830000000' } },
+      }),
+    );
+    leagueKey = ((await repo.getTenantConfig('dolphins'))?.leagues ?? [])[0]?.key ?? '';
+    assert.ok(leagueKey, 'precondition: tenant has a league catalogue');
+  });
+
+  // version is omitted throughout: repo.updateClub defaults expectedVersion to current.version,
+  // so omitting it never conflicts — the 400 cases fail validation before the version check anyway.
+  const patch = (id: string, body: unknown) =>
+    app.request(`/clubs/${id}`, {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify(body),
+    });
+
+  test('a valid chair reasonForInvolvement is accepted (200)', async () => {
+    const res = await patch('affclub', {
+      exco: {
+        chair: {
+          name: 'C',
+          email: 'c@a.co.za',
+          cell: '08',
+          reasonForInvolvement: 'Promoting cricket in my local area',
+        },
+      },
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test('an unknown chair reasonForInvolvement is rejected (400)', async () => {
+    const res = await patch('affclub', {
+      exco: {
+        chair: { name: 'C', email: 'c@a.co.za', cell: '08', reasonForInvolvement: 'because' },
+      },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('a legacy complete club re-submits a correction WITHOUT a reason (200)', async () => {
+    // The server must never require the reason — only the client gates it for NEW affiliations.
+    const res = await patch('legacyclub', {
+      exco: { chair: { name: 'Old Chair', email: 'old@chair.co.za', cell: '0830000001' } },
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test('valid leagueTeams is accepted (200)', async () => {
+    const res = await patch('affclub', { leagues: [leagueKey], leagueTeams: { [leagueKey]: 2 } });
+    assert.equal(res.status, 200);
+    const stored = (await repo.getClub('dolphins', 'affclub')) as {
+      leagueTeams?: Record<string, number>;
+    };
+    assert.equal(stored.leagueTeams?.[leagueKey], 2);
+  });
+
+  test('a leagueTeams count over the cap is rejected (400)', async () => {
+    const res = await patch('affclub', { leagues: [leagueKey], leagueTeams: { [leagueKey]: 31 } });
+    assert.equal(res.status, 400);
+  });
+
+  test('a leagueTeams count below 1 is rejected (400)', async () => {
+    const res = await patch('affclub', { leagues: [leagueKey], leagueTeams: { [leagueKey]: 0 } });
+    assert.equal(res.status, 400);
+  });
+
+  test('an orphaned leagueTeams key (not in leagues) is rejected (400)', async () => {
+    const res = await patch('affclub', { leagues: [leagueKey], leagueTeams: { 'orphan-key': 2 } });
+    assert.equal(res.status, 400);
   });
 });
 
@@ -2130,6 +2351,27 @@ describe('Player clearances (inter-club transfer + move)', () => {
     await repo.createClub('dolphins', mkClub('clr-src', 'Source CC'));
     await repo.createClub('dolphins', mkClub('clr-dst', 'Destination CC'));
     await repo.createPlayer('dolphins', mkPlayer('clr-src', 'mover'));
+  });
+
+  test('a passport player is found for clearance despite ID case variance', async () => {
+    // Isolated club pair so this extra clearance doesn't pollute the shared clr-src counts.
+    await repo.createClub('dolphins', mkClub('pp-src', 'PP Source CC'));
+    await repo.createClub('dolphins', mkClub('pp-dst', 'PP Destination CC'));
+    await repo.createPlayer('dolphins', {
+      ...mkPlayer('pp-src', 'passport-mover'),
+      idType: 'passport',
+      idNumber: 'A1234567', // stored already normalised (trim + uppercase)
+    });
+    const REP_PP_DST = devAuth([{ tenantId: 'dolphins', role: 'rep', clubIds: ['pp-dst'] }]);
+    // Destination rep retypes the passport in a different case — the lookup normalises both.
+    const res = await app.request('/clubs/pp-dst/clearances', {
+      method: 'POST',
+      headers: headers(REP_PP_DST),
+      body: JSON.stringify({ fromClubId: 'pp-src', idNumber: ' a1234567 ' }),
+    });
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as { playerNaturalKey: string };
+    assert.equal(body.playerNaturalKey, 'passport-mover');
   });
 
   const create = (auth: string, body: unknown) =>

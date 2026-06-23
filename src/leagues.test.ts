@@ -116,4 +116,23 @@ describe('teamCounts', () => {
     expect(teamCounts(undefined, CATALOGUE)).toEqual({ senior: 0, junior: 0 });
     expect(teamCounts(['u11'], undefined)).toEqual({ senior: 1, junior: 0 });
   });
+
+  it('sums per-league team counts when a leagueTeams map is given', () => {
+    expect(
+      teamCounts(['premier', 'emcuD1', 'u11'], CATALOGUE, { premier: 2, emcuD1: 3, u11: 2 }),
+    ).toEqual({
+      senior: 5, // premier(2) + emcuD1(3)
+      junior: 2, // u11(2)
+    });
+  });
+
+  it('defaults a league absent from the map (or with a bad value) to 1 side', () => {
+    // No map ⇒ 1 each (legacy clubs); partial map ⇒ only listed keys multiplied.
+    expect(teamCounts(['premier', 'emcuD1'], CATALOGUE, { premier: 2 })).toEqual({
+      senior: 3,
+      junior: 0,
+    });
+    expect(teamCounts(['premier'], CATALOGUE, { premier: 0 })).toEqual({ senior: 1, junior: 0 });
+    expect(teamCounts(['premier'], CATALOGUE, {})).toEqual({ senior: 1, junior: 0 });
+  });
 });

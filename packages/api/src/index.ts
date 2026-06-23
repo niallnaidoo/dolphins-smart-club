@@ -318,14 +318,21 @@ app.post('/register/:clubId', async (c) => {
     'idNumber',
     'race',
     'gender',
+    'nationality',
     'cell',
     'team',
     'district',
   ];
   const missing = required.filter((k) => !body[k]);
   if (missing.length) throw new HttpError(400, `missing required fields: ${missing.join(', ')}`);
-  const dob = dobFromSaId(body.idNumber!);
-  if (!dob) throw new HttpError(400, 'idNumber must be a valid 13-digit RSA ID');
+  // SA citizens derive dob from the RSA ID; non-SA (passport) supply it directly.
+  const dob = resolvePlayerDob(body);
+  if (!dob) {
+    throw new HttpError(
+      400,
+      'provide a valid 13-digit RSA ID, or a passport/visa number with date of birth',
+    );
+  }
   // Team must be a real league key in the tenant catalogue.
   const leagueKeys = new Set((cfg?.leagues ?? []).map((l) => l.key));
   if (leagueKeys.size && !leagueKeys.has(body.team!)) {
@@ -363,7 +370,9 @@ app.post('/register/:clubId', async (c) => {
     email: body.email,
     isMinor,
     guardianName: body.guardianName,
-    idNumber: body.idNumber,
+    idType: body.idType ?? 'sa-id',
+    idNumber: normalizeId(body.idNumber),
+    nationality: body.nationality,
     race: body.race,
     gender: body.gender,
     postalAddress: body.postalAddress,
@@ -699,6 +708,28 @@ function dobFromSaId(idNumber: string): string | null {
 
 const MAX_ID_DOC_BYTES = 5 * 1024 * 1024; // 5 MB — ID photos/scans
 const ID_DOC_TYPES = new Set(['image/jpeg', 'image/png', 'application/pdf']);
+
+/** Plausibility floor for a self-asserted passport DOB (rejects obviously-bogus dates). */
+const MIN_DOB = '1920-01-01';
+/**
+ * Resolve a player's date of birth. SA citizens (default) derive it from the forgery-
+ * resistant 13-digit RSA ID. Non-SA citizens (`idType: 'passport'`) supply it directly —
+ * there is no oracle to derive it from a passport, so the client value is trusted, bounded
+ * only by a future-date and plausibility-floor check. Returns null if it can't be resolved.
+ */
+function resolvePlayerDob(body: Partial<PlayerRegistration>): string | null {
+  if (body.idType === 'passport') {
+    if (!body.dob) return null;
+    const d = new Date(body.dob);
+    if (Number.isNaN(d.getTime()) || d.getTime() > Date.now() || body.dob < MIN_DOB) return null;
+    return body.dob;
+  }
+  return dobFromSaId(body.idNumber!);
+}
+/** Normalise an ID for storage/matching — trims and upper-cases (passports are alphanumeric). */
+function normalizeId(idNumber: string | undefined): string {
+  return (idNumber || '').trim().toUpperCase();
+}
 
 // ───────────────────── Authenticated routes ─────────────────────
 
@@ -1112,14 +1143,21 @@ app.post('/clubs/:id/players', async (c) => {
     'idNumber',
     'race',
     'gender',
+    'nationality',
     'cell',
     'team',
     'district',
   ];
   const missing = required.filter((k) => !body[k]);
   if (missing.length) throw new HttpError(400, `missing required fields: ${missing.join(', ')}`);
-  const dob = dobFromSaId(body.idNumber!);
-  if (!dob) throw new HttpError(400, 'idNumber must be a valid 13-digit RSA ID');
+  // SA citizens derive dob from the RSA ID; non-SA (passport) supply it directly.
+  const dob = resolvePlayerDob(body);
+  if (!dob) {
+    throw new HttpError(
+      400,
+      'provide a valid 13-digit RSA ID, or a passport/visa number with date of birth',
+    );
+  }
   // Team must be a real league key in the tenant catalogue.
   const leagueKeys = new Set((cfg?.leagues ?? []).map((l) => l.key));
   if (leagueKeys.size && !leagueKeys.has(body.team!)) {
@@ -1140,7 +1178,9 @@ app.post('/clubs/:id/players', async (c) => {
     email: body.email,
     isMinor,
     guardianName: body.guardianName,
-    idNumber: body.idNumber,
+    idType: body.idType ?? 'sa-id',
+    idNumber: normalizeId(body.idNumber),
+    nationality: body.nationality,
     race: body.race,
     gender: body.gender,
     postalAddress: body.postalAddress,
@@ -1291,7 +1331,10 @@ app.post('/clubs/:id/clearances', async (c) => {
     player = await repo.getPlayer(ra.tenant, body.fromClubId, body.playerNaturalKey);
   } else {
     const roster = await repo.listPlayers(ra.tenant, body.fromClubId);
-    player = roster.find((p) => p.idNumber === body.idNumber) ?? null;
+    // Normalise both sides: passports are alphanumeric and prone to case/space variance
+    // (SA IDs were incidentally normalised by the digit-strip the request form applied).
+    const wanted = normalizeId(body.idNumber);
+    player = roster.find((p) => normalizeId(p.idNumber) === wanted) ?? null;
   }
   if (!player) throw new HttpError(404, 'player not found at source club');
   // Reject a duplicate active request for the same player (already pending elsewhere).

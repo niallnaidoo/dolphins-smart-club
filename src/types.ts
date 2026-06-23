@@ -110,6 +110,8 @@ export interface Club {
   color: string;
   ground: ClubGround;
   leagues?: string[]; // server-authoritative (omitted by demo SAMPLE_CLUBS)
+  /** Teams entered per league key (a club may field >1 side in a league); absent ⇒ 1. */
+  leagueTeams?: Record<string, number>;
   /** Office bearers; `exco.chair` carries chair contact + governance fields. */
   exco?: Record<string, unknown>;
   /** Coaches by league; entries carry idNumber/yearStarted/yearsExperience. */
@@ -207,7 +209,12 @@ export interface PlayerRegistration {
   createdAt: string;
   // Official Union registration fields — all optional (absent on legacy rows and
   // public-link self-registrations; populated by the in-portal chair form).
+  // SA citizens give a 13-digit RSA ID (dob derived from it); non-SA citizens give a
+  // passport/visa number + a manually-entered dob. `idType` defaults to 'sa-id'.
+  idType?: 'sa-id' | 'passport';
   idNumber?: string;
+  /** Player nationality (demonym, e.g. 'South African'); defaults to 'South African' for SA-ID registrants. */
+  nationality?: string;
   race?: string;
   gender?: string;
   postalAddress?: string;

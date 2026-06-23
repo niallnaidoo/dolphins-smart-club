@@ -3803,9 +3803,9 @@ export function AdminClubDetail({
   const dc = docCompletion(club);
   const op = overallProgress(club);
   const band = cqiBand(club.cqi);
-  // Team counts derive from the leagues entered on the affiliation form
-  // (one side per league); club.teams/juniors are stale admin-era fields.
-  const tc = teamCounts(club.leagues, allLeagues);
+  // Team counts derive from the leagues entered on the affiliation form, summing the
+  // per-league team counts (a club may field >1 side); club.teams/juniors are stale.
+  const tc = teamCounts(club.leagues, allLeagues, club.leagueTeams);
 
   async function handleGenerate() {
     const hadLink = !!club.playerRegLink;
@@ -6215,7 +6215,7 @@ export function AdminPlayersView({ clubs, leagues, toast }) {
                         {p.firstName} {p.lastName}
                       </div>
                       <div className="rost-sub">
-                        {p.district || '—'} · {p.gender || '—'}
+                        {p.district || '—'} · {p.gender || '—'} · {p.nationality || '—'}
                       </div>
                     </td>
                     <td>

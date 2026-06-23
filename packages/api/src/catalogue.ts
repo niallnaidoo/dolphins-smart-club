@@ -55,6 +55,22 @@ export const MAX_SAFEGUARDING_FILES = 10;
 export const COACH_EXPERIENCE = new Set(['0-3', '4-10', '10+']);
 
 /**
+ * Accepted chairperson "why are you involved in club cricket?" answers, captured on the
+ * affiliation form. Mirror of INVOLVEMENT_REASONS in the frontend's data.ts. Validated only
+ * when present — the field is required client-side for NEW affiliations, but legacy clubs
+ * predate it, so the server must never make it mandatory (that would 400 every correction).
+ */
+export const INVOLVEMENT_REASONS = new Set([
+  'Passion and love for the game of cricket',
+  'Giving back to the cricket community',
+  'Continuing a family or personal cricket legacy',
+  'Building friendships and community connections',
+  'Promoting cricket in my local area',
+  'Staying involved in cricket after my playing career',
+  'Volunteering and serving the community',
+]);
+
+/**
  * Lightweight SA-ID gate: 13 digits encoding a real YYMMDD. Mirrors the core of
  * dobFromSaId in index.ts (without the DOB return). Used to reject malformed
  * chair/coach IDs server-side, since validateClubPatch is the only guard on
@@ -93,6 +109,7 @@ export function validateClubPatch(
     name?: string;
     district?: string;
     leagues?: string[];
+    leagueTeams?: Record<string, number>;
     docs?: Record<string, unknown>;
     docMeta?: Record<string, unknown>;
     // Accepted as part of a club patch but no longer validated here — the
@@ -116,6 +133,19 @@ export function validateClubPatch(
     const bad = patch.leagues.filter((k) => !validLeagueKeys.has(k));
     if (bad.length) return `unknown league keys: ${bad.join(', ')}`;
   }
+  if (patch.leagueTeams) {
+    for (const [k, v] of Object.entries(patch.leagueTeams)) {
+      if (!Number.isInteger(v) || v < 1 || v > 30) {
+        return 'team counts must be whole numbers between 1 and 30';
+      }
+      // Reject orphaned keys: a leagueTeams key must be one of the leagues being entered
+      // (only checkable when leagues is also in the patch). Mirrors the doc-key allowlist —
+      // since updateClub PUTs the whole object, an orphaned count would persist forever.
+      if (patch.leagues && !patch.leagues.includes(k)) {
+        return 'leagueTeams has keys not in leagues';
+      }
+    }
+  }
   const docKeys = [...Object.keys(patch.docs ?? {}), ...Object.keys(patch.docMeta ?? {})];
   const badDocs = [...new Set(docKeys.filter((k) => !validDocKeys.has(k)))];
   if (badDocs.length) return `unknown document keys: ${badDocs.join(', ')}`;
@@ -131,6 +161,13 @@ export function validateClubPatch(
     if (chair.termStart && !isParseableDate(chair.termStart))
       return 'invalid chair term start date';
     if (chair.termEnd && !isParseableDate(chair.termEnd)) return 'invalid chair term end date';
+    // Validate the reason ONLY when supplied — never required (legacy clubs predate it).
+    if (
+      chair.reasonForInvolvement &&
+      !INVOLVEMENT_REASONS.has(String(chair.reasonForInvolvement))
+    ) {
+      return 'invalid chair reasonForInvolvement';
+    }
   }
 
   // Coach governance fields — only when supplied.

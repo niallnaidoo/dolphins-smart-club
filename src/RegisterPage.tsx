@@ -19,6 +19,7 @@ import {
 import {
   RACES,
   GENDERS,
+  NATIONALITIES,
   BOWLER_TYPES,
   BATTING_TYPES,
   HANDS,
@@ -30,7 +31,10 @@ import { leagueOptionsForDistrict } from './leagues';
 const EMPTY = {
   surname: '',
   firstNames: '',
+  idType: 'sa-id', // 'sa-id' (13-digit RSA ID, dob derived) | 'passport' (passport/visa + manual dob)
   idNumber: '',
+  dob: '', // only used when idType === 'passport'; SA IDs derive dob from the number
+  nationality: 'South African', // pre-filled default; editable, no empty option, so never blank
   race: '',
   gender: '',
   postalAddress: '',
@@ -102,8 +106,10 @@ export function RegisterPage() {
   // The team picker uses the same district-scoped helper as the portal; the registrant
   // picks their own district here, so the options follow that selection.
   const teamOptions = leagueOptionsForDistrict(leagues, d.district);
-  const dob = dobFromSaId(d.idNumber);
-  const idValid = /^\d{13}$/.test(d.idNumber);
+  const isPassport = d.idType === 'passport';
+  // SA citizens derive dob from the RSA ID; non-SA enter it directly (no oracle for a passport).
+  const dob = isPassport ? d.dob : dobFromSaId(d.idNumber);
+  const idValid = isPassport ? d.idNumber.trim().length > 0 : /^\d{13}$/.test(d.idNumber);
   const minor = isMinor(dob);
 
   const required = [
@@ -158,7 +164,10 @@ export function RegisterPage() {
       await submitRegistration(clubId, token, {
         firstName: d.firstNames.trim(),
         lastName: d.surname.trim(),
-        idNumber: d.idNumber,
+        idType: d.idType,
+        idNumber: d.idNumber.trim(),
+        dob: isPassport ? d.dob : undefined,
+        nationality: d.nationality,
         race: d.race,
         gender: d.gender,
         cell: d.phone,
@@ -257,26 +266,66 @@ export function RegisterPage() {
         <Section title="Player identity">
           <Field label="Surname" required value={d.surname} onChange={set('surname')} />
           <Field label="First name(s)" required value={d.firstNames} onChange={set('firstNames')} />
+          <Select
+            label="ID type"
+            required
+            value={d.idType}
+            onChange={(e) =>
+              // Switching ID type clears the number and the manual dob so a stale value
+              // from the other mode can't ride through (e.g. a 13-digit dob preview).
+              setD((f) => ({ ...f, idType: e.target.value, idNumber: '', dob: '' }))
+            }
+          >
+            <option value="sa-id">South African ID</option>
+            <option value="passport">Passport / Visa (non-SA citizen)</option>
+          </Select>
           <div>
-            <Field
-              label="ID number"
-              required
-              value={d.idNumber}
-              inputMode="numeric"
-              onChange={(e) => setVal('idNumber', e.target.value.replace(/\D/g, '').slice(0, 13))}
-              placeholder="13-digit RSA ID"
-            />
-            {d.idNumber && !idValid && (
+            {isPassport ? (
+              <Field
+                label="Passport / Visa number"
+                required
+                value={d.idNumber}
+                onChange={(e) => setVal('idNumber', e.target.value)}
+                placeholder="Passport or visa number"
+              />
+            ) : (
+              <Field
+                label="ID number"
+                required
+                value={d.idNumber}
+                inputMode="numeric"
+                onChange={(e) => setVal('idNumber', e.target.value.replace(/\D/g, '').slice(0, 13))}
+                placeholder="13-digit RSA ID"
+              />
+            )}
+            {!isPassport && d.idNumber && !idValid && (
               <div style={{ color: 'var(--danger-on-dark)', fontSize: 12, marginTop: 4 }}>
                 Must be exactly 13 digits.
               </div>
             )}
-            {dob && (
+            {!isPassport && dob && (
               <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', marginTop: 4 }}>
                 ✓ Date of birth: <strong>{dob}</strong>
               </div>
             )}
           </div>
+          {isPassport && (
+            <label style={{ display: 'block' }}>
+              <Label label="Date of birth" required />
+              <input
+                className="field-input"
+                type="date"
+                required
+                max={new Date().toISOString().slice(0, 10)}
+                value={d.dob}
+                onChange={(e) => setVal('dob', e.target.value)}
+                style={{ width: '100%', fontSize: 16 }}
+              />
+              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginTop: 4 }}>
+                Enter your date of birth as it appears on your passport/visa.
+              </span>
+            </label>
+          )}
           <Select label="Race" required value={d.race} onChange={set('race')} placeholder="Select">
             {RACES.map((r) => (
               <option key={r}>{r}</option>
@@ -291,6 +340,13 @@ export function RegisterPage() {
           >
             {GENDERS.map((g) => (
               <option key={g}>{g}</option>
+            ))}
+          </Select>
+          {/* No placeholder: the field carries a real default ('South African'), so it can never
+              be left blank — avoids a selectable empty option that would 400 on the server. */}
+          <Select label="Nationality" required value={d.nationality} onChange={set('nationality')}>
+            {NATIONALITIES.map((n) => (
+              <option key={n}>{n}</option>
             ))}
           </Select>
           <Field label="Phone" required type="tel" value={d.phone} onChange={set('phone')} />
@@ -398,7 +454,7 @@ export function RegisterPage() {
               <div style={{ fontSize: 13, color: '#fff' }}>
                 <strong>Tap to attach your ID document</strong>
                 <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12 }}>
-                  SA ID book photo or scan · JPG, PNG or PDF · max ~5MB
+                  SA ID / passport / visa photo or scan · JPG, PNG or PDF · max ~5MB
                 </div>
               </div>
             )}

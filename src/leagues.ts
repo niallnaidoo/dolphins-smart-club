@@ -64,15 +64,24 @@ export function findByKey(allLeagues: any[], key: string) {
 export const JUNIOR_GROUP = 'Juniors';
 
 /**
- * Senior/junior team counts derived from a club's selected league keys — each
- * league entered fields one side. Keys whose league was deleted from the
- * catalogue count as senior so the total always equals leagues entered.
+ * Senior/junior team counts derived from a club's selected league keys. A club may
+ * field more than one side in a league: `leagueTeams` maps a league key to its team
+ * count; a key absent from the map (or no map at all — legacy clubs) counts as 1, so
+ * the total always equals at least the number of leagues entered. Keys whose league
+ * was deleted from the catalogue count as senior.
  */
-export function teamCounts(leagueKeys: any[], allLeagues: any[]) {
+export function teamCounts(
+  leagueKeys: any[],
+  allLeagues: any[],
+  leagueTeams?: Record<string, number>,
+) {
   const keys = Array.isArray(leagueKeys) ? leagueKeys : [];
+  let senior = 0;
   let junior = 0;
   for (const k of keys) {
-    if (findByKey(allLeagues, k)?.group === JUNIOR_GROUP) junior++;
+    const n = Math.max(1, Number(leagueTeams?.[k]) || 1);
+    if (findByKey(allLeagues, k)?.group === JUNIOR_GROUP) junior += n;
+    else senior += n;
   }
-  return { senior: keys.length - junior, junior };
+  return { senior, junior };
 }

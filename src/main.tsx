@@ -1432,7 +1432,15 @@ function Shell({
             onInvite={inviteUser}
             toast={toastShow}
             allLeagues={allLeagues}
-            onSetLeagues={(keys) => updateClub({ leagues: keys }).catch(() => {})}
+            onSetLeagues={(keys) => {
+              // Prune leagueTeams to the new key set so changing a club's leagues here can't
+              // strand orphaned per-league counts (the server PUTs the whole object, and the
+              // validator only cross-checks orphans when leagueTeams rides in the same patch).
+              const prior = activeClub.leagueTeams || {};
+              const leagueTeams: Record<string, number> = {};
+              for (const k of keys) if (prior[k]) leagueTeams[k] = prior[k];
+              updateClub({ leagues: keys, leagueTeams }).catch(() => {});
+            }}
             onUpdateChair={({ name, email, cell }) =>
               updateClub({
                 chair: name,
@@ -1868,6 +1876,7 @@ function Shell({
                 coaches: payload.coaches,
                 ground: payload.ground,
                 leagues: payload.leagues,
+                leagueTeams: payload.leagueTeams,
               })
             }
             onSubmit={(payload) => {
@@ -1880,6 +1889,7 @@ function Shell({
                 coaches: payload.coaches || [],
                 ground: payload.ground || {},
                 leagues: payload.leagues || [],
+                leagueTeams: payload.leagueTeams || {},
                 docs: { ...activeClub.docs, exco: true },
               }).catch(() => {});
               gotoClubView('home');

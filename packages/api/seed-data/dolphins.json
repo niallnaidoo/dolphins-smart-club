@@ -859,6 +859,12 @@
       "district": "All districts"
     },
     {
+      "key": "promotion-women-s-league",
+      "label": "Promotion Women’s League",
+      "group": "Overarching Leagues",
+      "district": "All districts"
+    },
+    {
       "key": "veterans",
       "label": "Veterans League",
       "group": "Overarching Leagues",

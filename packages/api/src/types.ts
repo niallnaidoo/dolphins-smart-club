@@ -130,10 +130,13 @@ export interface Club {
     secondaryAddress?: string;
   };
   leagues: string[];
+  /** Teams entered per league key (a club may field >1 side in a league); absent ⇒ 1. */
+  leagueTeams?: Record<string, number>;
   /**
    * Office bearers. `exco.chair` carries the chair's contact plus governance
-   * fields `idNumber`, `termStart`, `termEnd` (ISO dates) captured on the
-   * affiliation form; other roles carry name/cell/email/gender/race.
+   * fields `idNumber`, `termStart`, `termEnd` (ISO dates) and `reasonForInvolvement`
+   * (one of INVOLVEMENT_REASONS) captured on the affiliation form; other roles carry
+   * name/cell/email/gender/race.
    */
   exco?: Record<string, unknown>;
   /**
@@ -263,8 +266,15 @@ export interface PlayerRegistration {
   // All optional: absent on legacy rows and on public-link self-registrations,
   // which collect only the minimal POPIA-consent set. The in-portal chair form
   // (POST /clubs/:id/players) populates them.
-  /** 13-digit RSA ID. `dob` is derived from it on the portal path. */
+  /**
+   * SA citizens: a 13-digit RSA ID, with `dob` derived from it server-side. Non-SA
+   * citizens: `idType: 'passport'` and a passport/visa number, with `dob` taken from
+   * the client (no oracle exists to derive it). `idType` defaults to 'sa-id'.
+   */
+  idType?: 'sa-id' | 'passport';
   idNumber?: string;
+  /** Player nationality (demonym); defaults to 'South African' for SA-ID registrants. */
+  nationality?: string;
   race?: string;
   gender?: string;
   postalAddress?: string;

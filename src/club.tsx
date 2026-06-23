@@ -42,6 +42,7 @@ import {
   dobFromSaId,
   ageFromSaId,
   termRemaining,
+  INVOLVEMENT_REASONS,
 } from './data';
 import { leagueOptionsForDistrict, findByKey, labelByKey, teamCounts } from './leagues';
 import { shortAddress, suburbOf, SA_BOUNDS, isInSouthAfrica } from './geocode';
@@ -447,9 +448,9 @@ export function ClubHome({
   const dc = docCompletion(club);
   const op = overallProgress(club);
   const band = cqiBand(club.cqi);
-  // Team counts derive from the leagues entered on the affiliation form
-  // (one side per league); club.teams/juniors are stale admin-era fields.
-  const tc = teamCounts(club.leagues, allLeagues);
+  // Team counts derive from the leagues entered on the affiliation form, summing the
+  // per-league team counts (a club may field >1 side); club.teams/juniors are stale.
+  const tc = teamCounts(club.leagues, allLeagues, club.leagueTeams);
   // "Submitted" is the form fact (affiliation === 'complete').
   const affDone = affiliationSubmitted(club);
 
@@ -920,6 +921,7 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
       chairIdNumber: chairGov.idNumber || '',
       chairTermStart: chairGov.termStart || '',
       chairTermEnd: chairGov.termEnd || '',
+      chairReason: chairGov.reasonForInvolvement || '',
       secName: seed('sec').name,
       secCell: seed('sec').cell,
       secEmail: seed('sec').email,
@@ -943,6 +945,16 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
         const opts = leagueOptionsForDistrict(allLeagues, club.district || DISTRICTS[0]);
         return opts.reduce((acc, L) => {
           acc[L.key] = prior ? prior.includes(L.key) : false;
+          return acc;
+        }, {});
+      })(),
+      // Teams entered per selected league (a club may field >1 side). Seeded from the
+      // stored map, defaulting any prior-selected league with no stored count to 1.
+      leagueTeams: (() => {
+        const prior = Array.isArray(club.leagues) ? club.leagues : [];
+        const stored = club.leagueTeams || {};
+        return prior.reduce((acc, k) => {
+          acc[k] = Math.max(1, Number(stored[k]) || 1);
           return acc;
         }, {});
       })(),
@@ -984,6 +996,7 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
         coaches: getCoachesPayload(),
         ground: getGroundPayload(),
         leagues: getLeaguesPayload(),
+        leagueTeams: getLeagueTeamsPayload(),
       }),
     )
       .then(() => toast('Draft saved'))
@@ -1036,7 +1049,18 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
     setData((d) => ({ ...d, [k]: v }));
   }
   function updateLeague(k) {
-    setData((d) => ({ ...d, leagues: { ...d.leagues, [k]: !d.leagues[k] } }));
+    setData((d) => {
+      const on = !d.leagues[k];
+      const leagueTeams = { ...d.leagueTeams };
+      if (on)
+        leagueTeams[k] = leagueTeams[k] || 1; // default a freshly-entered league to 1 side
+      else delete leagueTeams[k]; // drop the count when the league is de-selected
+      return { ...d, leagues: { ...d.leagues, [k]: on }, leagueTeams };
+    });
+  }
+  function updateLeagueTeams(k, n) {
+    const clamped = Math.min(30, Math.max(1, Number(n) | 0));
+    setData((d) => ({ ...d, leagueTeams: { ...d.leagueTeams, [k]: clamped } }));
   }
   // Changing district wipes prior league selections — the catalogue is district-specific
   // (Smart Club Integration V2) so cross-district keys would be invalid.
@@ -1052,7 +1076,9 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
         ...c,
         teams: c.teams.filter((t) => validKeys.has(t)),
       }));
-      return { ...d, district: newDistrict, leagues: freshLeagues, coaches };
+      // Wipe per-league team counts too — cross-district keys are invalid, so stale
+      // counts would otherwise persist as orphaned keys the server now rejects.
+      return { ...d, district: newDistrict, leagues: freshLeagues, leagueTeams: {}, coaches };
     });
   }
 
@@ -1096,6 +1122,7 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
         idNumber: data.chairIdNumber.trim(),
         termStart: data.chairTermStart,
         termEnd: data.chairTermEnd,
+        reasonForInvolvement: data.chairReason,
       },
       sec: pick('sec'),
       tre: pick('tre'),
@@ -1110,6 +1137,14 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
     return Object.entries(data.leagues)
       .filter(([_, v]) => v)
       .map(([k]) => k);
+  }
+  // Team counts for SELECTED leagues only (keys must stay a subset of getLeaguesPayload()
+  // — the server rejects orphaned leagueTeams keys). Each defaults to 1.
+  function getLeagueTeamsPayload() {
+    return getLeaguesPayload().reduce((acc, k) => {
+      acc[k] = Math.min(30, Math.max(1, Number(data.leagueTeams[k]) || 1));
+      return acc;
+    }, {});
   }
 
   // Step-1 Continue gate. Also requires a home-ground venue + address: an
@@ -1592,6 +1627,26 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
                         </div>
                       </div>
                     )}
+                    {role.prefix === 'chair' && (
+                      <div className="field" style={{ marginTop: 8, marginBottom: 0 }}>
+                        <div className="field-label">
+                          Why are you involved in club cricket?
+                          <span style={{ color: 'var(--coral)', marginLeft: 4 }}>*</span>
+                        </div>
+                        <select
+                          className="field-select"
+                          value={data.chairReason || ''}
+                          onChange={(e) => update('chairReason', e.target.value)}
+                        >
+                          <option value="">Select…</option>
+                          {INVOLVEMENT_REASONS.map((r) => (
+                            <option key={r} value={r}>
+                              {r}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   </div>
                 ))}
 
@@ -1784,34 +1839,84 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
                             }}
                           >
                             {opts.map((L) => (
-                              <button
+                              // The Teams input is a SIBLING of the toggle button (an <input>
+                              // inside a <button> is invalid HTML and its clicks would toggle
+                              // the league); a flex row keeps them side by side.
+                              <div
                                 key={L.key}
-                                className={`check-item ${data.leagues[L.key] ? 'on' : ''}`}
-                                onClick={() => updateLeague(L.key)}
-                                style={{
-                                  flexDirection: 'column',
-                                  alignItems: 'flex-start',
-                                  gap: 4,
-                                }}
+                                style={{ display: 'flex', alignItems: 'stretch', gap: 6 }}
                               >
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                  <div className="box">{data.leagues[L.key] && <Icon.Check />}</div>
-                                  <span>{L.label}</span>
-                                </div>
-                                {L.note && (
+                                <button
+                                  className={`check-item ${data.leagues[L.key] ? 'on' : ''}`}
+                                  onClick={() => updateLeague(L.key)}
+                                  style={{
+                                    flex: 1,
+                                    flexDirection: 'column',
+                                    alignItems: 'flex-start',
+                                    gap: 4,
+                                  }}
+                                >
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                    <div className="box">
+                                      {data.leagues[L.key] && <Icon.Check />}
+                                    </div>
+                                    <span>{L.label}</span>
+                                  </div>
+                                  {L.note && (
+                                    <div
+                                      style={{
+                                        fontSize: 10.5,
+                                        color: 'var(--muted)',
+                                        marginLeft: 30,
+                                        fontWeight: 500,
+                                        fontStyle: 'italic',
+                                      }}
+                                    >
+                                      {L.note}
+                                    </div>
+                                  )}
+                                </button>
+                                {data.leagues[L.key] && (
                                   <div
                                     style={{
-                                      fontSize: 10.5,
-                                      color: 'var(--muted)',
-                                      marginLeft: 30,
-                                      fontWeight: 500,
-                                      fontStyle: 'italic',
+                                      display: 'flex',
+                                      flexDirection: 'column',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      gap: 2,
+                                      minWidth: 56,
                                     }}
+                                    title="Number of teams your club enters in this league"
                                   >
-                                    {L.note}
+                                    <input
+                                      className="field-input"
+                                      type="number"
+                                      min={1}
+                                      max={30}
+                                      value={data.leagueTeams[L.key] || 1}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onKeyDown={(e) => e.stopPropagation()}
+                                      onChange={(e) => updateLeagueTeams(L.key, e.target.value)}
+                                      style={{
+                                        width: 52,
+                                        textAlign: 'center',
+                                        padding: '6px 4px',
+                                      }}
+                                    />
+                                    <span
+                                      style={{
+                                        fontSize: 9.5,
+                                        color: 'var(--muted-2)',
+                                        textTransform: 'uppercase',
+                                        letterSpacing: '0.08em',
+                                        fontFamily: "'Montserrat',sans-serif",
+                                      }}
+                                    >
+                                      Teams
+                                    </span>
                                   </div>
                                 )}
-                              </button>
+                              </div>
                             ))}
                           </div>
                         </div>
@@ -2269,6 +2374,14 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
                         setStep(2);
                         return;
                       }
+                      // Chair "reason for involvement" is required for NEW affiliations only —
+                      // legacy clubs (already complete) predate the field and must stay able to
+                      // submit corrections without it (the server never requires it either).
+                      if (!submitted && !data.chairReason) {
+                        toast('Select why the chairperson is involved in club cricket', 'warn');
+                        setStep(2);
+                        return;
+                      }
                       const badCoach = getCoachesPayload().find(
                         (c) => c.idNumber && !dobFromSaId(String(c.idNumber).trim()),
                       );
@@ -2283,6 +2396,7 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
                         coaches: getCoachesPayload(),
                         ground: getGroundPayload(),
                         leagues: getLeaguesPayload(),
+                        leagueTeams: getLeagueTeamsPayload(),
                       });
                       if (submitted) {
                         setEditing(false);
@@ -4261,7 +4375,7 @@ export function ClubPlayersView({ club, players, clearances, leagues, onGenerate
                       {p.firstName} {p.lastName}
                     </div>
                     <div className="rost-sub">
-                      {p.district || '—'} · {p.gender || '—'}
+                      {p.district || '—'} · {p.gender || '—'} · {p.nationality || '—'}
                     </div>
                   </td>
                   <td>
@@ -4334,7 +4448,9 @@ export function RequestPlayerForm({ club, directory, onSubmit, onCancel, busy })
   const [idNumber, setIdNumber] = useStateC('');
   const [note, setNote] = useStateC('');
   const others = (directory ?? []).filter((c) => c.id !== club.id);
-  const canSubmit = fromClubId && /^\d{13}$/.test(idNumber) && !busy;
+  // Accept any non-empty ID: SA players use a 13-digit RSA ID, non-SA players a
+  // passport/visa string. The server matches case/whitespace-insensitively.
+  const canSubmit = fromClubId && idNumber.trim().length > 0 && !busy;
 
   return (
     <div className="rp-form">
@@ -4372,8 +4488,8 @@ export function RequestPlayerForm({ club, directory, onSubmit, onCancel, busy })
             <input
               className="field-input"
               value={idNumber}
-              onChange={(e) => setIdNumber(e.target.value.replace(/\D/g, '').slice(0, 13))}
-              placeholder="13-digit RSA ID"
+              onChange={(e) => setIdNumber(e.target.value)}
+              placeholder="RSA ID or passport / visa number"
               style={{ fontVariantNumeric: 'tabular-nums' }}
             />
           </div>
