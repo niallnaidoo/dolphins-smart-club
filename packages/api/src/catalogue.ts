@@ -90,6 +90,7 @@ function isParseableDate(v: unknown): boolean {
  */
 export function validateClubPatch(
   patch: {
+    name?: string;
     district?: string;
     leagues?: string[];
     docs?: Record<string, unknown>;
@@ -103,6 +104,11 @@ export function validateClubPatch(
   validLeagueKeys: Set<string>,
   validDocKeys: Set<string>,
 ): string | null {
+  if (patch.name !== undefined) {
+    const n = patch.name.trim();
+    if (!n) return 'club name cannot be empty';
+    if (n.length > 80) return 'club name must be 80 characters or fewer';
+  }
   if (patch.district && !VALID_DISTRICTS.has(patch.district)) {
     return `unknown district: ${patch.district}`;
   }

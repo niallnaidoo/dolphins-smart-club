@@ -146,6 +146,13 @@ export interface Club {
    * cleared by an admin re-confirming. The form is no longer hard-locked.
    */
   amendmentPending?: boolean;
+  /**
+   * Set when a rep renames the club (the change applies immediately but is flagged
+   * for admin review); cleared by an admin acknowledging. Admin renames never set it.
+   */
+  nameChangePending?: boolean;
+  /** The club name prior to a flagged rep rename — drives the admin "Renamed from …" pill. */
+  previousName?: string;
   /** Admin communication-log notes, appended newest-last via list_append. */
   notes?: { id: string; text: string; author: string; at: string }[];
   /** Real onboarding-invite send events (email/WhatsApp), appended via list_append. */

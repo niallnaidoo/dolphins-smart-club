@@ -51,6 +51,7 @@ import { EMAIL_RE } from './api';
 import { parseSupport } from './support';
 import { DocPreviewModal } from './DocPreviewModal';
 import { RegLinkModal } from './RegLinkModal';
+import { ClubNameModal } from './ClubNameModal';
 import {
   Icon,
   Pill,
@@ -1961,6 +1962,9 @@ export function AdminDashboard({
   onUpdateSupport,
 }) {
   const stats = cohortStats(clubs);
+  // Clubs a rep has renamed but no admin has acknowledged yet — surfaced as a worklist
+  // tile so the flag is visible without opening each club.
+  const renamedCount = clubs.filter((c) => c.nameChangePending).length;
   const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
   const notify = (m) => (toast ? toast(m, 'warn') : null);
   const [showEditDeadline, setShowEditDeadline] = useStateA(false);
@@ -2141,6 +2145,9 @@ export function AdminDashboard({
           num={<CountUp to={stats.avgCqi} decimals={1} />}
           sub="raw score · cohort avg"
         />
+        {renamedCount > 0 && (
+          <KPI tone="gold" label="Renamed" num={<CountUp to={renamedCount} />} sub="needs review" />
+        )}
       </div>
 
       {/* Phase roll-up */}
@@ -2922,7 +2929,19 @@ export function AdminClubsList({
                   return (
                     <tr key={c.id} className="clickable" onClick={() => gotoClub(c.id)}>
                       <td>
-                        <ClubNameCell club={c} />
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <ClubNameCell club={c} />
+                          {c.nameChangePending && (
+                            <span
+                              style={{ whiteSpace: 'nowrap' }}
+                              title={`Renamed from “${c.previousName || '—'}” — needs review`}
+                            >
+                              <Pill tone="gold" dot>
+                                Renamed
+                              </Pill>
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td>
                         <div style={{ fontSize: 12.5 }}>{c.chair}</div>
@@ -3762,6 +3781,8 @@ export function AdminClubDetail({
   onRevertDoc,
   onAddNote,
   onUpdateChair,
+  onRenameClub,
+  onAcknowledgeRename,
   onDeleteClub,
   onReconfirmAffiliation,
   allSeries = [],
@@ -3774,6 +3795,7 @@ export function AdminClubDetail({
   const [showDocPreview, setShowDocPreview] = useStateA(null);
   const [showCompliant, setShowCompliant] = useStateA(false);
   const [showChairEdit, setShowChairEdit] = useStateA(false);
+  const [showNameEdit, setShowNameEdit] = useStateA(false);
   const [showRemove, setShowRemove] = useStateA(false);
   const [noteText, setNoteText] = useStateA('');
   const [noteBusy, setNoteBusy] = useStateA(false);
@@ -3894,10 +3916,30 @@ export function AdminClubDetail({
               >
                 {club.district} · {club.sub} · {club.chair}
               </div>
+              {club.nameChangePending && (
+                <div style={{ marginTop: 6 }}>
+                  <Pill tone="gold" dot>
+                    Renamed by club from “{club.previousName || '—'}”
+                  </Pill>
+                </div>
+              )}
             </div>
           </div>
         </div>
         <div className="ph-actions">
+          {club.nameChangePending && onAcknowledgeRename && (
+            <Btn
+              tone="teal"
+              icon={Icon.Check}
+              size="sm"
+              onClick={async () => {
+                await onAcknowledgeRename();
+                toast && toast('Rename acknowledged');
+              }}
+            >
+              Acknowledge rename
+            </Btn>
+          )}
           {club.amendmentPending && onReconfirmAffiliation && (
             <Btn
               tone="teal"
@@ -3911,6 +3953,9 @@ export function AdminClubDetail({
               Re-confirm affiliation
             </Btn>
           )}
+          <Btn tone="outline" icon={Icon.Form} size="sm" onClick={() => setShowNameEdit(true)}>
+            Edit name
+          </Btn>
           <Btn tone="outline" icon={Icon.Form} size="sm" onClick={() => setShowChairEdit(true)}>
             Edit chairperson
           </Btn>
@@ -4244,7 +4289,10 @@ export function AdminClubDetail({
                       key={cat.key}
                       className="score-card"
                       style={
-                        { '--fill': (score / cat.weight) * 100 + '%', '--accent': cat.accent } as CSSProperties
+                        {
+                          '--fill': (score / cat.weight) * 100 + '%',
+                          '--accent': cat.accent,
+                        } as CSSProperties
                       }
                     >
                       <div>
@@ -4548,6 +4596,16 @@ export function AdminClubDetail({
             onMarkCompliant && onMarkCompliant();
           }}
           onClose={() => setShowCompliant(false)}
+        />
+      )}
+      {showNameEdit && (
+        <ClubNameModal
+          club={club}
+          toast={toast}
+          onClose={() => setShowNameEdit(false)}
+          onSave={(name) =>
+            Promise.resolve(onRenameClub?.(name)).then(() => setShowNameEdit(false))
+          }
         />
       )}
       {showChairEdit && (

@@ -1445,6 +1445,8 @@ function Shell({
               })
             }
             onAddNote={addNote}
+            onRenameClub={(name) => updateClub({ name })}
+            onAcknowledgeRename={() => updateClub({ nameChangePending: false, previousName: '' })}
             onDeleteClub={deleteClub}
             onReconfirmAffiliation={() => updateClub({ amendmentPending: false })}
             allSeries={allSeries}
@@ -1562,6 +1564,7 @@ function Shell({
             replayOnboarding={() => setShowOnboarding(true)}
             submissionDeadline={submissionDeadline}
             allLeagues={allLeagues}
+            onRenameClub={(name) => updateClub({ name })}
           />
         );
       if (view === 'cqi')

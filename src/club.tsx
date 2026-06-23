@@ -65,6 +65,7 @@ import {
 import { getDocUploadUrl, uploadToPresigned } from './api';
 import { DocPreviewModal } from './DocPreviewModal';
 import { RegLinkModal } from './RegLinkModal';
+import { ClubNameModal } from './ClubNameModal';
 
 /* ─── Compliance doc upload — presigned S3 PUT, then mark uploaded ─── */
 interface DocUploadButtonProps {
@@ -431,7 +432,9 @@ export function ClubHome({
   replayOnboarding,
   submissionDeadline,
   allLeagues = [],
+  onRenameClub,
 }) {
+  const [showNameEdit, setShowNameEdit] = useStateC(false);
   const deadlineLong = formatDeadlineLong(submissionDeadline);
   const deadlineShort = formatDeadlineShort(submissionDeadline);
   const daysLeft = daysUntil(submissionDeadline);
@@ -503,7 +506,51 @@ export function ClubHome({
 
       <div className="page-head">
         <div className="ph-left">
-          <div className="ph-crumb">Club Portal · {club.name}</div>
+          <div className="ph-crumb" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span>Club Portal · {club.name}</span>
+            {onRenameClub && (
+              <button
+                type="button"
+                onClick={() => setShowNameEdit(true)}
+                title="Rename club"
+                aria-label="Rename club"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--muted)',
+                  cursor: 'pointer',
+                  padding: 2,
+                  lineHeight: 0,
+                }}
+              >
+                <Icon.Form />
+              </button>
+            )}
+            {club.nameChangePending && (
+              <span
+                title={`Renamed from “${club.previousName || '—'}” — awaiting league office review`}
+              >
+                <Pill tone="gold" dot>
+                  Rename pending review
+                </Pill>
+              </span>
+            )}
+          </div>
+          {showNameEdit && (
+            <ClubNameModal
+              club={club}
+              toast={toast}
+              successToast={(name) =>
+                `Club name updated to “${name}” · your league office has been notified`
+              }
+              onClose={() => setShowNameEdit(false)}
+              onSave={(name) =>
+                Promise.resolve(onRenameClub(name)).then(() => setShowNameEdit(false))
+              }
+            />
+          )}
           <h1 className="ph-title">
             {greeting()}, <em>{club.chair.split(' ')[0]}</em>
           </h1>
@@ -3514,7 +3561,10 @@ export function CQIView({ club, goto, toast, onSubmit, submissionDeadline, allLe
               key={cat.key}
               className="score-card"
               style={
-                { '--fill': (s.earned / s.possible) * 100 + '%', '--accent': cat.accent } as CSSProperties
+                {
+                  '--fill': (s.earned / s.possible) * 100 + '%',
+                  '--accent': cat.accent,
+                } as CSSProperties
               }
             >
               <div>

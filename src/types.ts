@@ -115,6 +115,10 @@ export interface Club {
   /** Coaches by league; entries carry idNumber/yearStarted/yearsExperience. */
   coaches?: unknown[];
   amendmentPending?: boolean;
+  /** Set when a rep renames the club (change applies live, flagged for admin review). */
+  nameChangePending?: boolean;
+  /** Name prior to a flagged rep rename — drives the admin "Renamed from …" pill. */
+  previousName?: string;
   notes?: ClubNote[];
   commLog?: ClubCommEvent[];
   remindersOptIn?: boolean;

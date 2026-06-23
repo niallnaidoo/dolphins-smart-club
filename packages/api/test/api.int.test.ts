@@ -308,6 +308,170 @@ describe('PATCH /clubs/:id — chair contact (repair existing clubs)', () => {
   });
 });
 
+describe('PATCH /clubs/:id — rename + flag', () => {
+  type Renamable = {
+    name?: string;
+    nameChangePending?: boolean;
+    previousName?: string;
+    notes?: { text: string; author: string }[];
+  };
+
+  const mkClub = (id: string, name: string) => ({
+    id,
+    name,
+    district: 'Test District',
+    sub: '',
+    chair: 'Carlton',
+    affiliation: 'not_started' as const,
+    cqi: 0,
+    docs: {},
+    players: 0,
+    teams: 0,
+    women: 0,
+    juniors: 0,
+    color: '#123456',
+    ground: {},
+    leagues: [],
+    version: 1,
+  });
+
+  test('a rep rename applies live, is flagged, and appends an audit note', async () => {
+    // A rep bound to its OWN dedicated club ('repren') — isolated from the shared 'testers'.
+    const REP_OWN = devAuth([{ tenantId: 'dolphins', role: 'rep', clubIds: ['repren'] }]);
+    await repo.createClub('dolphins', mkClub('repren', 'Rep Ren CC'));
+    const res = await app.request('/clubs/repren', {
+      method: 'PATCH',
+      headers: headers(REP_OWN),
+      body: JSON.stringify({ name: 'Rep Renamed CC', version: 1 }),
+    });
+    assert.equal(res.status, 200);
+    const club = (await res.json()) as Renamable;
+    assert.equal(club.name, 'Rep Renamed CC');
+    assert.equal(club.nameChangePending, true);
+    assert.equal(club.previousName, 'Rep Ren CC');
+    assert.ok(
+      club.notes?.some((n) => n.text.includes('Rep Ren CC') && n.text.includes('Rep Renamed CC')),
+      'expected an audit note recording the rename',
+    );
+  });
+
+  test('a rep cannot forge or self-dismiss the flag — server forces the real values', async () => {
+    const REP_OWN = devAuth([{ tenantId: 'dolphins', role: 'rep', clubIds: ['forgeren'] }]);
+    await repo.createClub('dolphins', mkClub('forgeren', 'Forge Ren CC'));
+    // The rep tries to rename AND sneak nameChangePending:false / a fake previousName.
+    const res = await app.request('/clubs/forgeren', {
+      method: 'PATCH',
+      headers: headers(REP_OWN),
+      body: JSON.stringify({
+        name: 'Forge Renamed CC',
+        nameChangePending: false,
+        previousName: 'a fake history',
+        version: 1,
+      }),
+    });
+    assert.equal(res.status, 200);
+    const club = (await res.json()) as Renamable;
+    // Server overrides the forged values: flag is forced true, previousName is the real one.
+    assert.equal(club.nameChangePending, true);
+    assert.equal(club.previousName, 'Forge Ren CC');
+  });
+
+  test('an admin rename applies without a flag but still records an audit note', async () => {
+    await repo.createClub('dolphins', mkClub('adminren', 'Admin Ren CC'));
+    const res = await app.request('/clubs/adminren', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ name: 'Admin Renamed CC', version: 1 }),
+    });
+    assert.equal(res.status, 200);
+    const club = (await res.json()) as Renamable;
+    assert.equal(club.name, 'Admin Renamed CC');
+    assert.ok(!club.nameChangePending, 'admin rename must not raise the review flag');
+    assert.ok(
+      club.notes?.some((n) => n.text.includes('Admin Renamed CC')),
+      'expected an audit note even for an admin rename',
+    );
+  });
+
+  test('an admin can acknowledge a pending rename (clears the flag)', async () => {
+    await repo.createClub(
+      'dolphins',
+      Object.assign(mkClub('ackren', 'Ack Ren CC'), {
+        nameChangePending: true,
+        previousName: 'Old Ack CC',
+      }),
+    );
+    const res = await app.request('/clubs/ackren', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ nameChangePending: false, previousName: '', version: 1 }),
+    });
+    assert.equal(res.status, 200);
+    const club = (await res.json()) as Renamable;
+    assert.equal(club.nameChangePending, false);
+  });
+
+  test('renaming to an existing club name is rejected (400)', async () => {
+    await repo.createClub('dolphins', mkClub('alphacc', 'Alpha CC'));
+    await repo.createClub('dolphins', mkClub('betacc', 'Beta CC'));
+    const res = await app.request('/clubs/betacc', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ name: 'Alpha CC', version: 1 }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('a rename that collides on slug (not name) is rejected (400)', async () => {
+    // "Gamma CC" and "Gamma-CC" differ as names but both slug to 'gamma-cc' — the id
+    // collision the check exists to catch (mirrors the signup guard at index.ts ~546).
+    await repo.createClub('dolphins', mkClub('gamma-cc', 'Gamma CC'));
+    await repo.createClub('dolphins', mkClub('deltacc', 'Delta CC'));
+    const res = await app.request('/clubs/deltacc', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ name: 'Gamma-CC', version: 1 }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('a name with no alphanumerics (slugs to empty) is rejected (400)', async () => {
+    await repo.createClub('dolphins', mkClub('punctren', 'Punct Ren CC'));
+    const res = await app.request('/clubs/punctren', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ name: '!!!', version: 1 }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('a no-op rename (same name) does not flag or append a note', async () => {
+    await repo.createClub('dolphins', mkClub('noopren', 'No-op Ren CC'));
+    const res = await app.request('/clubs/noopren', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ name: 'No-op Ren CC', version: 1 }),
+    });
+    assert.equal(res.status, 200);
+    const club = (await res.json()) as Renamable & { version?: number };
+    assert.ok(!club.nameChangePending, 'a no-op rename must not raise the flag');
+    assert.ok(
+      !club.notes?.some((n) => n.text.includes('Renamed')),
+      'a no-op rename must not append an audit note',
+    );
+  });
+
+  test('an empty/whitespace name is rejected (400)', async () => {
+    await repo.createClub('dolphins', mkClub('blankren', 'Blank Ren CC'));
+    const res = await app.request('/clubs/blankren', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ name: '   ', version: 1 }),
+    });
+    assert.equal(res.status, 400);
+  });
+});
+
 describe('PATCH /clubs/:id — chair onboarding on affiliation complete', () => {
   // FROM_EMAIL / WHATSAPP_* unset ⇒ notify/ runs dry-run (synthetic ids, no real sends).
   // STAGE='local' ⇒ the localhost link fallback is allowed (deliverableBaseUrl).

@@ -774,16 +774,51 @@ app.patch('/clubs/:id', async (c) => {
   const patch = await c.req.json<Partial<Club>>();
   const current = await repo.getClub(ra.tenant, id);
   if (!current) throw new HttpError(404, 'club not found');
+  // Rename handling: normalise, drop no-ops, and enforce the SAME name/slug uniqueness
+  // the signup path guards — two clubs must never share a display name or collide on id
+  // (length/emptiness is checked later by validateClubPatch). Applies to admin and rep.
+  let renamed = false;
+  if (patch.name !== undefined) {
+    patch.name = patch.name.trim();
+    if (patch.name === current.name) {
+      delete patch.name; // no-op rename — don't flag, note, or write a spurious change
+    } else {
+      renamed = true;
+    }
+  }
+  if (renamed) {
+    const slug = clubIdFromName(patch.name!);
+    // A name with no alphanumerics slugs to '' — reject it as signup does (index.ts ~540);
+    // an empty slug is meaningless and would seed an empty-slug collision magnet.
+    if (!slug) throw new HttpError(400, 'club name must contain letters or numbers');
+    const nameKey = patch.name!.toLowerCase();
+    const clash = (await repo.listClubs(ra.tenant)).find(
+      (cl) => cl.id !== id && (cl.id === slug || cl.name.trim().toLowerCase() === nameKey),
+    );
+    if (clash) throw new HttpError(400, 'a club with this name already exists');
+  }
   // The affiliation form is no longer hard-locked. A rep may correct an already-
   // submitted form, but any such edit re-flags the club for admin re-confirmation.
   // Only an admin may write `amendmentPending` (the re-confirm action sets it false);
   // a rep's own value is dropped first so it can't self-dismiss the flag with a bare
-  // patch, then forced true when the rep actually touches affiliation fields.
+  // patch, then forced true when the rep actually touches affiliation fields. The
+  // rename flag (`nameChangePending`/`previousName`) follows the same shape: a rep
+  // rename applies live but is flagged for review; an admin rename is authoritative
+  // and clears any pending flag it supersedes.
   if (ra.membership.role !== 'admin') {
     delete patch.amendmentPending;
+    delete patch.nameChangePending;
+    delete patch.previousName;
     if (current.affiliation === 'complete' && affiliationFieldsTouched(patch)) {
       patch.amendmentPending = true;
     }
+    if (renamed) {
+      patch.nameChangePending = true;
+      patch.previousName = current.name;
+    }
+  } else if (renamed) {
+    patch.nameChangePending = false;
+    patch.previousName = '';
   }
   // Valid league keys = the tenant's catalogue plus keys already on the club (so an
   // admin can still remove a league that was later deleted from the catalogue).
@@ -857,6 +892,22 @@ app.patch('/clubs/:id', async (c) => {
   const becameComplete = current.affiliation !== 'complete' && patch.affiliation === 'complete';
   if (becameComplete) {
     updated = await mintAndDeliverOnboarding(c, ra.tenant, ra.email, updated);
+  }
+  if (renamed) {
+    // Durable audit of every rename (admin or rep) — survives multi-hop renames the
+    // single `previousName` field can't. Genuinely best-effort: the rename is already
+    // committed, so a note-append failure must not fail the request (mirrors the
+    // onboarding comm-event append at ~1016) — log and return the renamed club as-is.
+    try {
+      updated = await repo.appendClubNote(ra.tenant, id, {
+        id: randomUUID(),
+        text: `Renamed "${current.name}" → "${updated.name}"`,
+        author: ra.email,
+        at: now(),
+      });
+    } catch (noteErr) {
+      console.error('rename audit-note append failed (rename still applied)', noteErr);
+    }
   }
   return c.json(withPlayerCount(updated));
 });
