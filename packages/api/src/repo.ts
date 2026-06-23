@@ -564,15 +564,16 @@ async function listClubInviteKeys(
 // ── Series ──
 
 export async function listSeries(tenant: string): Promise<Series[]> {
-  const res = await ddb.send(
-    new QueryCommand({
-      TableName: TABLE,
-      IndexName: 'gsi1',
-      KeyConditionExpression: 'gsi1pk = :p',
-      ExpressionAttributeValues: { ':p': seriesListGsi1pk(tenant) },
-    }),
-  );
-  return (res.Items ?? []).map((i) => stripKeys<Series>(i)!);
+  // Paginate: each series embeds its fixtures array, so a tenant's series can exceed a single
+  // 1 MB Query page. A truncated list would silently strand dead-club references in the club-
+  // removal sweep (eraseClubData), so page through every result.
+  const items = await queryAll({
+    TableName: TABLE,
+    IndexName: 'gsi1',
+    KeyConditionExpression: 'gsi1pk = :p',
+    ExpressionAttributeValues: { ':p': seriesListGsi1pk(tenant) },
+  });
+  return items.map((i) => stripKeys<Series>(i)!);
 }
 
 export async function getSeries(tenant: string, seriesId: string): Promise<Series | null> {
@@ -636,6 +637,31 @@ export async function updateSeries(
 
 export async function deleteSeries(tenant: string, seriesId: string): Promise<void> {
   await ddb.send(new DeleteCommand({ TableName: TABLE, Key: seriesKey(tenant, seriesId) }));
+}
+
+/**
+ * Strip a removed club from ONE draft series (used by eraseClubData). Re-reads the series so a
+ * retry after a version conflict recomputes against the latest state (never clobbering a
+ * concurrent edit). Removes the club from teams[] and drops any fixture that references it as
+ * home/away, then re-opens the approval gate — same rule PATCH /series applies to a fixture edit.
+ * No-op (returns false) if the series was already released or already cleaned by the time we read.
+ * Released series are intentionally left alone elsewhere; this asserts it again defensively.
+ * Stripping is keyed on the `home`/`away` fields only — if the fixture shape ever carries club
+ * references elsewhere (e.g. a nested team pair), this filter would not catch them.
+ */
+async function stripClubFromDraftSeries(
+  tenant: string,
+  seriesId: string,
+  clubId: string,
+): Promise<boolean> {
+  const cur = await getSeries(tenant, seriesId);
+  if (!cur || cur.released === true || !cur.teams.includes(clubId)) return false;
+  const teams = cur.teams.filter((t) => t !== clubId);
+  const fixtures = (cur.fixtures as Array<{ home?: string; away?: string } | null>).filter(
+    (f) => !f || (f.home !== clubId && f.away !== clubId),
+  );
+  await updateSeries(tenant, seriesId, { teams, fixtures, approved: false, approvedAt: null });
+  return true;
 }
 
 // ── Player registrations ──
@@ -1722,7 +1748,7 @@ export async function clearCohort(tenant: string): Promise<number> {
 export async function eraseClubData(
   tenant: string,
   club: Club,
-): Promise<{ players: number; clearances: number }> {
+): Promise<{ players: number; clearances: number; series: number; seriesFailed: number }> {
   // Revoke the reg-link token FIRST so the public registration route dies before the
   // cascade runs (same order eraseTenantData uses for the club-signup token).
   if (club.playerRegLink?.token) await deleteToken(club.playerRegLink.token);
@@ -1785,8 +1811,42 @@ export async function eraseClubData(
   // PII unreachably. deleteUploadObjects never throws and S3 deletes are
   // idempotent, so running it first changes nothing else.
   await deleteUploadObjects(objectKeys);
+
+  // Sweep DRAFT (unreleased) series so a deleted club doesn't linger in teams[]/fixtures.
+  // Released series are left intact (they keep showing "Removed club" — preserves published
+  // history). Best-effort and non-fatal: a single bad/contended series must not block the club
+  // erasure. Runs BEFORE the META delete so a re-delete (club still 200s) retries any series left
+  // behind — stripClubFromDraftSeries is a no-op once a series is already clean.
+  let series = 0;
+  let seriesFailed = 0;
+  for (const s of await listSeries(tenant)) {
+    if (s.released === true || !s.teams.includes(club.id)) continue;
+    try {
+      if (await stripClubFromDraftSeries(tenant, s.id, club.id)) series++;
+    } catch (err: unknown) {
+      // One retry for an optimistic-lock race (a concurrent series edit); recomputed from a fresh
+      // read inside the helper. A persistent failure leaves THIS series with the dead club —
+      // logged and counted, not thrown, so the club deletion still completes.
+      if (err instanceof VersionConflictError) {
+        try {
+          if (await stripClubFromDraftSeries(tenant, s.id, club.id)) series++;
+          continue;
+        } catch {
+          /* fall through to the failure path */
+        }
+      }
+      seriesFailed++;
+      console.error(`eraseClubData: failed to strip club ${club.id} from series ${s.id}`, err);
+    }
+  }
+
   // META last, and only after everything else succeeded (see doc): the META item is
   // the re-deletability anchor — while it exists, the delete can always be retried.
   await ddb.send(new DeleteCommand({ TableName: TABLE, Key: clubKey(tenant, club.id) }));
-  return { players: players.length, clearances: outgoing.length + inbound.length };
+  return {
+    players: players.length,
+    clearances: outgoing.length + inbound.length,
+    series,
+    seriesFailed,
+  };
 }

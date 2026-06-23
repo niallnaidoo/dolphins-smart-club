@@ -2979,7 +2979,7 @@ describe('DELETE /clubs/:id (admin club deletion)', () => {
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), {
       ok: true,
-      removed: { players: 2, clearances: 2, users: 2 },
+      removed: { players: 2, clearances: 2, users: 2, series: 0, seriesFailed: 0 },
     });
 
     // Club + players gone; the route 404s like it never existed.
@@ -3087,13 +3087,163 @@ describe('DELETE /clubs/:id (admin club deletion)', () => {
     assert.equal(del2.status, 200);
     assert.deepEqual(await del2.json(), {
       ok: true,
-      removed: { players: 0, clearances: 0, users: 1 },
+      removed: { players: 0, clearances: 0, users: 1, series: 0, seriesFailed: 0 },
     });
 
     // Sole club gone → the self-provisioned rep is fully offboarded, marker and all.
     assert.equal(await repo.getUser(repSub), null, 'self-signup rep fully offboarded');
     assert.ok(!(await repo.listTenantUsers(T)).some((u) => u.sub === repSub), 'rep marker swept');
     assert.equal(await repo.getClub(T, clubId), null);
+  });
+});
+
+describe('DELETE /clubs/:id — draft series cascade', () => {
+  // Own tenant so the series sweep can't disturb other suites.
+  const T = 'delseries';
+  const headers = (auth: string) => ({
+    'x-tenant': T,
+    'x-dev-auth': auth,
+    'content-type': 'application/json',
+  });
+  const ADMIN = devAuthAs('caller-ds-admin', 'ds-admin@ds.test', [
+    { tenantId: T, role: 'admin', clubIds: [] },
+  ]);
+  const del = (id: string) =>
+    app.request(`/clubs/${id}`, { method: 'DELETE', headers: headers(ADMIN) });
+
+  const mkClub = (id: string, name: string) => ({
+    id,
+    name,
+    district: 'Test District',
+    sub: 's',
+    chair: 'Chair',
+    affiliation: 'not_started' as const,
+    cqi: 0,
+    docs: {},
+    players: 0,
+    teams: 0,
+    women: 0,
+    juniors: 0,
+    color: '#abcdef',
+    ground: {},
+    leagues: [],
+    version: 1,
+  });
+
+  before(async () => {
+    await repo.putTenantConfig({
+      tenant: T,
+      branding: { name: 'Series Union', title: 'Ser', logoUrl: '', colors: {}, copy: {} },
+      submissionDeadline: '2026-12-31',
+      knownClubs: [],
+      leagues: [],
+    });
+    await repo.createClub(T, mkClub('alpha', 'Alpha CC'));
+    await repo.createClub(T, mkClub('bravo', 'Bravo CC'));
+    await repo.createClub(T, mkClub('charlie', 'Charlie CC'));
+
+    // Draft series, approved, all three teams — alpha must be stripped and approval re-opened.
+    await repo.putSeries(T, {
+      id: 'draft-s',
+      name: 'Draft Series',
+      startDate: '2026-07-01',
+      teams: ['alpha', 'bravo', 'charlie'],
+      fixtures: [
+        { home: 'alpha', away: 'bravo', date: '2026-07-01', round: 1 },
+        { home: 'bravo', away: 'charlie', date: '2026-07-08', round: 2 },
+      ],
+      approved: true,
+      approvedAt: '2026-06-15T00:00:00.000Z',
+      released: false,
+      releasedAt: null,
+      version: 1,
+    });
+    // Released series with alpha — must be left untouched (preserves published history).
+    await repo.putSeries(T, {
+      id: 'rel-s',
+      name: 'Released Series',
+      startDate: '2026-07-01',
+      teams: ['alpha', 'bravo'],
+      fixtures: [{ home: 'alpha', away: 'bravo', date: '2026-07-01', round: 1 }],
+      approved: true,
+      approvedAt: '2026-06-15T00:00:00.000Z',
+      released: true,
+      releasedAt: '2026-06-20T00:00:00.000Z',
+      version: 1,
+    });
+    // Draft 2-team series — removing alpha drops it below 2 teams; must be KEPT, not auto-deleted.
+    await repo.putSeries(T, {
+      id: 'twoteam-s',
+      name: 'Two Team Series',
+      startDate: '2026-07-01',
+      teams: ['alpha', 'charlie'],
+      fixtures: [{ home: 'alpha', away: 'charlie', date: '2026-07-01', round: 1 }],
+      approved: false,
+      approvedAt: null,
+      released: false,
+      releasedAt: null,
+      version: 1,
+    });
+  });
+
+  test('strips the club from draft series, drops its fixtures, re-opens approval; counts it', async () => {
+    const res = await del('alpha');
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { removed: { series: number; seriesFailed: number } };
+    // alpha is in draft-s + twoteam-s (cleaned) and rel-s (skipped) → 2 cleaned, 0 failed.
+    assert.equal(body.removed.series, 2);
+    assert.equal(body.removed.seriesFailed, 0);
+
+    const draft = await repo.getSeries(T, 'draft-s');
+    assert.deepEqual(draft?.teams, ['bravo', 'charlie'], 'alpha removed from teams');
+    assert.deepEqual(
+      draft?.fixtures,
+      [{ home: 'bravo', away: 'charlie', date: '2026-07-08', round: 2 }],
+      'fixtures involving alpha dropped',
+    );
+    assert.equal(draft?.approved, false, 'approval re-opened after fixture change');
+    assert.equal(draft?.approvedAt, null);
+  });
+
+  test('leaves released series intact (preserves published history)', async () => {
+    const rel = await repo.getSeries(T, 'rel-s');
+    assert.deepEqual(rel?.teams, ['alpha', 'bravo'], 'released teams untouched');
+    assert.equal((rel?.fixtures as unknown[]).length, 1, 'released fixtures untouched');
+    assert.equal(rel?.released, true);
+    assert.equal(rel?.version, 1, 'released series never re-written');
+  });
+
+  test('keeps a now-degenerate (<2 team) draft series for admin review', async () => {
+    const two = await repo.getSeries(T, 'twoteam-s');
+    assert.ok(two, 'degenerate series not auto-deleted');
+    assert.deepEqual(two?.teams, ['charlie']);
+    assert.deepEqual(two?.fixtures, []);
+  });
+
+  test('series sweep is a no-op on re-run (idempotent / re-deletable)', async () => {
+    // Drive eraseClubData twice directly: the first cleans, the second must skip every series
+    // (alpha already gone from teams) and report series: 0 — proving the re-run guard.
+    await repo.createClub(T, mkClub('echo', 'Echo CC'));
+    await repo.createClub(T, mkClub('foxtrot', 'Foxtrot CC'));
+    await repo.putSeries(T, {
+      id: 'idem-s',
+      name: 'Idem Series',
+      startDate: '2026-07-01',
+      teams: ['echo', 'foxtrot'],
+      fixtures: [{ home: 'echo', away: 'foxtrot', date: '2026-07-01', round: 1 }],
+      released: false,
+      releasedAt: null,
+      version: 1,
+    });
+    const club = (await repo.getClub(T, 'echo'))!;
+    const first = await repo.eraseClubData(T, club);
+    assert.equal(first.series, 1);
+    const afterFirst = await repo.getSeries(T, 'idem-s');
+    const second = await repo.eraseClubData(T, club);
+    assert.equal(second.series, 0, 'no series re-touched on re-run');
+    const afterSecond = await repo.getSeries(T, 'idem-s');
+    assert.equal(afterSecond?.version, afterFirst?.version, 'series version not bumped twice');
+    assert.deepEqual(afterSecond?.teams, ['foxtrot']);
   });
 });
 

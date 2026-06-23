@@ -170,13 +170,21 @@ export const getClubs = () => request<Club[]>('/clubs');
 export const getClub = (id: string) => request<Club>(`/clubs/${id}`);
 export const patchClub = (id: string, patch: Partial<Club>) =>
   request<Club>(`/clubs/${id}`, { method: 'PATCH', body: patch });
-// Admin-only hard delete: cascades players/docs/clearances and offboards reps
-// server-side. Resolves to { ok, removed: { players, clearances, users } }.
+// Admin-only hard delete: cascades players/docs/clearances, strips the club from draft series,
+// and offboards reps server-side. Resolves to { ok, removed: { players, clearances, users,
+// series, seriesFailed } } — seriesFailed counts draft series left with the dead club after a
+// version-conflict retry (re-run the delete to retry them).
 export const deleteClub = (id: string) =>
-  request<{ ok: boolean; removed: { players: number; clearances: number; users: number } }>(
-    `/clubs/${id}`,
-    { method: 'DELETE' },
-  );
+  request<{
+    ok: boolean;
+    removed: {
+      players: number;
+      clearances: number;
+      users: number;
+      series: number;
+      seriesFailed: number;
+    };
+  }>(`/clubs/${id}`, { method: 'DELETE' });
 export const saveExco = (id: string, exco: Record<string, unknown>) =>
   request<Club>(`/clubs/${id}/exco`, { method: 'POST', body: exco });
 export const generateRegLink = (id: string) =>
