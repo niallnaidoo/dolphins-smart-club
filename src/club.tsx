@@ -1147,16 +1147,13 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
     }, {});
   }
 
-  // Step-1 Continue gate. Also requires a home-ground venue + address: an
-  // auto-filled or manually-typed address satisfies it, while a not-found empty
-  // address keeps Continue disabled until the user types one.
-  const valid =
-    data.clubName &&
-    data.chairName &&
-    data.chairCell &&
-    data.chairEmail &&
-    data.groundVenue.trim() &&
-    data.groundAddress.trim();
+  // Step-1 Continue gate — validates only Step-1 fields. Chair name/cell/email
+  // belong to Step 2 and are enforced at submit (see the submit handler), not
+  // here, so an unfinished exco never silently disables Step 1's Continue.
+  // Also requires a home-ground venue + address: an auto-filled or manually-typed
+  // address satisfies it, while a not-found empty address keeps Continue disabled
+  // until the user types one.
+  const valid = data.clubName && data.groundVenue.trim() && data.groundAddress.trim();
   // A submitted form is read-only until the chair chooses to correct it.
   const submitted = club.affiliation === 'complete';
   const viewOnly = submitted && !editing;
@@ -2371,6 +2368,15 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
                       const chairId = data.chairIdNumber.trim();
                       if (chairId && !dobFromSaId(chairId)) {
                         toast("Chairperson ID number isn't a valid 13-digit RSA ID", 'warn');
+                        setStep(2);
+                        return;
+                      }
+                      // Chair contact is captured on Step 2, not Step 1's Continue gate, so
+                      // enforce it here. Checked before the reason guard so a user missing both
+                      // fixes Step 2 in one pass. New affiliations only — legacy corrections aren't
+                      // re-blocked (mirrors the reason guard below).
+                      if (!submitted && (!data.chairName || !data.chairCell || !data.chairEmail)) {
+                        toast('Add the chairperson’s name, cell and email', 'warn');
                         setStep(2);
                         return;
                       }
