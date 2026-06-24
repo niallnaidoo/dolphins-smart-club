@@ -472,6 +472,91 @@ describe('PATCH /clubs/:id — rename + flag', () => {
   });
 });
 
+describe('PATCH /clubs/:id — CQI involvementReasons (chairperson motivation)', () => {
+  const mkClub = (id: string) => ({
+    id,
+    name: `${id} CC`,
+    district: 'Test District',
+    sub: '',
+    chair: 'Carlton',
+    affiliation: 'not_started' as const,
+    cqi: 0,
+    docs: {},
+    players: 0,
+    teams: 0,
+    women: 0,
+    juniors: 0,
+    color: '#123456',
+    ground: {},
+    leagues: [],
+    version: 1,
+  });
+
+  test('accepts a multi-select of known reasons and round-trips them', async () => {
+    await repo.createClub('dolphins', mkClub('involveok'));
+    const reasons = [
+      'Passion and love for the game of cricket',
+      'Volunteering and serving the community',
+    ];
+    const res = await app.request('/clubs/involveok', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ cqiAnswers: { involvementReasons: reasons }, version: 1 }),
+    });
+    assert.equal(res.status, 200);
+    const club = (await res.json()) as {
+      cqi: number;
+      cqiAnswers?: { involvementReasons?: string[] };
+    };
+    assert.deepEqual(club.cqiAnswers?.involvementReasons, reasons);
+    // A draft save persists cqiAnswers WITHOUT scoring the club — it stays "not submitted".
+    assert.equal(club.cqi, 0);
+  });
+
+  test('rejects an unknown reason (400)', async () => {
+    await repo.createClub('dolphins', mkClub('involvebad'));
+    const res = await app.request('/clubs/involvebad', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({
+        cqiAnswers: { involvementReasons: ['Just here for the snacks'] },
+        version: 1,
+      }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('accepts an empty array (field is optional)', async () => {
+    await repo.createClub('dolphins', mkClub('involveempty'));
+    const res = await app.request('/clubs/involveempty', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ cqiAnswers: { involvementReasons: [] }, version: 1 }),
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test('accepts a cqiAnswers patch that omits involvementReasons (governance-only)', async () => {
+    await repo.createClub('dolphins', mkClub('involveabsent'));
+    const res = await app.request('/clubs/involveabsent', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ cqiAnswers: { constitution: true }, version: 1 }),
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test('accepts an explicit null cqiAnswers without crashing the guard', async () => {
+    await repo.createClub('dolphins', mkClub('involvenull'));
+    const res = await app.request('/clubs/involvenull', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ cqiAnswers: null, version: 1 }),
+    });
+    assert.equal(res.status, 200);
+  });
+});
+
 describe('PATCH /clubs/:id — chair onboarding on affiliation complete', () => {
   // FROM_EMAIL / WHATSAPP_* unset ⇒ notify/ runs dry-run (synthetic ids, no real sends).
   // STAGE='local' ⇒ the localhost link fallback is allowed (deliverableBaseUrl).

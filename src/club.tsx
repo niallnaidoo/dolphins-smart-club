@@ -921,7 +921,6 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
       chairIdNumber: chairGov.idNumber || '',
       chairTermStart: chairGov.termStart || '',
       chairTermEnd: chairGov.termEnd || '',
-      chairReason: chairGov.reasonForInvolvement || '',
       secName: seed('sec').name,
       secCell: seed('sec').cell,
       secEmail: seed('sec').email,
@@ -989,18 +988,18 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
   function saveDraft() {
     if (!onSaveDraft) return;
     setSavingDraft(true);
-    Promise.resolve(
-      onSaveDraft({
-        district: data.district,
-        exco: getExcoPayload(),
-        coaches: getCoachesPayload(),
-        ground: getGroundPayload(),
-        leagues: getLeaguesPayload(),
-        leagueTeams: getLeagueTeamsPayload(),
-      }),
-    )
+    // onSaveDraft → updateClub wraps the call in withToast, which already surfaces failures
+    // (incl. the actionable 409 copy) and re-throws — so only toast on success, never twice.
+    onSaveDraft({
+      district: data.district,
+      exco: getExcoPayload(),
+      coaches: getCoachesPayload(),
+      ground: getGroundPayload(),
+      leagues: getLeaguesPayload(),
+      leagueTeams: getLeagueTeamsPayload(),
+    })
       .then(() => toast('Draft saved'))
-      .catch(() => toast('Could not save draft', 'warn'))
+      .catch(() => {})
       .finally(() => setSavingDraft(false));
   }
 
@@ -1122,7 +1121,6 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
         idNumber: data.chairIdNumber.trim(),
         termStart: data.chairTermStart,
         termEnd: data.chairTermEnd,
-        reasonForInvolvement: data.chairReason,
       },
       sec: pick('sec'),
       tre: pick('tre'),
@@ -1622,26 +1620,6 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
                             onChange={(e) => update('chairTermEnd', e.target.value)}
                           />
                         </div>
-                      </div>
-                    )}
-                    {role.prefix === 'chair' && (
-                      <div className="field" style={{ marginTop: 8, marginBottom: 0 }}>
-                        <div className="field-label">
-                          Why are you involved in club cricket?
-                          <span style={{ color: 'var(--coral)', marginLeft: 4 }}>*</span>
-                        </div>
-                        <select
-                          className="field-select"
-                          value={data.chairReason || ''}
-                          onChange={(e) => update('chairReason', e.target.value)}
-                        >
-                          <option value="">Select…</option>
-                          {INVOLVEMENT_REASONS.map((r) => (
-                            <option key={r} value={r}>
-                              {r}
-                            </option>
-                          ))}
-                        </select>
                       </div>
                     )}
                   </div>
@@ -2377,14 +2355,6 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
                       // re-blocked (mirrors the reason guard below).
                       if (!submitted && (!data.chairName || !data.chairCell || !data.chairEmail)) {
                         toast('Add the chairperson’s name, cell and email', 'warn');
-                        setStep(2);
-                        return;
-                      }
-                      // Chair "reason for involvement" is required for NEW affiliations only —
-                      // legacy clubs (already complete) predate the field and must stay able to
-                      // submit corrections without it (the server never requires it either).
-                      if (!submitted && !data.chairReason) {
-                        toast('Select why the chairperson is involved in club cricket', 'warn');
                         setStep(2);
                         return;
                       }
@@ -3569,7 +3539,15 @@ export function DocumentsView({
 }
 
 /* ─── CQI Self-Assessment ─── */
-export function CQIView({ club, goto, toast, onSubmit, submissionDeadline, allLeagues = [] }) {
+export function CQIView({
+  club,
+  goto,
+  toast,
+  onSubmit,
+  onSaveDraft,
+  submissionDeadline,
+  allLeagues = [],
+}) {
   const deadlineLong = formatDeadlineLong(submissionDeadline);
   const [answers, setAnswers] = useStateC(() => {
     // Prefer the real stored answers (persisted on submit). Only fall back to the
@@ -3612,6 +3590,15 @@ export function CQIView({ club, goto, toast, onSubmit, submissionDeadline, allLe
   function setA(k, v) {
     setAnswers((a) => ({ ...a, [k]: v }));
   }
+
+  // Chairperson "why involved in club cricket" — informational, non-scoring, multi-select.
+  // Lives outside CQI_STRUCTURE so scoreCQI never reads it; stored in cqiAnswers.
+  const involvement = Array.isArray(answers.involvementReasons) ? answers.involvementReasons : [];
+  const toggleInvolvement = (r) =>
+    setA(
+      'involvementReasons',
+      involvement.includes(r) ? involvement.filter((x) => x !== r) : [...involvement, r],
+    );
 
   const { total, byCat } = useMemoC(() => scoreCQI(answers), [answers]);
   const band = cqiBand(total || 0.0001);
@@ -3775,6 +3762,47 @@ export function CQIView({ club, goto, toast, onSubmit, submissionDeadline, allLe
         </div>
       ))}
 
+      {/* Chairperson motivation — informational only, NOT part of the scored CQI model
+          (rendered outside the CQI_STRUCTURE map so scoreCQI never sees it). */}
+      <div className="cqi-section">
+        <div className="cqi-section-head">
+          <div
+            className="cqi-section-num"
+            style={{ background: 'var(--paper2)', color: 'var(--muted)' }}
+          >
+            ★
+          </div>
+          <div>
+            <div className="cqi-section-title">About the chairperson</div>
+            <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>
+              Why are you involved in club cricket? Select all that apply.
+            </div>
+          </div>
+          <div className="cqi-section-w">Not scored · informational</div>
+        </div>
+
+        <div className="cqi-q" style={{ display: 'block' }}>
+          <div className="trb">
+            <div className="trb-chips">
+              {INVOLVEMENT_REASONS.map((r) => {
+                const on = involvement.includes(r);
+                return (
+                  <button
+                    key={r}
+                    type="button"
+                    className={`trb-chip ${on ? 'on' : ''}`}
+                    onClick={() => toggleInvolvement(r)}
+                  >
+                    <span className="trb-chip-tick">{on ? <Icon.Check /> : null}</span>
+                    {r}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+
       <Card>
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <div>
@@ -3788,7 +3816,22 @@ export function CQIView({ club, goto, toast, onSubmit, submissionDeadline, allLe
             </div>
           </div>
           <div className="row" style={{ gap: 8 }}>
-            <Btn tone="outline">Save draft</Btn>
+            <Btn
+              tone="outline"
+              onClick={() => {
+                // Persist current answers as a draft WITHOUT writing the cqi score, so the
+                // club stays "not submitted" but informational answers (e.g. involvement
+                // reasons) aren't lost. Mirrors the submit payload's governance handling.
+                if (!onSaveDraft) return;
+                // updateClub wraps the call in withToast, which already surfaces failures
+                // (incl. the actionable 409 copy) and re-throws — so only toast on success.
+                onSaveDraft(governanceOverrides(answers, club))
+                  .then(() => toast('Draft saved'))
+                  .catch(() => {});
+              }}
+            >
+              Save draft
+            </Btn>
             <Btn
               tone="teal"
               icon={Icon.Check}

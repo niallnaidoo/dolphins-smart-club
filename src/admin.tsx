@@ -4373,6 +4373,35 @@ export function AdminClubDetail({
                   </div>
                 );
               })()}
+            {/* Chairperson motivation — informational multi-select captured on the CQI form
+                (cqiAnswers.involvementReasons). Shown whenever present, independent of whether
+                a CQI score has been submitted, so drafts surface too. */}
+            {(() => {
+              const reasons = genuineCqiAnswers(club).involvementReasons;
+              if (!Array.isArray(reasons) || !reasons.length) return null;
+              return (
+                <div style={{ marginTop: 16 }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.1em',
+                      color: 'var(--muted-2)',
+                      marginBottom: 8,
+                    }}
+                  >
+                    Chairperson · why involved in club cricket
+                  </div>
+                  <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+                    {reasons.map((r) => (
+                      <Pill key={String(r)} tone="teal">
+                        {String(r)}
+                      </Pill>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
           </Card>
         </div>
 

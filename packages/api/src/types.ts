@@ -134,9 +134,10 @@ export interface Club {
   leagueTeams?: Record<string, number>;
   /**
    * Office bearers. `exco.chair` carries the chair's contact plus governance
-   * fields `idNumber`, `termStart`, `termEnd` (ISO dates) and `reasonForInvolvement`
-   * (one of INVOLVEMENT_REASONS) captured on the affiliation form; other roles carry
-   * name/cell/email/gender/race.
+   * fields `idNumber`, `termStart`, `termEnd` (ISO dates) captured on the affiliation
+   * form; other roles carry name/cell/email/gender/race. `reasonForInvolvement` is
+   * legacy — chairperson motivation is now a multi-select captured on the CQI form as
+   * `cqiAnswers.involvementReasons: string[]` (one or more of INVOLVEMENT_REASONS).
    */
   exco?: Record<string, unknown>;
   /**

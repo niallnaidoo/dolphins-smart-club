@@ -55,10 +55,12 @@ export const MAX_SAFEGUARDING_FILES = 10;
 export const COACH_EXPERIENCE = new Set(['0-3', '4-10', '10+']);
 
 /**
- * Accepted chairperson "why are you involved in club cricket?" answers, captured on the
- * affiliation form. Mirror of INVOLVEMENT_REASONS in the frontend's data.ts. Validated only
- * when present — the field is required client-side for NEW affiliations, but legacy clubs
- * predate it, so the server must never make it mandatory (that would 400 every correction).
+ * Accepted chairperson "why are you involved in club cricket?" answers. Now captured on the
+ * CQI form as a multi-select stored at `cqiAnswers.involvementReasons: string[]` (validated in
+ * validateClubPatch). The legacy single-value `exco.chair.reasonForInvolvement` is still
+ * accepted for back-compat with clubs that submitted before the move. Mirror of
+ * INVOLVEMENT_REASONS in the frontend's data.ts. Validated only when present — the field is
+ * optional/informational and never scored, so the server must never make it mandatory.
  */
 export const INVOLVEMENT_REASONS = new Set([
   'Passion and love for the game of cricket',
@@ -149,6 +151,21 @@ export function validateClubPatch(
   const docKeys = [...Object.keys(patch.docs ?? {}), ...Object.keys(patch.docMeta ?? {})];
   const badDocs = [...new Set(docKeys.filter((k) => !validDocKeys.has(k)))];
   if (badDocs.length) return `unknown document keys: ${badDocs.join(', ')}`;
+
+  // Chairperson "why involved in club cricket" — informational, non-scoring, captured on the
+  // CQI form as cqiAnswers.involvementReasons (multi-select). Validated ONLY when the key is
+  // present so governance-only and draft submits still pass; an empty array is allowed (the
+  // field is optional). Each entry must be a known reason.
+  const involvementReasons = (patch.cqiAnswers as Record<string, unknown> | undefined)
+    ?.involvementReasons;
+  if (involvementReasons !== undefined) {
+    if (
+      !Array.isArray(involvementReasons) ||
+      involvementReasons.some((r) => !INVOLVEMENT_REASONS.has(String(r)))
+    ) {
+      return 'invalid involvementReasons';
+    }
+  }
 
   // Chair governance fields (idNumber / termStart / termEnd) — only when supplied.
   const chair = (patch.exco as Record<string, unknown> | undefined)?.chair as

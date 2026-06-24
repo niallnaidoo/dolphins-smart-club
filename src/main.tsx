@@ -1587,6 +1587,7 @@ function Shell({
               updateClub({ cqi: score, cqiAnswers: answers }).catch(() => {});
               gotoClubView('home');
             }}
+            onSaveDraft={(answers) => updateClub({ cqiAnswers: answers })}
           />
         );
       if (view === 'fixtures') {
