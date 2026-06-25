@@ -8,6 +8,8 @@ sst-env.d.ts
 *.log
 .env
 .env*.local
+# Sentry source-map upload auth token (read by @sentry/vite-plugin at build time)
+.env.sentry-build-plugin
 .claude/
 
 # Playwright MCP test artifacts

@@ -164,6 +164,22 @@ export default $config({
     // (body vars {{1}} chair, {{2}} club, {{3}} reg link, {{4}} tutorials URL) before real sends.
     const whatsappReglinkTemplate = new sst.Secret('WhatsappReglinkTemplate', 'club_reglink_ready');
 
+    // ── Error monitoring (Sentry, EU region — medicoach-ap on de.sentry.io) ──
+    // DSNs are non-secret but kept out of the repo so they're set per-account without
+    // code edits. Empty by default → the SDK init is a guarded no-op until set, so the
+    // stack deploys before Sentry is provisioned (mirrors the FromEmail pattern above).
+    //   sst secret set SentryDsnApi <dolphins-api DSN>
+    //   sst secret set SentryDsnWeb <dolphins-web DSN>
+    const sentryDsnApi = new sst.Secret('SentryDsnApi', '');
+    const sentryDsnWeb = new sst.Secret('SentryDsnWeb', '');
+    // One release id shared by the API + web builds so a frontend error and the API
+    // call behind it correlate to the same release (and to the uploaded source maps).
+    // git is available (manual local deploy from the repo); execFile = no shell.
+    // Dynamic import — SST forbids top-level imports in sst.config.ts.
+    const { execFileSync } = await import('node:child_process');
+    const gitSha = execFileSync('git', ['rev-parse', '--short', 'HEAD']).toString().trim();
+    const sentryRelease = `dolphins@${process.env.npm_package_version ?? '0'}+${gitSha}`;
+
     // ── API: one Hono Lambda behind a $default route ──
     // JWT is verified inside the app (aws-jwt-verify) so public routes (/tenant,
     // /register) and protected routes can coexist on one catch-all route.
@@ -205,6 +221,10 @@ export default $config({
         TABLE_NAME: table.name,
         // STAGE gates the dev-only x-tenant header (prod resolves tenant by host).
         STAGE: $app.stage,
+        // Sentry (errors only). Empty DSN → instrument.ts init is a no-op. STAGE is
+        // reused as the Sentry `environment`; SENTRY_RELEASE matches the web build.
+        SENTRY_DSN: sentryDsnApi.value,
+        SENTRY_RELEASE: sentryRelease,
         // Base URL (public S3) for the tutorial videos. DEFAULT_TUTORIALS builds
         // absolute `${TUTORIALS_BASE_URL}/tutorials/<file>` links from this.
         TUTORIALS_BASE_URL: tutorialsBaseUrl,
@@ -255,6 +275,13 @@ export default $config({
         // (so dolphinspipeline.* → dolphins client-side too). Empty map off-prod.
         VITE_DEFAULT_TENANT: 'dolphins',
         VITE_TENANT_HOST_MAP: JSON.stringify(isProd ? TENANT_HOST_MAP : {}),
+        // Sentry (errors only). Empty DSN → the SPA init is a no-op. These are set as
+        // real env vars in the `npm run build` child SST spawns, so the SDK (reads
+        // import.meta.env) and @sentry/vite-plugin (reads process.env.VITE_SENTRY_RELEASE)
+        // resolve the SAME release — events and uploaded source maps line up.
+        VITE_SENTRY_DSN: sentryDsnWeb.value,
+        VITE_SENTRY_ENVIRONMENT: $app.stage,
+        VITE_SENTRY_RELEASE: sentryRelease,
       },
 
       // ── SPA fallback ──

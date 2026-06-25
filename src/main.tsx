@@ -1,3 +1,4 @@
+import { Sentry } from './sentry'; // first — installs global error handlers before render
 import { useState as useStateApp, useMemo as useMemoApp, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
@@ -369,6 +370,17 @@ function AuthedApp({ tenantConfig }) {
 
   const membership = membershipFor(memberships, TENANT_SLUG);
   const role = routingRole(membership);
+
+  // Identify the caller on Sentry so frontend errors carry the same tenant/role
+  // context the API tags backend errors with. No-op without a DSN; email is
+  // acceptable here under sendDefaultPii. Effect (not render) to avoid side effects
+  // during render; runs before the early returns below so hook order is stable.
+  useEffect(() => {
+    if (!membership) return;
+    Sentry.setUser({ email });
+    Sentry.setTag('tenant', TENANT_SLUG);
+    Sentry.setTag('role', role);
+  }, [email, role, membership]);
 
   // ── Data ──
   const clubsQuery = useQuery({
@@ -1825,9 +1837,13 @@ function Shell({
           <ErrorBoundary
             FallbackComponent={ViewErrorFallback}
             resetKeys={[view]}
-            onError={(error, info) =>
-              console.error('View render error:', error, info?.componentStack)
-            }
+            onError={(error, info) => {
+              // Report render errors that the boundary catches. No-op without a DSN.
+              Sentry.captureException(error, {
+                contexts: { react: { componentStack: info?.componentStack } },
+              });
+              console.error('View render error:', error, info?.componentStack);
+            }}
           >
             {renderMain()}
           </ErrorBoundary>

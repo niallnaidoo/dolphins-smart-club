@@ -13,6 +13,7 @@
  */
 import type { Context, MiddlewareHandler } from 'hono';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
+import { Sentry } from './instrument.js';
 import type { Membership, Role } from './types.js';
 
 export interface AuthContext {
@@ -160,6 +161,12 @@ export const requireTenantMembership: MiddlewareHandler<HonoEnv> = async (c, nex
     sub: auth.sub,
     email: auth.email,
   });
+  // Fingerprint every error from here on with who/where, for per-club triage.
+  // No-op when Sentry isn't initialised (no DSN). wrapHandler gives each Lambda
+  // invocation its own isolation scope, so this doesn't leak across requests.
+  Sentry.setUser({ id: auth.sub });
+  Sentry.setTag('tenant', tenant);
+  Sentry.setTag('role', membership.role);
   await next();
 };
 

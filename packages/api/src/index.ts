@@ -10,6 +10,8 @@
  * (dashboards, scoring, fixtures) stays in the browser — this layer is thin CRUD.
  * See docs/architecture/0004 and docs/api/.
  */
+import './instrument.js'; // MUST be first — inits Sentry before any client is built
+import { Sentry } from './instrument.js';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { cors } from 'hono/cors';
@@ -2560,10 +2562,18 @@ function hashCode(s: string): number {
 
 app.onError((err, c) => {
   if (err instanceof HttpError) return c.json({ error: err.message }, err.status as 400);
+  // Unexpected (non-HttpError) → report. Tenant/user/role were tagged in authenticate.
+  // No-op when Sentry was not initialised (no DSN). 4xx HttpErrors are intentionally
+  // excluded above so expected validation/auth failures don't create noise.
+  Sentry.captureException(err);
   console.error('unhandled error', err);
   return c.json({ error: 'internal error' }, 500);
 });
 
-export const handler = handle(app);
+// wrapHandler is the OUTER wrapper: it flushes queued events (incl. the onError
+// capture above) before the Lambda returns, and catches anything that escapes Hono
+// entirely (init failures, timeouts — best-effort). No double-capture: onError
+// returns a 500 response, so route errors never propagate out to wrapHandler.
+export const handler = Sentry.wrapHandler(handle(app));
 // Exported so the local dev server (src/local/server.ts) can serve the same app.
 export { app };

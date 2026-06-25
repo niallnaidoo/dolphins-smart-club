@@ -169,6 +169,42 @@ works, and registration + dedup behave. (Verified on the live dev stage — see 
 > (`admin-set-user-password --permanent`) and pass `USERNAME,PASSWORD,PREFERRED_CHALLENGE=PASSWORD`
 > to `initiate-auth` — it returns the IdToken directly.
 
+## Sentry — error monitoring (one-time setup, then automatic)
+
+Errors (frontend + backend) report to **Sentry org `medicoach-ap`, EU region
+(`de.sentry.io`)** — kept in the EU for POPIA. Two projects: `dolphins-web` (SPA) and
+`dolphins-api` (Lambda). With no DSN set, all Sentry code is a guarded no-op, so the
+stack deploys fine before this is done.
+
+**One-time provisioning:**
+
+1. In `de.sentry.io` (org `medicoach-ap`, team `medicoach`) create two projects if they
+   don't exist: `dolphins-web` (platform React) and `dolphins-api` (platform Node/AWS
+   Lambda). Copy each project's DSN (host must be `*.de.sentry.io`).
+2. Set the DSNs as SST secrets (per stage):
+
+   ```bash
+   npx sst secret set SentryDsnApi '<dolphins-api DSN>' --stage dev
+   npx sst secret set SentryDsnWeb '<dolphins-web DSN>' --stage dev
+   ```
+3. Create a Sentry **org auth token** (scopes: `project:releases`, `project:read`,
+   `project:write`) for source-map upload. Put it in a git-ignored file at repo root:
+
+   ```bash
+   echo 'SENTRY_AUTH_TOKEN=<token>' > .env.sentry-build-plugin
+   ```
+
+**Every deploy (automatic):** `npm run deploy[:dev]` derives one release id
+(`dolphins@<version>+<gitSha>`) shared by both builds, injects the DSNs, and — because
+`npm run build` inherits the shell env / auto-loads `.env.sentry-build-plugin` — uploads
+the SPA source maps to `dolphins-web` and deletes the `.map` files before they reach S3.
+
+> **Verify after a real deploy:** the build log should show `@sentry/vite-plugin` uploading
+> artifacts. If the auth token is missing the plugin warns and skips upload (the build still
+> succeeds) — so confirm the latest release in `dolphins-web` actually has artifacts, else
+> production stack traces will be minified. A forced 500 should appear in `dolphins-api`
+> tagged with `tenant`/`role`; a deliberate 4xx should **not** create an event.
+
 ## 7. Tear down dev
 
 ```bash

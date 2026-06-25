@@ -10,6 +10,7 @@
  * the app can fall back to the login screen.
  */
 
+import { Sentry } from './sentry';
 import { devAuthHeader } from './devAuth';
 import type {
   TenantConfig,
@@ -126,7 +127,17 @@ async function request<T = any>(
       _onAuthLost?.();
       message = SESSION_EXPIRED;
     }
-    throw new ApiError(res.status, message, code);
+    const err = new ApiError(res.status, message, code);
+    // Report genuine server failures (5xx) — these are real outages worth knowing
+    // about even when a caller swallows the rejection. Expected 4xx (validation,
+    // auth, 404, 409 conflicts) are intentionally excluded as normal UI flow.
+    // No-op without a DSN.
+    if (res.status >= 500) {
+      Sentry.captureException(err, {
+        tags: { api_path: path, api_method: method, http_status: res.status },
+      });
+    }
+    throw err;
   }
   // No current backend route emits 204; kept for forward-compat (callers of a
   // future 204 route should type T to include null).
