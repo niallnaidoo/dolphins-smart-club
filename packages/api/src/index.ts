@@ -104,6 +104,23 @@ const UPLOADS_BUCKET = process.env.UPLOADS_BUCKET!;
 const USER_POOL_ID = process.env.USER_POOL_ID!;
 const MAX_DOC_BYTES = 10 * 1024 * 1024; // 10 MB
 
+/**
+ * Provision a passwordless invite/signup user, translating Cognito's email-format
+ * rejection into a clean 400. The pool is `usernames:['email']`, so AdminCreateUser
+ * requires an email-format Username; an address that passes EMAIL_RE but Cognito rejects
+ * (e.g. leading/trailing/double dots) throws InvalidParameterException — which must read
+ * as "fix the address", not surface as an opaque 500 (see Sentry DOLPHINS-API-1 / -WEB-1).
+ */
+async function provisionInviteUser(email: string): Promise<string> {
+  try {
+    return await ensurePasswordlessUser(cognito, USER_POOL_ID, email);
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name === 'InvalidParameterException')
+      throw new HttpError(400, 'enter a valid email address');
+    throw err;
+  }
+}
+
 /** Reject unknown/retired compliance-doc keys before any S3 or record work. */
 function assertDocKey(key: string): void {
   if (!DOC_KEYS.has(key)) throw new HttpError(400, `unknown document key "${key}"`);
@@ -565,7 +582,7 @@ app.post('/club-signup', async (c) => {
   );
   if (colliding) return signupReplayOr409(c, tenant, colliding, email);
 
-  const sub = await ensurePasswordlessUser(cognito, USER_POOL_ID, email);
+  const sub = await provisionInviteUser(email);
   const club = buildClubFromSpec({
     name: clubName,
     district,
@@ -612,7 +629,7 @@ async function signupReplayOr409(
   const exco = (club.exco ?? {}) as { chair?: { email?: string } };
   const chairEmail = (exco.chair?.email ?? '').trim().toLowerCase();
   if (chairEmail && chairEmail === email) {
-    const sub = await ensurePasswordlessUser(cognito, USER_POOL_ID, email);
+    const sub = await provisionInviteUser(email);
     await ensureSignupMembership(tenant, sub, email, club.id);
     return c.json({ clubId: club.id, replayed: true });
   }
@@ -1994,6 +2011,9 @@ app.post('/admin/users', async (c) => {
   }>();
   const email = (body.email ?? '').trim().toLowerCase();
   if (!email) throw new HttpError(400, 'email required');
+  // Validate format BEFORE Cognito: an address Cognito rejects ("Username should be an
+  // email") would otherwise surface as an opaque 500 instead of a clear 400.
+  if (!EMAIL_RE.test(email)) throw new HttpError(400, 'valid email required');
   const role: 'admin' | 'rep' = body.role === 'admin' ? 'admin' : 'rep';
   const clubIds = role === 'admin' ? [] : (body.clubIds ?? []);
   if (role === 'rep' && clubIds.length === 0)
@@ -2005,7 +2025,7 @@ app.post('/admin/users', async (c) => {
   if (body.channels !== undefined) validateChannels(body.channels);
 
   // Create (or reuse, for a multi-union invite) a CONFIRMED passwordless user.
-  const sub = await ensurePasswordlessUser(cognito, USER_POOL_ID, email);
+  const sub = await provisionInviteUser(email);
   const existing = await repo.getUser(sub);
   const others = (existing?.memberships ?? []).filter((m) => m.tenantId !== ra.tenant);
   const prior = (existing?.memberships ?? []).find((m) => m.tenantId === ra.tenant);
@@ -2172,10 +2192,9 @@ app.post('/admin/users/:sub/resend', async (c) => {
  * without touching any USER#{sub} key.
  *
  * Validate everything BEFORE mutating (mirrors POST /admin/users). Update Cognito BEFORE
- * DynamoDB so a DB-write failure still leaves the user able to log in under the new email;
- * the sub-keyed Cognito call is idempotent, so a retry re-converges the DB. Auto-resends the
- * staff invite to the corrected address. Pending-only: an active user already proved their
- * address works (note: lastLoginAt is global to the sub, not per-tenant).
+ * DynamoDB so a DB-write failure still leaves the user able to log in under the new email.
+ * Auto-resends the staff invite to the corrected address. Pending-only: an active user
+ * already proved their address works (note: lastLoginAt is global to the sub, not per-tenant).
  */
 app.patch('/admin/users/:sub/email', async (c) => {
   const ra = c.get('requestAuth')!;
@@ -2203,13 +2222,16 @@ app.patch('/admin/users/:sub/email', async (c) => {
   const loginUrl = resolveLoginUrl(c, body.link);
   const orgName = await tenantOrgName(ra.tenant);
 
-  // Relocate the Cognito sign-in alias (by sub). Map alias collision → 409, orphan → 404.
+  // Relocate the Cognito sign-in alias (tries sub, falls back to the current email alias).
+  // Map alias collision → 409, a still-bad address → 400, a missing account → 404.
   try {
-    await adminUpdateCognitoUserEmail(cognito, USER_POOL_ID, sub, email);
+    await adminUpdateCognitoUserEmail(cognito, USER_POOL_ID, sub, profile.email, email);
   } catch (err: unknown) {
     const name = (err as { name?: string }).name;
     if (name === 'AliasExistsException')
       throw new HttpError(409, 'that email is already in use by another account');
+    if (name === 'InvalidParameterException')
+      throw new HttpError(400, 'enter a valid email address');
     if (name === 'UserNotFoundException')
       throw new HttpError(404, 'this member’s sign-in account is missing — remove and re-invite');
     throw err;

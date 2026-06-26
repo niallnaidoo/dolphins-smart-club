@@ -921,9 +921,17 @@ function Shell({
     return withToast(
       () => api.patchClub(clubId, { ...updates, version: activeClub?.version }),
       'Could not save changes',
-    ).then(() => {
-      invalidate(qk.club(clubId));
-      invalidate(qk.clubs());
+    ).then((updated) => {
+      // Seed the cache from the AUTHORITATIVE PATCH response rather than refetching the
+      // clubs list — that list is a GSI query (eventually consistent, no ConsistentRead),
+      // so an immediate refetch can read the pre-write item and make a just-saved change
+      // (e.g. a chairperson email) appear to revert on reload. The next natural refetch
+      // (staleTime 30s) lands well past the sub-second GSI lag.
+      if (!updated) return;
+      queryClient.setQueryData(qk.clubs(), (old) =>
+        Array.isArray(old) ? old.map((c) => (c.id === clubId ? updated : c)) : old,
+      );
+      queryClient.setQueryData(qk.club(clubId), updated);
     });
   }
 

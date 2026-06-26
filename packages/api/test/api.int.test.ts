@@ -1738,6 +1738,13 @@ describe('/admin/users', () => {
     assert.equal(stored?.email, 'mixedcase@team.test');
   });
 
+  test('inviting a malformed email is a clean 400 (not an opaque Cognito 500)', async () => {
+    // EMAIL_RE rejects an internal space before AdminCreateUser is reached — the prod bug
+    // (Sentry DOLPHINS-API-1: "Username should be an email" → 500) becomes a clear 400.
+    const res = await invite({ email: 'mohau moabi@gmail.com', role: 'rep', clubIds: ['c1'] });
+    assert.equal(res.status, 400);
+  });
+
   test('re-inviting an ALREADY-ACTIVE user is a 409 (no silent role reset)', async () => {
     const email = 'active-already@team.test';
     await invite({ email, role: 'rep', clubIds: ['c1'] });
@@ -2052,9 +2059,8 @@ describe('/admin/users', () => {
 
   test('PATCH email: a re-issued identical correction is a no-op (400 unchanged), DB stays converged', async () => {
     // Offline (LOCAL_AUTH=1) the Cognito relocation is stubbed, so this verifies only the
-    // unchanged-guard half of the retry story — NOT the by-sub alias re-set that makes the
-    // Cognito-succeeded-then-DB-failed path converge (that resolve-by-sub idempotency can
-    // only be proven against a real pool; see the prod smoke step).
+    // unchanged-guard. The actual Cognito Username path (sub-first with email-alias fallback)
+    // can only be exercised against a real pool — see the dev smoke step in the plan.
     const wrong = 'retry-wrong@team.test';
     const right = 'retry-right@team.test';
     await invite({ email: wrong, role: 'rep', clubIds: ['c1'] });

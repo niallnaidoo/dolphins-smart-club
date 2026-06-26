@@ -91,38 +91,56 @@ export async function ensurePasswordlessUser(
 
 /**
  * Relocate a user's sign-in email (the typo-correction flow). The pool uses
- * `usernames: ['email']` (UsernameAttributes), so the immutable `Username` is the
- * sub (a UUID) and the email is a RELOCATABLE alias — updating the `email` attribute
- * moves the alias without changing the sub, so every USER#{sub} record stays valid and
- * the user signs in (EMAIL_OTP) under the new address. `email_verified=true` keeps the
- * new value usable as a sign-in alias immediately.
+ * `usernames: ['email']` (UsernameAttributes), so the email is a RELOCATABLE alias —
+ * updating the `email` attribute moves the alias without changing the sub, so every
+ * USER#{sub} record stays valid and the user signs in (EMAIL_OTP) under the new address.
+ * `email_verified=true` keeps the new value usable as a sign-in alias immediately.
  *
- * Resolve by `sub` (NOT the old email): re-setting the email to the same value is then a
- * harmless no-op, so a retry after a later DB-write failure re-converges. Resolving by the
- * old email would break on retry — once the first attempt moves the alias, the old email no
- * longer resolves (UserNotFoundException) and the correction is stuck.
+ * Robust to the pool's Username semantics (we have NOT verified which it uses here): on a
+ * UsernameAttributes pool the immutable username normally equals the sub, so `Username: sub`
+ * works AND is idempotent on retry (re-setting the same email is a no-op). But some pools
+ * resolve admin ops only by the email alias — so on InvalidParameterException ("Username
+ * should be an email") or UserNotFoundException we retry once with the CURRENT email, which
+ * every other helper here already uses successfully. The sub path is preferred (idempotent);
+ * the alias path is the guaranteed-working fallback.
  *
  * Throws `AliasExistsException` if the new email is already an alias for another pool user
- * (caller → 409) and `UserNotFoundException` for an orphaned account (caller → 404). No-op
- * offline (LOCAL_AUTH=1) — note that offline never exercises the real alias relocation.
+ * (caller → 409). If neither sub nor the current email resolves, UserNotFoundException
+ * propagates (caller → 404). No-op offline (LOCAL_AUTH=1) — offline never exercises this.
  */
 export async function adminUpdateCognitoUserEmail(
   cognito: CognitoIdentityProviderClient,
   userPoolId: string,
   sub: string,
+  currentEmail: string,
   newEmail: string,
 ): Promise<void> {
   if (LOCAL) return;
-  await cognito.send(
-    new AdminUpdateUserAttributesCommand({
-      UserPoolId: userPoolId,
-      Username: sub, // immutable username == sub on a usernames:['email'] pool
-      UserAttributes: [
-        { Name: 'email', Value: newEmail.trim().toLowerCase() },
-        { Name: 'email_verified', Value: 'true' },
-      ],
-    }),
-  );
+  const UserAttributes = [
+    { Name: 'email', Value: newEmail.trim().toLowerCase() },
+    { Name: 'email_verified', Value: 'true' },
+  ];
+  try {
+    await cognito.send(
+      new AdminUpdateUserAttributesCommand({
+        UserPoolId: userPoolId,
+        Username: sub,
+        UserAttributes,
+      }),
+    );
+  } catch (err: unknown) {
+    const name = (err as { name?: string }).name;
+    // This pool resolves admin ops by the email alias, not the sub — retry with the
+    // user's current sign-in email (the alias). AliasExists/other errors propagate.
+    if (name !== 'InvalidParameterException' && name !== 'UserNotFoundException') throw err;
+    await cognito.send(
+      new AdminUpdateUserAttributesCommand({
+        UserPoolId: userPoolId,
+        Username: currentEmail.trim().toLowerCase(),
+        UserAttributes,
+      }),
+    );
+  }
 }
 
 /**
