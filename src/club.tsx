@@ -4625,8 +4625,18 @@ export function ClubFixturesView({ club, allSeries, clubs, toast, onSendFixtures
 const fmtDay = (iso) =>
   iso ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '';
 
-export function ClubPlayersView({ club, players, clearances, leagues, onGenerateLink, toast }) {
+export function ClubPlayersView({
+  club,
+  players,
+  clearances,
+  leagues,
+  onGenerateLink,
+  onDeletePlayer,
+  toast,
+}) {
   const [showLink, setShowLink] = useStateC(false);
+  const [confirmDelete, setConfirmDelete] = useStateC(null); // the player pending confirmation
+  const [busyNk, setBusyNk] = useStateC(null); // naturalKey of the row being deleted
   async function openLink() {
     // Mint a link on first open so the modal never shows an empty value.
     if (!club.playerRegLink && onGenerateLink) await onGenerateLink();
@@ -4671,6 +4681,47 @@ export function ClubPlayersView({ club, players, clearances, leagues, onGenerate
           toast={toast}
         />
       )}
+
+      {confirmDelete &&
+        createPortal(
+          <div
+            className="fix-confirm"
+            onClick={(e) => e.target === e.currentTarget && setConfirmDelete(null)}
+          >
+            <div className="fix-confirm-box">
+              <div className="fix-confirm-icon danger">
+                <Icon.Alert />
+              </div>
+              <div className="fix-confirm-title">Delete this player?</div>
+              <div className="fix-confirm-body">
+                <strong>
+                  {confirmDelete.firstName} {confirmDelete.lastName}
+                </strong>{' '}
+                will be permanently removed from {club.name}'s roster, along with any uploaded ID
+                document. There is no undo.
+              </div>
+              <div className="fix-confirm-actions">
+                <Btn tone="outline" onClick={() => setConfirmDelete(null)}>
+                  Cancel
+                </Btn>
+                <Btn
+                  tone="ink"
+                  onClick={() => {
+                    const p = confirmDelete;
+                    setConfirmDelete(null);
+                    setBusyNk(p.naturalKey);
+                    Promise.resolve(
+                      onDeletePlayer(p.naturalKey, `${p.firstName} ${p.lastName}`),
+                    ).finally(() => setBusyNk(null));
+                  }}
+                >
+                  Yes, delete
+                </Btn>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       <div className="players-stats">
         <div className="players-stat">
@@ -4772,7 +4823,25 @@ export function ClubPlayersView({ club, players, clearances, leagues, onGenerate
                     )}
                   </td>
                   <td style={{ textAlign: 'right', paddingRight: 14 }}>
-                    {outbound && <span className="rost-sub">→ {outbound.toClubName}</span>}
+                    {outbound ? (
+                      <span className="rost-sub">→ {outbound.toClubName}</span>
+                    ) : (
+                      // Gate on BOTH mid-transfer signals: the status flag (qk.players cache)
+                      // and the outbound-clearance arrow above (clearances cache). They come
+                      // from different caches, so relying on one alone could enable Delete for
+                      // a player who is actually mid-transfer.
+                      onDeletePlayer &&
+                      p.status !== 'clearance-pending' && (
+                        <Btn
+                          tone="ghost"
+                          size="sm"
+                          disabled={busyNk === p.naturalKey}
+                          onClick={() => setConfirmDelete(p)}
+                        >
+                          {busyNk === p.naturalKey ? 'Removing…' : 'Delete'}
+                        </Btn>
+                      )
+                    )}
                   </td>
                 </tr>
               );

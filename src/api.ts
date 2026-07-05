@@ -247,6 +247,10 @@ export const getPlayerIdDocViewUrl = (clubId: string, naturalKey: string) =>
   request<{ viewUrl: string }>(`/clubs/${clubId}/players/${naturalKey}/id-doc/view-url`, {
     method: 'POST',
   });
+// Chair removes a player from their own roster (hard delete; purges the ID doc). 409 if the
+// player is mid-transfer.
+export const deletePlayer = (clubId: string, naturalKey: string) =>
+  request(`/clubs/${clubId}/players/${encodeURIComponent(naturalKey)}`, { method: 'DELETE' });
 
 // Rep-safe {id,name} list of sibling clubs (for clearance source/destination choice).
 export const getClubDirectory = () => request<{ id: string; name: string }[]>('/clubs/directory');

@@ -1327,6 +1327,37 @@ app.post('/clubs/:id/players/:nk/id-doc/view-url', async (c) => {
   return c.json({ viewUrl: url });
 });
 
+/**
+ * Remove a player from the roster (chair-facing). Scoped by assertClubAccess so a rep can
+ * only delete players in their own club. Blocks a player who is mid-transfer: the source
+ * status is set atomically by createClearance, and there is no cancel-clearance endpoint, so
+ * an open clearance must be resolved by a Union admin before the player can be deleted. The
+ * repo delete is additionally conditional (see deletePlayer) to close the create-clearance
+ * race — a lost race surfaces here as a 409.
+ */
+app.delete('/clubs/:id/players/:nk', async (c) => {
+  const ra = c.get('requestAuth')!;
+  const id = c.req.param('id');
+  assertClubAccess(ra, id);
+  const player = await repo.getPlayer(ra.tenant, id, c.req.param('nk'));
+  if (!player) throw new HttpError(404, 'player not found');
+  if (player.status === 'clearance-pending') {
+    throw new HttpError(
+      409,
+      'this player has an open clearance — it must be resolved by a Union admin first',
+    );
+  }
+  try {
+    await repo.deletePlayer(ra.tenant, player);
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name === 'ConditionalCheckFailedException') {
+      throw new HttpError(409, 'player is mid-transfer or already removed — refresh and try again');
+    }
+    throw err;
+  }
+  return c.json({ ok: true });
+});
+
 // ── Player clearances (inter-club transfers) ──
 
 /**

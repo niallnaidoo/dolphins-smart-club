@@ -1292,6 +1292,19 @@ function Shell({
     invalidate(qk.clubs());
     return res?.playerRegLink;
   }
+  // Chair removes a player from their own roster (hard delete; the server purges the ID doc).
+  // Invalidate the roster, the club, and the club list — the denormalized playerCount just
+  // changed and the admin dashboard card reads it off the club list.
+  function deletePlayer(naturalKey, playerName) {
+    return withToast(() => api.deletePlayer(clubId, naturalKey), 'Could not delete player')
+      .then(() => {
+        invalidate(qk.players(clubId));
+        invalidate(qk.club(clubId));
+        invalidate(qk.clubs());
+        toastShow(`${playerName} removed`);
+      })
+      .catch(() => {});
+  }
   // Mint (or replace) the tenant-wide club signup link. The server revokes any
   // prior token in the same call, so the old link dies the moment this resolves.
   function generateSignupLink() {
@@ -1660,6 +1673,7 @@ function Shell({
             clearances={clearances}
             leagues={allLeagues}
             onGenerateLink={() => generatePlayerRegLink(activeClub.id)}
+            onDeletePlayer={deletePlayer}
             toast={toastShow}
           />
         );
