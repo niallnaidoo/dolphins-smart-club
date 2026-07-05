@@ -755,6 +755,64 @@ export async function createPlayer(tenant: string, player: PlayerRegistration): 
   }
 }
 
+/**
+ * Hard-delete a player registration and purge its uploaded ID document (POPIA).
+ *
+ * The delete is conditional — the row must still exist AND not be mid-transfer
+ * (`status <> 'clearance-pending'`). This closes a TOCTOU race: `createClearance`
+ * atomically flips the source player to `clearance-pending` and writes a cross-club
+ * mirror, so a clearance created between the route's status read and this delete would
+ * otherwise leave that clearance pointing at a deleted player. On a lost race the
+ * condition fails (ConditionalCheckFailedException → the route maps it to 409) and
+ * nothing — including the S3 doc — is touched.
+ *
+ * Ordering: the conditional delete runs FIRST with `ReturnValues: 'ALL_OLD'`, then the
+ * ID doc is purged from the returned attributes. Doing S3 first would delete a
+ * mid-transfer player's ID doc when the race is lost; ALL_OLD keeps the objectKey
+ * discoverable so the purge still happens on the success path, and a failed purge is
+ * logged + recoverable via the bucket lifecycle rule (see deleteUploadObjects).
+ *
+ * `playerCount` is decremented only after a confirmed removal — the true inverse of
+ * createPlayer's post-insert bump. The `attribute_exists(sk)` condition means a second
+ * concurrent delete of the same player THROWS ConditionalCheckFailedException (the route
+ * maps it to 409) before reaching the decrement, so the count can't be driven negative;
+ * the `!removed` guard below is belt-and-suspenders for that already-impossible path.
+ */
+export async function deletePlayer(tenant: string, player: PlayerRegistration): Promise<void> {
+  const res = await ddb.send(
+    new DeleteCommand({
+      TableName: TABLE,
+      Key: playerKey(tenant, player.clubId, player.naturalKey),
+      ConditionExpression: 'attribute_exists(sk) AND #s <> :pending',
+      ExpressionAttributeNames: { '#s': 'status' },
+      ExpressionAttributeValues: { ':pending': 'clearance-pending' },
+      ReturnValues: 'ALL_OLD',
+    }),
+  );
+  // A missing/already-deleted row throws ConditionalCheckFailedException above rather than
+  // returning here, so in practice `removed` is always present — this is a defensive stop
+  // that keeps the count untouched if that ever changes.
+  const removed = res.Attributes as PlayerRegistration | undefined;
+  if (!removed) return;
+  const objectKey = removed.idDocMeta?.objectKey;
+  if (objectKey) await deleteUploadObjects([objectKey]);
+  // Mirror of createPlayer's count bump: display-only, recomputable, so a failed
+  // decrement (club already gone) is swallowed rather than aborting the delete.
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: TABLE,
+        Key: clubKey(tenant, player.clubId),
+        UpdateExpression: 'ADD playerCount :neg1',
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeValues: { ':neg1': -1 },
+      }),
+    );
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name !== 'ConditionalCheckFailedException') throw err;
+  }
+}
+
 export async function getPlayer(
   tenant: string,
   clubId: string,

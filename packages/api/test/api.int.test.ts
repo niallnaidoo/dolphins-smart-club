@@ -2455,6 +2455,99 @@ describe('POST /clubs/:id/players (chair registration)', () => {
   });
 });
 
+describe('DELETE /clubs/:id/players/:nk (chair removes a player)', () => {
+  const REP_DEL = devAuth([{ tenantId: 'dolphins', role: 'rep', clubIds: ['delclub'] }]);
+  const REP_OTHER = devAuth([{ tenantId: 'dolphins', role: 'rep', clubIds: ['testers'] }]);
+
+  const mkClub = (id: string) => ({
+    id,
+    name: id,
+    district: 'Test District',
+    sub: 's',
+    chair: 'Chair',
+    affiliation: 'not_started' as const,
+    cqi: 0,
+    docs: {},
+    players: 0,
+    teams: 0,
+    women: 0,
+    juniors: 0,
+    color: '#abcdef',
+    ground: {},
+    leagues: [],
+    version: 1,
+  });
+  const mkPlayer = (clubId: string, nk: string) => ({
+    naturalKey: nk,
+    clubId,
+    firstName: 'Del',
+    lastName: nk,
+    dob: '1995-01-01',
+    isMinor: false,
+    status: 'active' as const,
+    consentAt: '2026-05-01T00:00:00.000Z',
+    createdAt: '2026-05-01T00:00:00.000Z',
+  });
+
+  before(async () => {
+    await repo.createClub('dolphins', mkClub('delclub'));
+    await repo.createPlayer('dolphins', mkPlayer('delclub', 'del-me'));
+    await repo.createPlayer('dolphins', mkPlayer('delclub', 'pending-me'));
+  });
+
+  const del = (nk: string, auth = REP_DEL) =>
+    app.request(`/clubs/delclub/players/${nk}`, { method: 'DELETE', headers: headers(auth) });
+
+  test('a rep for another club cannot delete here (403)', async () => {
+    const res = await del('del-me', REP_OTHER);
+    assert.equal(res.status, 403);
+  });
+
+  test('deleting a non-existent player yields 404', async () => {
+    const res = await del('ghost');
+    assert.equal(res.status, 404);
+  });
+
+  test('the chair deletes a player; the row is gone and playerCount drops by one', async () => {
+    const before = (await repo.getClub('dolphins', 'delclub')) as { playerCount?: number };
+    const res = await del('del-me');
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+    assert.equal(await repo.getPlayer('dolphins', 'delclub', 'del-me'), null);
+    const after = (await repo.getClub('dolphins', 'delclub')) as { playerCount?: number };
+    assert.equal(after.playerCount, (before.playerCount ?? 0) - 1);
+  });
+
+  test('deleting the same player again is a 404', async () => {
+    const res = await del('del-me');
+    assert.equal(res.status, 404);
+  });
+
+  test('a player mid-transfer (clearance-pending) is blocked (409) and left in place', async () => {
+    await repo.updatePlayer('dolphins', 'delclub', 'pending-me', { status: 'clearance-pending' });
+    const res = await del('pending-me');
+    assert.equal(res.status, 409);
+    assert.ok(await repo.getPlayer('dolphins', 'delclub', 'pending-me'));
+  });
+
+  test('repo.deletePlayer backstops the TOCTOU race: throws on a now-pending player, count intact', async () => {
+    // Simulate the race the conditional delete guards: the route read the player as `active`
+    // (its stale snapshot), but a concurrent createClearance flipped the stored row to
+    // clearance-pending before the delete lands. deletePlayer's condition must catch it.
+    await repo.createPlayer('dolphins', mkPlayer('delclub', 'race-me'));
+    await repo.updatePlayer('dolphins', 'delclub', 'race-me', { status: 'clearance-pending' });
+    const before = (await repo.getClub('dolphins', 'delclub')) as { playerCount?: number };
+    await assert.rejects(
+      // Pass the stale `active` snapshot the route would have held.
+      () => repo.deletePlayer('dolphins', mkPlayer('delclub', 'race-me')),
+      (err: unknown) => (err as { name?: string }).name === 'ConditionalCheckFailedException',
+    );
+    assert.ok(await repo.getPlayer('dolphins', 'delclub', 'race-me'), 'row must survive the block');
+    const after = (await repo.getClub('dolphins', 'delclub')) as { playerCount?: number };
+    assert.equal(after.playerCount, before.playerCount, 'count must be untouched');
+  });
+});
+
 describe('PATCH /clubs/:id — affiliation field validation', () => {
   const mkClub = (id: string, extra: Record<string, unknown> = {}) => ({
     id,
