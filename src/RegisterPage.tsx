@@ -132,6 +132,27 @@ export function RegisterPage() {
     d.consentChecked &&
     !busy;
 
+  // A disabled Register button is otherwise silent, so surface the first blocking
+  // reason in form order. `missing` already covers an empty ID number; a filled but
+  // invalid SA ID falls to the dedicated branch (its dob can't be derived).
+  const disabledReason = busy
+    ? ''
+    : missing.length > 0
+      ? 'Fill in all the required fields marked with *.'
+      : !isPassport && !dob
+        ? 'That South African ID number isn’t valid — please double-check it (the date of birth is read from it).'
+        : isPassport && !dob
+          ? 'Enter the date of birth.'
+          : !idValid
+            ? 'Check the ID number.'
+            : !idFile
+              ? 'Attach your ID document.'
+              : minor && !d.guardianName
+                ? 'Enter the parent/guardian’s name for a player under 18.'
+                : !d.consentChecked
+                  ? 'Tick the consent box to continue.'
+                  : '';
+
   function pickFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -479,6 +500,15 @@ export function RegisterPage() {
         </label>
 
         {error && <div style={{ color: 'var(--danger-on-dark)', fontSize: 12.5 }}>{error}</div>}
+        {!error && !canSubmit && disabledReason && (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12.5 }}
+          >
+            {disabledReason}
+          </div>
+        )}
         <button
           className="btn btn-teal"
           type="submit"
