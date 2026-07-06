@@ -16,7 +16,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { cors } from 'hono/cors';
 import { handle } from 'hono/aws-lambda';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   S3Client,
   PutObjectCommand,
@@ -344,7 +344,12 @@ app.post('/register/:clubId', async (c) => {
     'team',
     'district',
   ];
-  const missing = required.filter((k) => !body[k]);
+  // Treat present-but-blank (whitespace-only) values as missing: a blank idNumber
+  // would otherwise pass this gate and silently fall through to the name+dob key.
+  const missing = required.filter((k) => {
+    const v = body[k];
+    return v == null || String(v).trim() === '';
+  });
   if (missing.length) throw new HttpError(400, `missing required fields: ${missing.join(', ')}`);
   // SA citizens derive dob from the RSA ID; non-SA (passport) supply it directly.
   const dob = resolvePlayerDob(body);
@@ -695,14 +700,33 @@ function computeIsMinor(dob: string): boolean {
 /**
  * Idempotent dedup key for a person within a club. SHARED by the public-link path
  * and the in-portal chair form so the same person can't be registered twice (once
- * per path). Keys on email/cell/name-dob (NOT idNumber) so both paths derive the
- * SAME key — they now both capture idNumber, but keying on it would change every
- * stored player's identity, so the cross-path-stable email/cell/name-dob key stays.
+ * per path). Keys on the player's OWN identity — their ID number — NOT on contact
+ * fields: a parent/guardian legitimately reuses one email/cell across siblings, so
+ * keying on contact collapsed distinct children into one identity and blocked the
+ * 2nd+ child (the transfer flow already resolves players by idNumber, so this aligns).
+ * The identity is namespaced by idType + nationality because passport numbers are
+ * unique only within an issuing country; a bare passport number would false-collide
+ * two different foreign players. RSA IDs are nationally unique, scoped under `sa-id`.
+ * Caveat: nationality is free text (not enum-validated), so a passport holder who
+ * re-registers with a different spelling ("Zimbabwean" vs "Zimbabwe") escapes dedup —
+ * best-effort, same class of gap the prior email-vs-cell key had.
+ * Falls back to name+dob only when no idNumber is present (should not happen — it is
+ * required on both paths), so the identity is never derived from an empty string.
+ *
+ * The result is a sha256 hash of that identity, NOT the plaintext: this key is both the
+ * DynamoDB sk and the `:nk` URL segment in the id-doc endpoints, so hashing keeps the raw
+ * national ID out of id-doc URLs, API access logs, and Sentry (POPIA data-minimisation).
+ * Hashing is deterministic, so dedup and the cross-path guarantee are unchanged; the
+ * plaintext idNumber lives only in the item's `idNumber` attribute (transfers match on it).
  */
 function playerNaturalKey(body: Partial<PlayerRegistration>): string {
-  return (body.email || body.cell || `${body.firstName}-${body.lastName}-${body.dob}`)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-');
+  const id = normalizeId(body.idNumber);
+  const identity = id
+    ? (body.idType ?? 'sa-id') === 'passport'
+      ? `passport-${normalizeId(body.nationality)}-${id}`
+      : `sa-id-${id}`
+    : `${body.firstName}-${body.lastName}-${body.dob}`;
+  return createHash('sha256').update(identity.toLowerCase()).digest('hex');
 }
 
 /**
@@ -1182,7 +1206,12 @@ app.post('/clubs/:id/players', async (c) => {
     'team',
     'district',
   ];
-  const missing = required.filter((k) => !body[k]);
+  // Treat present-but-blank (whitespace-only) values as missing: a blank idNumber
+  // would otherwise pass this gate and silently fall through to the name+dob key.
+  const missing = required.filter((k) => {
+    const v = body[k];
+    return v == null || String(v).trim() === '';
+  });
   if (missing.length) throw new HttpError(400, `missing required fields: ${missing.join(', ')}`);
   // SA citizens derive dob from the RSA ID; non-SA (passport) supply it directly.
   const dob = resolvePlayerDob(body);
@@ -1250,14 +1279,15 @@ app.post('/clubs/:id/players', async (c) => {
 app.post('/clubs/:id/players/:nk/id-doc/upload-url', async (c) => {
   const ra = c.get('requestAuth')!;
   const id = c.req.param('id');
-  const nk = c.req.param('nk');
   assertClubAccess(ra, id);
   const { contentType } = await c.req
     .json<{ contentType?: string }>()
     .catch(() => ({ contentType: undefined }));
   const ct = contentType && ID_DOC_TYPES.has(contentType) ? contentType : 'application/pdf';
   const ext = ct === 'image/jpeg' ? 'jpg' : ct === 'image/png' ? 'png' : 'pdf';
-  const objectKey = `${ra.tenant}/${id}/player-${nk}-id-${randomUUID()}.${ext}`;
+  // POPIA data-minimisation: the object key must not embed the natural key (now the
+  // player's ID number). A random token is enough — nothing parses nk back out of it.
+  const objectKey = `${ra.tenant}/${id}/player-id-${randomUUID()}.${ext}`;
   const url = await getSignedUrl(
     s3,
     new PutObjectCommand({ Bucket: UPLOADS_BUCKET, Key: objectKey, ContentType: ct }),

@@ -1608,6 +1608,24 @@ describe('POST /register/:clubId (public self-registration body)', () => {
     });
     assert.equal(res.status, 400);
   });
+
+  test('siblings sharing a parent email/cell but with distinct ID numbers both register (201)', async () => {
+    // The reported bug, on the public self-registration path: a parent submits two children
+    // with the same contact. Identity keys on each child's ID number, so both are accepted.
+    const shared = { cell: '0833336666', email: 'guardian@moyo.test', nationality: 'Zimbabwean' };
+    const first = await app.request('/register/regbody?t=reg-body-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body({ ...shared, idNumber: 'PP1111', firstName: 'Rudo' })),
+    });
+    const second = await app.request('/register/regbody?t=reg-body-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body({ ...shared, idNumber: 'PP2222', firstName: 'Farai' })),
+    });
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 201);
+  });
 });
 
 describe('/admin/users', () => {
@@ -2382,9 +2400,50 @@ describe('POST /clubs/:id/players (chair registration)', () => {
     assert.equal(body.registeredVia, 'portal');
   });
 
-  test('duplicate (same naturalKey) is rejected (409)', async () => {
+  test('same person (same ID number) is rejected as a duplicate (409)', async () => {
     const res = await reg({});
     assert.equal(res.status, 409);
+  });
+
+  test('siblings sharing a parent email/cell but with distinct ID numbers both register (201)', async () => {
+    // The reported bug: a parent registers two children with their OWN contact details.
+    // Identity keys on the child's ID number, not the shared contact, so both succeed.
+    const shared = { cell: '0820000200', email: 'parent@dolphins.test' };
+    const a = await reg({ ...shared, idNumber: '9001015800086' }); // dob 1990-01-01
+    const b = await reg({ ...shared, idNumber: '9202025800086' }); // dob 1992-02-02
+    assert.equal(a.status, 201);
+    assert.equal(b.status, 201);
+  });
+
+  test('two passport players sharing an ID number but from different countries both register (201)', async () => {
+    // Passport numbers are unique only within an issuing country, so the key is namespaced
+    // by nationality — the same string from two countries must not false-collide. Both share
+    // the same cell so nationality is the ONLY differentiator (isolates the namespace fix).
+    const shared = { idType: 'passport', idNumber: 'X9999999', cell: '0820000201' };
+    const zw = await reg({ ...shared, dob: '1990-05-05', nationality: 'Zimbabwean' });
+    const bd = await reg({ ...shared, dob: '1991-06-06', nationality: 'Bangladeshi' });
+    assert.equal(zw.status, 201);
+    assert.equal(bd.status, 201);
+    // Same passport number AND same nationality is still a genuine duplicate.
+    const dup = await reg({
+      idType: 'passport',
+      idNumber: 'X9999999',
+      dob: '1990-05-05',
+      nationality: 'Zimbabwean',
+      cell: '0820000203',
+    });
+    assert.equal(dup.status, 409);
+  });
+
+  test('the stored key is an opaque hash — no raw ID number in it (POPIA)', async () => {
+    // The key is the DynamoDB sk AND the :nk URL segment, so it must not leak the SA ID
+    // into id-doc URLs / access logs / Sentry. Guards against a regression to plaintext keys.
+    const idNumber = '8501015800086';
+    const res = await reg({ idNumber, cell: '0820000210' });
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as { naturalKey: string };
+    assert.match(body.naturalKey, /^[a-f0-9]{64}$/, 'naturalKey is a sha256 hex digest');
+    assert.ok(!body.naturalKey.includes(idNumber), 'the raw ID number is not embedded in the key');
   });
 
   test('invalid ID number is rejected (400)', async () => {
