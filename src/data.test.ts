@@ -9,6 +9,8 @@ import {
   termRemaining,
   teamIdsForClub,
   resolveTeam,
+  relTimeAgo,
+  buildRecentActivity,
 } from './data';
 
 // 6 teams → 5 single round-robin rounds (each round = one match-day).
@@ -297,5 +299,103 @@ describe('teamIdsForClub / resolveTeam', () => {
     const r = resolveTeam(s, 'tm_x', clubBy);
     expect(r.name).toBe('Unknown team');
     expect(r.clubId).toBeUndefined();
+  });
+});
+
+describe('relTimeAgo', () => {
+  const now = Date.parse('2026-07-09T12:00:00Z');
+  const iso = (msAgo) => new Date(now - msAgo).toISOString();
+  const H = 3_600_000;
+
+  it('formats the seconds/minutes/hours/days boundaries', () => {
+    expect(relTimeAgo(iso(0), now)).toBe('just now');
+    expect(relTimeAgo(iso(59_000), now)).toBe('just now');
+    expect(relTimeAgo(iso(60_000), now)).toBe('1m ago');
+    expect(relTimeAgo(iso(59 * 60_000), now)).toBe('59m ago');
+    expect(relTimeAgo(iso(H), now)).toBe('1h ago');
+    expect(relTimeAgo(iso(23 * H), now)).toBe('23h ago');
+    expect(relTimeAgo(iso(24 * H), now)).toBe('1d ago');
+    expect(relTimeAgo(iso(6 * 24 * H), now)).toBe('6d ago');
+  });
+
+  it('returns empty string for missing or invalid input', () => {
+    expect(relTimeAgo(undefined, now)).toBe('');
+    expect(relTimeAgo('not-a-date', now)).toBe('');
+  });
+});
+
+describe('buildRecentActivity', () => {
+  const now = Date.parse('2026-07-09T12:00:00Z');
+  const iso = (msAgo) => new Date(now - msAgo).toISOString();
+  const H = 3_600_000;
+  const D = 86_400_000;
+
+  it('returns [] for empty or missing clubs', () => {
+    expect(buildRecentActivity([], now)).toEqual([]);
+    expect(buildRecentActivity(undefined as any, now)).toEqual([]);
+  });
+
+  it('derives typed rows from commLog + onboarding, newest first', () => {
+    const clubs = [
+      {
+        name: 'Alpha CC',
+        commLog: [
+          { id: '1', kind: 'invite', status: 'sent', to: 'chair@alpha.example', at: iso(2 * H) },
+          { id: '2', kind: 'fixtures', status: 'sent', summary: '11 players', at: iso(5 * H) },
+        ],
+      },
+      { name: 'Beta CC', onboardedVia: 'self-signup', onboardedAt: iso(1 * D) },
+    ];
+    const rows = buildRecentActivity(clubs as any, now);
+    expect(rows.map((r) => [r.who, r.what])).toEqual([
+      ['Alpha CC', 'Onboarding invite sent'],
+      ['Alpha CC', 'Fixtures shared with players'],
+      ['Beta CC', 'Joined via signup link'],
+    ]);
+  });
+
+  it('never leaks recipient contact details, send summaries, or note bodies', () => {
+    const clubs = [
+      {
+        name: 'Alpha CC',
+        commLog: [
+          { id: '1', kind: 'invite', status: 'sent', to: 'chair@alpha.example', at: iso(H) },
+          { id: '2', kind: 'fixtures', status: 'sent', summary: 'SECRET SUMMARY', at: iso(2 * H) },
+        ],
+        notes: [{ id: 'n1', text: 'PRIVATE ADMIN NOTE', at: iso(3 * H), by: 'admin' }],
+      },
+    ];
+    const blob = JSON.stringify(buildRecentActivity(clubs as any, now));
+    expect(blob).not.toContain('chair@alpha.example');
+    expect(blob).not.toContain('SECRET SUMMARY');
+    expect(blob).not.toContain('PRIVATE ADMIN NOTE');
+  });
+
+  it('filters events outside the 7-day window and caps at 6', () => {
+    const commLog = Array.from({ length: 10 }, (_, i) => ({
+      id: String(i),
+      kind: 'invite',
+      status: 'sent',
+      at: iso(i * H),
+    }));
+    commLog.push({ id: 'old', kind: 'invite', status: 'sent', at: iso(8 * D) });
+    const rows = buildRecentActivity([{ name: 'Alpha CC', commLog }] as any, now);
+    expect(rows).toHaveLength(6); // capped
+    expect(rows.every((r) => r.what === 'Onboarding invite sent')).toBe(true); // 8d-old excluded
+  });
+
+  it('skips skipped sends and flags failures with a coral tone', () => {
+    const clubs = [
+      {
+        name: 'Gamma CC',
+        commLog: [
+          { id: '1', kind: 'invite', status: 'failed', at: iso(H) },
+          { id: '2', kind: 'invite', status: 'skipped', at: iso(2 * H) },
+        ],
+      },
+    ];
+    const rows = buildRecentActivity(clubs as any, now);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ what: 'Onboarding invite failed to send', tone: 'coral' });
   });
 });

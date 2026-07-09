@@ -8,9 +8,9 @@
  * extract a `packages/shared` both sides depend on (see migration plan).
  *
  * DELIBERATE DIVERGENCE from the backend: fields the server authoritatively
- * produces but the client doesn't always have on hand (e.g. demo SAMPLE_CLUBS
- * literals, optimistic-concurrency `version`) are marked OPTIONAL here even where
- * the backend requires them. Such fields are annotated `// server-authoritative`.
+ * produces but the client doesn't always have on hand (e.g. optimistic-concurrency
+ * `version`) are marked OPTIONAL here even where the backend requires them. Such
+ * fields are annotated `// server-authoritative`.
  */
 
 export type Role = 'admin' | 'rep' | 'operator';
@@ -196,7 +196,7 @@ export interface Club {
   juniors: number;
   color: string;
   ground: ClubGround;
-  leagues?: string[]; // server-authoritative (omitted by demo SAMPLE_CLUBS)
+  leagues?: string[]; // server-authoritative (may be absent on legacy client records)
   /** Teams entered per league key (a club may field >1 side in a league); absent ⇒ 1. */
   leagueTeams?: Record<string, number>;
   /**

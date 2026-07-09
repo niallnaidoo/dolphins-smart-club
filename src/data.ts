@@ -49,6 +49,85 @@ export function daysAgo(iso) {
   return Math.max(0, Math.floor((Date.now() - then.getTime()) / 86400000));
 }
 
+// Compact "time ago" label for a full ISO timestamp, e.g. 'just now' / '2h ago' / '3d ago'.
+// `now` is injectable so the output is deterministic under test.
+export function relTimeAgo(iso: string | undefined, now: number = Date.now()): string {
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '';
+  const secs = Math.max(0, Math.floor((now - then) / 1000));
+  if (secs < 60) return 'just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+/** One row in the cohort-wide "Recent activity" feed. */
+export interface ActivityRow {
+  who: string;
+  what: string;
+  at: string;
+  tone: 'teal' | 'navy' | 'coral';
+}
+
+const ACTIVITY_WINDOW_MS = 7 * 86400000;
+const ACTIVITY_LIMIT = 6;
+
+// Event-TYPE labels per comm-log kind (ok/fail). An unknown or legacy-undefined kind
+// falls back to the invite copy, matching the per-club timeline idiom (admin.tsx).
+const ACTIVITY_LABELS = {
+  fixtures: { ok: 'Fixtures shared with players', fail: 'Fixtures broadcast failed to send' },
+  reglink: { ok: 'Player registration link sent', fail: 'Registration link failed to send' },
+  invite: { ok: 'Onboarding invite sent', fail: 'Onboarding invite failed to send' },
+} as const;
+
+/**
+ * Cohort-wide "recent activity" derived from each club's REAL timestamped events. Newest
+ * first, within the last 7 days, capped at 6 rows.
+ *
+ * PII-safe by construction: emits only the club name, a fixed event-TYPE label, and the
+ * timestamp — never recipient contact details (`commLog.to`), free-text send summaries, or
+ * note bodies. (The per-club timeline may show `→ recipient` inside a single club's drawer;
+ * this feed is cohort-wide and always visible, so contact details must never reach it.)
+ * Notes are excluded entirely for the same reason. Events without a valid timestamp are
+ * skipped — affiliation/CQI "submitted" milestones carry no per-event timestamp and so
+ * cannot be reconstructed here.
+ */
+export function buildRecentActivity(clubs: Club[], now: number = Date.now()): ActivityRow[] {
+  const cutoff = now - ACTIVITY_WINDOW_MS;
+  const inWindow = (iso?: string) => {
+    if (!iso) return false;
+    const t = new Date(iso).getTime();
+    return !Number.isNaN(t) && t >= cutoff && t <= now;
+  };
+  const rows: ActivityRow[] = [];
+  for (const club of clubs || []) {
+    if (!club) continue;
+    const who = club.name;
+    for (const e of club.commLog || []) {
+      if (e?.status === 'skipped' || !inWindow(e?.at)) continue;
+      const failed = e.status === 'failed';
+      const tone: ActivityRow['tone'] = failed ? 'coral' : e.kind === 'fixtures' ? 'teal' : 'navy';
+      const label =
+        ACTIVITY_LABELS[e.kind as keyof typeof ACTIVITY_LABELS] ?? ACTIVITY_LABELS.invite;
+      rows.push({ who, what: failed ? label.fail : label.ok, at: e.at, tone });
+    }
+    if (club.onboardedVia === 'self-signup' && inWindow(club.onboardedAt)) {
+      rows.push({
+        who,
+        what: 'Joined via signup link',
+        at: club.onboardedAt as string,
+        tone: 'teal',
+      });
+    }
+  }
+  // Sort on the parsed instant (offset-safe), newest first.
+  rows.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+  return rows.slice(0, ACTIVITY_LIMIT);
+}
+
 // Sub-unions / districts derived from the affiliation form's drop-down
 export const DISTRICTS = [
   'Ethekwini Metro Cricket Union',
@@ -549,361 +628,6 @@ export function resolvePreviewSource(meta, isLocalDemo) {
   if (isLocalDemo) return 'demo';
   return 'none';
 }
-
-// Sample clubs — names drawn from the actual Dolphins CQI list
-// Each carries denormalised submission state so the admin views can score them.
-export const SAMPLE_CLUBS: Club[] = [
-  {
-    id: 'ukzn',
-    name: 'UKZN CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Ashraf Ganie',
-    affiliation: 'complete',
-    cqi: 91.89,
-    docs: {
-      constitution: true,
-      agm: true,
-      financials: true,
-      exco: true,
-      codeOfConduct: true,
-      safeguarding: true,
-    },
-    players: 57,
-    teams: 3,
-    women: 0,
-    juniors: 0,
-    color: '#1B2A4A',
-    ground: { venue: 'Howard College Oval', suburb: 'Glenwood', lat: -29.8666, lon: 30.9783 },
-  },
-  {
-    id: 'clares',
-    name: 'Clares CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Rajin Ramsaroop',
-    affiliation: 'complete',
-    cqi: 87.4,
-    docs: {
-      constitution: true,
-      agm: true,
-      financials: true,
-      exco: false,
-      codeOfConduct: false,
-      safeguarding: false,
-    },
-    players: 72,
-    teams: 6,
-    women: 1,
-    juniors: 3,
-    color: '#1D9E75',
-    ground: { venue: 'Clares Cricket Field', suburb: 'Glenwood', lat: -29.8533, lon: 30.9512 },
-  },
-  {
-    id: 'chatsworth',
-    name: 'Chatsworth Sporting CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Jason Sathiaseelan',
-    affiliation: 'complete',
-    cqi: 81.2,
-    docs: {
-      constitution: true,
-      agm: true,
-      financials: false,
-      exco: true,
-      codeOfConduct: false,
-      safeguarding: false,
-    },
-    players: 114,
-    teams: 10,
-    women: 1,
-    juniors: 3,
-    color: '#C8A84B',
-    ground: {
-      venue: 'Chatsworth Sports Ground',
-      suburb: 'Chatsworth',
-      lat: -29.9112,
-      lon: 30.8868,
-    },
-  },
-  {
-    id: 'umlazi',
-    name: 'Umlazi CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Simphiwe Shangase',
-    affiliation: 'complete',
-    cqi: 64.8,
-    docs: {
-      constitution: true,
-      agm: false,
-      financials: false,
-      exco: true,
-      codeOfConduct: false,
-      safeguarding: false,
-    },
-    players: 58,
-    teams: 6,
-    women: 1,
-    juniors: 3,
-    color: '#D85A30',
-    ground: { venue: 'Umlazi Comtech Ground', suburb: 'Umlazi', lat: -29.9678, lon: 30.8842 },
-  },
-  {
-    id: 'crusaders',
-    name: 'Crusaders CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Duncun Miller',
-    affiliation: 'complete',
-    cqi: 78.5,
-    docs: {
-      constitution: true,
-      agm: true,
-      financials: true,
-      exco: true,
-      codeOfConduct: true,
-      safeguarding: true,
-    },
-    players: 88,
-    teams: 9,
-    women: 1,
-    juniors: 3,
-    color: '#2E4070',
-    ground: { venue: 'Crusaders Park', suburb: 'Durban North', lat: -29.7956, lon: 31.0356 },
-  },
-  {
-    id: 'berea',
-    name: 'Berea Rovers CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Wayne Scott',
-    affiliation: 'in_progress',
-    cqi: 0,
-    docs: {
-      constitution: false,
-      agm: false,
-      financials: false,
-      exco: false,
-      codeOfConduct: false,
-      safeguarding: false,
-    },
-    players: 0,
-    teams: 3,
-    women: 0,
-    juniors: 1,
-    color: '#243356',
-    ground: { venue: 'Berea Rovers Oval', suburb: 'Berea', lat: -29.8348, lon: 31.005 },
-  },
-  {
-    id: 'rhythm',
-    name: 'Rhythm DHSOB CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Mags Reddy',
-    affiliation: 'complete',
-    cqi: 68.4,
-    docs: {
-      constitution: true,
-      agm: false,
-      financials: true,
-      exco: true,
-      codeOfConduct: false,
-      safeguarding: false,
-    },
-    players: 92,
-    teams: 9,
-    women: 1,
-    juniors: 1,
-    color: '#1D9E75',
-    ground: { venue: 'DHS Old Boys Field', suburb: 'Stamford Hill', lat: -29.8205, lon: 31.0009 },
-  },
-  {
-    id: 'warriors',
-    name: 'African Warriors CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Knowledge Vilakazi',
-    affiliation: 'complete',
-    cqi: 72.1,
-    docs: {
-      constitution: true,
-      agm: true,
-      financials: false,
-      exco: true,
-      codeOfConduct: false,
-      safeguarding: false,
-    },
-    players: 64,
-    teams: 5,
-    women: 2,
-    juniors: 3,
-    color: '#1B2A4A',
-    ground: { venue: 'KwaMashu K-Section Ground', suburb: 'KwaMashu', lat: -29.7311, lon: 30.9876 },
-  },
-  {
-    id: 'phoenix',
-    name: 'Phoenix CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Bradley Chetty',
-    affiliation: 'not_started',
-    cqi: 0,
-    docs: {
-      constitution: false,
-      agm: false,
-      financials: false,
-      exco: false,
-      codeOfConduct: false,
-      safeguarding: false,
-    },
-    players: 0,
-    teams: 6,
-    women: 0,
-    juniors: 2,
-    color: '#C8A84B',
-    ground: { venue: 'Phoenix Sports Complex', suburb: 'Phoenix', lat: -29.7003, lon: 31.0214 },
-  },
-  {
-    id: 'verulam',
-    name: 'Verulam CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Kugan Subrayen',
-    affiliation: 'in_progress',
-    cqi: 38.5,
-    docs: {
-      constitution: true,
-      agm: false,
-      financials: false,
-      exco: false,
-      codeOfConduct: false,
-      safeguarding: false,
-    },
-    players: 21,
-    teams: 1,
-    women: 0,
-    juniors: 2,
-    color: '#D85A30',
-    ground: { venue: 'Verulam Sports Field', suburb: 'Verulam', lat: -29.6411, lon: 31.0498 },
-  },
-  {
-    id: 'harlequins',
-    name: 'Harlequins CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Eric Cavanagh',
-    affiliation: 'complete',
-    cqi: 84.2,
-    docs: {
-      constitution: true,
-      agm: true,
-      financials: true,
-      exco: true,
-      codeOfConduct: true,
-      safeguarding: true,
-    },
-    players: 96,
-    teams: 10,
-    women: 0,
-    juniors: 2,
-    color: '#1D9E75',
-    ground: { venue: 'Kingsmead North', suburb: 'Stamford Hill', lat: -29.8195, lon: 31.0308 },
-  },
-  {
-    id: 'spartan',
-    name: 'Spartan Sporting CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Shafee Ayob',
-    affiliation: 'complete',
-    cqi: 56.3,
-    docs: {
-      constitution: true,
-      agm: true,
-      financials: false,
-      exco: false,
-      codeOfConduct: false,
-      safeguarding: false,
-    },
-    players: 38,
-    teams: 5,
-    women: 0,
-    juniors: 2,
-    color: '#2E4070',
-    ground: { venue: 'Spartan Park', suburb: 'Mount Edgecombe', lat: -29.7256, lon: 31.0489 },
-  },
-  {
-    id: 'ilembe',
-    name: 'Ilembe CC',
-    district: 'Illembe Cricket District',
-    sub: 'ICD',
-    chair: 'Naren Singh',
-    affiliation: 'complete',
-    cqi: 47.6,
-    docs: {
-      constitution: true,
-      agm: false,
-      financials: true,
-      exco: false,
-      codeOfConduct: false,
-      safeguarding: false,
-    },
-    players: 28,
-    teams: 2,
-    women: 0,
-    juniors: 0,
-    color: '#8A6E1C',
-    ground: { venue: 'KwaDukuza Stadium', suburb: 'KwaDukuza', lat: -29.3398, lon: 31.281 },
-  },
-  {
-    id: 'tongaat',
-    name: 'Tongaat CC',
-    district: 'Ethekwini Metro Cricket Union',
-    sub: 'EMCU',
-    chair: 'Praven Govender',
-    affiliation: 'not_started',
-    cqi: 0,
-    docs: {
-      constitution: false,
-      agm: false,
-      financials: false,
-      exco: false,
-      codeOfConduct: false,
-      safeguarding: false,
-    },
-    players: 0,
-    teams: 1,
-    women: 0,
-    juniors: 1,
-    color: '#D85A30',
-    ground: { venue: 'Tongaat Sports Field', suburb: 'Tongaat', lat: -29.5783, lon: 31.1149 },
-  },
-];
-
-// Decorate each club with the league keys they registered for, so the
-// admin series-creation flow can auto-filter teams by league.
-const _LEAGUES_BY_CLUB = {
-  ukzn: ['premier', 'premierWomen', 'emcuD1', 'emcuU11'],
-  clares: ['premier', 'veterans', 'emcuD1', 'emcuD3_s1'],
-  chatsworth: ['premier', 'emcuD2', 'emcuD3_s2', 'emcuU11', 'emcuU13'],
-  umlazi: ['promotion', 'emcuD1', 'emcuU11'],
-  crusaders: ['premier', 'emcuD1', 'emcuD2'],
-  rhythm: ['promotion', 'premierWomen', 'emcuD2', 'emcuD4_s1', 'emcuU13'],
-  warriors: ['promotion', 'emcuD3_s1', 'emcuU13'],
-  harlequins: ['premier', 'veterans', 'emcuD1', 'emcuD3_s2', 'emcuU11', 'emcuU13'],
-  spartan: ['promotion', 'emcuD2', 'emcuD4_s2'],
-  // Ilembe CC lives in the Illembe district — its leagues come from that catalogue.
-  ilembe: ['premier', 'ilembeA30', 'ilembeBT20'],
-  phoenix: [],
-  berea: [],
-  verulam: [],
-  tongaat: [],
-};
-SAMPLE_CLUBS.forEach((c) => {
-  c.leagues = _LEAGUES_BY_CLUB[c.id] || [];
-});
 
 // CQI structure — categories, weights, and questions
 // Weighting model: Admin 18 / Teams 18 / Coaching 18 / Facilities 14 / Representation 9 /
@@ -1432,99 +1156,3 @@ export function generateRoundRobin(
   }
   return fixtures;
 }
-
-// One pre-made series so the admin lands on populated content
-const _premierTeams = [
-  'ukzn',
-  'clares',
-  'chatsworth',
-  'crusaders',
-  'rhythm',
-  'harlequins',
-  'warriors',
-  'umlazi',
-];
-export const SERIES = [
-  {
-    id: 's-emcu-d1-26-27',
-    name: 'EMCU Division 1 · 2026/27',
-    startDate: '2026-08-01',
-    divisions: false,
-    groups: 1,
-    maxOvers: 50,
-    maxPlayers: 11,
-    rosterLimit: 18,
-    ballType: 'Cricket Ball',
-    seriesType: 'One-Day (40-50 overs)',
-    powerPlay: true,
-    category: 'Men',
-    level: 'Club',
-    winPoints: 4,
-    bonusPoints: 1,
-    lossPoints: 0,
-    tiePoints: 2,
-    abandonedPoints: 1,
-    ballsPerOver: 6,
-    maxBallsPerOver: 8,
-    minLeagueMatches: 2,
-    configureExtras: false,
-    lockAfterLive: true,
-    lockAfterManual: true,
-    preventTeamSwitch: true,
-    umpireReportsMandatory: true,
-    captainReportsMandatory: true,
-    sendReportEmails: true,
-    rankCalculator: 'New',
-    hideSeriesDetails: false,
-    allowLockedRegistration: false,
-    pointsTableOrder: ['Most Points', 'NRR', 'Head To Head', 'Number of Wins', 'Win Percentage'],
-    tags: ['EMCU Divisions', 'EMCU Division 1', 'Round-robin'],
-    teams: _premierTeams,
-    costPerKm: 4.5,
-    carsPerAwayTrip: 3,
-    released: false,
-    releasedAt: null,
-    fixtures: generateRoundRobin(_premierTeams, '2026-08-02'),
-  },
-  {
-    id: 's-emcu-d2-26-27',
-    name: 'EMCU Division 2 · 2026/27',
-    startDate: '2026-08-08',
-    divisions: false,
-    groups: 1,
-    maxOvers: 50,
-    maxPlayers: 11,
-    rosterLimit: 18,
-    ballType: 'Cricket Ball',
-    seriesType: 'One-Day (40-50 overs)',
-    powerPlay: true,
-    category: 'Men',
-    level: 'Club',
-    winPoints: 4,
-    bonusPoints: 1,
-    lossPoints: 0,
-    tiePoints: 2,
-    abandonedPoints: 1,
-    ballsPerOver: 6,
-    maxBallsPerOver: 8,
-    minLeagueMatches: 2,
-    configureExtras: false,
-    lockAfterLive: true,
-    lockAfterManual: true,
-    preventTeamSwitch: true,
-    umpireReportsMandatory: false,
-    captainReportsMandatory: true,
-    sendReportEmails: true,
-    rankCalculator: 'New',
-    hideSeriesDetails: false,
-    allowLockedRegistration: false,
-    pointsTableOrder: ['Most Points', 'NRR', 'Head To Head', 'Number of Wins', 'Win Percentage'],
-    tags: ['EMCU Divisions', 'EMCU Division 2'],
-    teams: ['spartan', 'ilembe', 'verulam', 'tongaat'],
-    costPerKm: 4.5,
-    carsPerAwayTrip: 3,
-    released: false,
-    releasedAt: null,
-    fixtures: generateRoundRobin(['spartan', 'ilembe', 'verulam', 'tongaat'], '2026-08-08'),
-  },
-];

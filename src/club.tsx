@@ -790,6 +790,7 @@ export function ClubHome({
               ['CQI score', club.cqi > 0 ? club.cqi.toFixed(1) : '—'],
               ['Members', club.players || 0],
               ['Senior teams', tc.senior],
+              ["Women's teams", tc.women],
               ['Junior teams', tc.junior],
               ['Sub-union', club.district || club.sub || '—'],
               ['Chair', club.chair.split(' ')[0]],
@@ -3850,7 +3851,7 @@ export function CQIView({
       // Mirror the home-page glance card: team counts derive from leagues entered.
       const tc = teamCounts(club.leagues, allLeagues);
       a.senior = tc.senior;
-      a.women = club.women;
+      a.women = tc.women;
       a.juniorB = tc.junior;
       a.juniorG = 0;
       a.premprom = true;

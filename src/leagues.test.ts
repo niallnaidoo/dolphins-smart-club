@@ -7,6 +7,7 @@ import {
   optionsGroupedByGroup,
   findByKey,
   teamCounts,
+  isWomensLeague,
   teamLetter,
   defaultTeamName,
   clubTeamsForLeague,
@@ -95,36 +96,90 @@ describe('labelByKey / findByKey / optionsGroupedByGroup', () => {
   });
 });
 
+describe('isWomensLeague', () => {
+  const L = (label: string, group = 'Overarching') => ({ key: 'k', label, group });
+  it('matches women / womens / women’s / ladies labels (case-insensitive)', () => {
+    expect(isWomensLeague(L('Premier Women’s League'))).toBe(true); // curly apostrophe
+    expect(isWomensLeague(L("Promotion Women's League"))).toBe(true); // straight apostrophe
+    expect(isWomensLeague(L('womens t20'))).toBe(true);
+    expect(isWomensLeague(L('Ladies Cup'))).toBe(true);
+  });
+  it('does NOT match plain leagues or "girls" (junior girls stay junior)', () => {
+    expect(isWomensLeague(L('Premier League'))).toBe(false);
+    expect(isWomensLeague(L('Under 15 Girls', 'Juniors'))).toBe(false);
+    expect(isWomensLeague(null)).toBe(false);
+    expect(isWomensLeague({ label: undefined })).toBe(false);
+  });
+});
+
 describe('teamCounts', () => {
   const CATALOGUE = [
     ...LEAGUES,
+    {
+      key: 'premierWomen',
+      label: 'Premier Women’s League',
+      group: 'Overarching',
+      district: OVERARCHING_DISTRICT,
+    },
+    {
+      key: 'promotion-women-s-league',
+      label: 'Promotion Women’s League',
+      group: 'Overarching',
+      district: OVERARCHING_DISTRICT,
+    },
     { key: 'u11', label: 'Under 11', group: 'Juniors', district: 'Ethekwini Metro Cricket Union' },
     { key: 'u13', label: 'Under 13', group: 'Juniors', district: 'Ugu Cricket District' },
+    // A junior-group league whose label reads "Girls" — must stay junior, not women.
+    { key: 'u15g', label: 'Under 15 Girls', group: 'Juniors', district: 'Ugu Cricket District' },
   ];
+
+  it('splits selected leagues into senior, women and junior', () => {
+    expect(
+      teamCounts(['premier', 'premierWomen', 'promotion-women-s-league', 'u11'], CATALOGUE),
+    ).toEqual({ senior: 1, women: 2, junior: 1 });
+  });
 
   it('splits selected leagues into senior and junior by catalogue group', () => {
     expect(teamCounts(['premier', 'emcuD1', 'u11', 'u13'], CATALOGUE)).toEqual({
       senior: 2,
+      women: 0,
       junior: 2,
+    });
+  });
+
+  it('keeps a junior-group "girls" league as junior, not women (precedence)', () => {
+    expect(teamCounts(['premierWomen', 'u15g'], CATALOGUE)).toEqual({
+      senior: 0,
+      women: 1,
+      junior: 1,
     });
   });
 
   it('counts a key whose league was deleted from the catalogue as senior', () => {
     // Total must always equal leagues entered, so dangling keys stay counted.
-    expect(teamCounts(['premier', 'deleted-league'], CATALOGUE)).toEqual({ senior: 2, junior: 0 });
+    expect(teamCounts(['premier', 'deleted-league'], CATALOGUE)).toEqual({
+      senior: 2,
+      women: 0,
+      junior: 0,
+    });
   });
 
   it('handles empty and missing inputs', () => {
-    expect(teamCounts([], CATALOGUE)).toEqual({ senior: 0, junior: 0 });
-    expect(teamCounts(undefined, CATALOGUE)).toEqual({ senior: 0, junior: 0 });
-    expect(teamCounts(['u11'], undefined)).toEqual({ senior: 1, junior: 0 });
+    expect(teamCounts([], CATALOGUE)).toEqual({ senior: 0, women: 0, junior: 0 });
+    expect(teamCounts(undefined, CATALOGUE)).toEqual({ senior: 0, women: 0, junior: 0 });
+    expect(teamCounts(['u11'], undefined)).toEqual({ senior: 1, women: 0, junior: 0 });
   });
 
   it('sums per-league team counts when a leagueTeams map is given', () => {
     expect(
-      teamCounts(['premier', 'emcuD1', 'u11'], CATALOGUE, { premier: 2, emcuD1: 3, u11: 2 }),
+      teamCounts(['premier', 'premierWomen', 'u11'], CATALOGUE, {
+        premier: 2,
+        premierWomen: 3,
+        u11: 2,
+      }),
     ).toEqual({
-      senior: 5, // premier(2) + emcuD1(3)
+      senior: 2, // premier(2)
+      women: 3, // premierWomen(3)
       junior: 2, // u11(2)
     });
   });
@@ -133,10 +188,15 @@ describe('teamCounts', () => {
     // No map ⇒ 1 each (legacy clubs); partial map ⇒ only listed keys multiplied.
     expect(teamCounts(['premier', 'emcuD1'], CATALOGUE, { premier: 2 })).toEqual({
       senior: 3,
+      women: 0,
       junior: 0,
     });
-    expect(teamCounts(['premier'], CATALOGUE, { premier: 0 })).toEqual({ senior: 1, junior: 0 });
-    expect(teamCounts(['premier'], CATALOGUE, {})).toEqual({ senior: 1, junior: 0 });
+    expect(teamCounts(['premier'], CATALOGUE, { premier: 0 })).toEqual({
+      senior: 1,
+      women: 0,
+      junior: 0,
+    });
+    expect(teamCounts(['premier'], CATALOGUE, {})).toEqual({ senior: 1, women: 0, junior: 0 });
   });
 });
 

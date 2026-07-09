@@ -44,6 +44,8 @@ import {
   formatDeadlineMid,
   daysUntil,
   daysAgo,
+  relTimeAgo,
+  buildRecentActivity,
   ageFromSaId,
   termRemaining,
 } from './data';
@@ -2045,6 +2047,10 @@ export function AdminDashboard({
   const leaders = ranked.slice(0, 5);
   const atRisk = [...ranked].sort((a, b) => a.prog - b.prog).slice(0, 5);
 
+  // Real cohort activity, derived from each club's timestamped comm/onboarding events
+  // (PII-safe — see buildRecentActivity). Environment-specific by construction.
+  const recentActivity = buildRecentActivity(clubs);
+
   // Phase completion roll-up — each card routes to its filtered cohort view
   const phases = [
     {
@@ -2260,57 +2266,45 @@ export function AdminDashboard({
       <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 16, marginTop: 16 }}>
         <Card title="Recent activity" sub="Last 7 days · all districts">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {[
-              { who: 'Clares CC', what: 'submitted CQI form', when: '2h ago', tone: 'teal' },
-              { who: 'Harlequins CC', what: 'uploaded AGM Minutes', when: '5h ago', tone: 'teal' },
-              {
-                who: 'UKZN CC',
-                what: 'submitted 2026/27 affiliation form',
-                when: '1d ago',
-                tone: 'navy',
-              },
-              {
-                who: 'Phoenix CC',
-                what: 'viewed affiliation form but has not submitted',
-                when: '2d ago',
-                tone: 'gold',
-              },
-              {
-                who: 'Berea Rovers CC',
-                what: 'affiliation form in progress · awaiting submission',
-                when: '3d ago',
-                tone: 'gold',
-              },
-              {
-                who: 'Tongaat CC',
-                what: 'has not started — 2 reminders sent',
-                when: '6d ago',
-                tone: 'coral',
-              },
-            ].map((a, i) => (
+            {recentActivity.length === 0 ? (
               <div
-                key={i}
-                className="row"
                 style={{
-                  padding: '8px 10px',
-                  borderRadius: 6,
-                  background: i % 2 ? 'var(--paper)' : 'transparent',
+                  padding: '18px 10px',
+                  fontSize: 13,
+                  color: 'var(--muted)',
+                  textAlign: 'center',
                 }}
               >
-                <span className={`sdot ${a.tone}`} />
-                <span style={{ fontWeight: 500, color: 'var(--ink)', fontSize: 13 }}>{a.who}</span>
-                <span style={{ flex: 1, fontSize: 13, color: 'var(--muted)' }}>{a.what}</span>
-                <span
+                No activity in the last 7 days.
+              </div>
+            ) : (
+              recentActivity.map((a, i) => (
+                <div
+                  key={i}
+                  className="row"
                   style={{
-                    fontFamily: "'Montserrat',sans-serif",
-                    fontSize: 10.5,
-                    color: 'var(--muted-2)',
+                    padding: '8px 10px',
+                    borderRadius: 6,
+                    background: i % 2 ? 'var(--paper)' : 'transparent',
                   }}
                 >
-                  {a.when}
-                </span>
-              </div>
-            ))}
+                  <span className={`sdot ${a.tone}`} />
+                  <span style={{ fontWeight: 500, color: 'var(--ink)', fontSize: 13 }}>
+                    {a.who}
+                  </span>
+                  <span style={{ flex: 1, fontSize: 13, color: 'var(--muted)' }}>{a.what}</span>
+                  <span
+                    style={{
+                      fontFamily: "'Montserrat',sans-serif",
+                      fontSize: 10.5,
+                      color: 'var(--muted-2)',
+                    }}
+                  >
+                    {relTimeAgo(a.at)}
+                  </span>
+                </div>
+              ))
+            )}
           </div>
         </Card>
 
@@ -4460,7 +4454,7 @@ export function AdminClubDetail({
                       : 'Pending',
                 ],
                 ['Senior teams', tc.senior],
-                ["Women's teams", club.women],
+                ["Women's teams", tc.women],
                 ['Junior teams', tc.junior],
                 ['Players', club.players],
                 // Provenance: clubs created through the tenant-wide signup link

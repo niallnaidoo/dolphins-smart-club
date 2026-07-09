@@ -149,11 +149,28 @@ export function findByKey(allLeagues: any[], key: string) {
 export const JUNIOR_GROUP = 'Juniors';
 
 /**
- * Senior/junior team counts derived from a club's selected league keys. A club may
+ * Matches a women's league by its LABEL. Women's leagues seed with
+ * `group: "Overarching Leagues"` (same as premier/promotion), so — unlike juniors, which
+ * have their own group — the label is the only available signal. Deliberately excludes
+ * "girls": junior girls are a distinct CQI category (`juniorG`) and stay junior via the
+ * junior-group check in `teamCounts`, which runs first.
+ */
+const WOMENS_LABEL_RE = /\b(women(?:['’]?s)?|ladies)\b/i;
+
+/** True when a catalogue league is a women's league (matched on label). */
+export function isWomensLeague(league: any): boolean {
+  return !!league && WOMENS_LABEL_RE.test(String(league.label || ''));
+}
+
+/**
+ * Senior/women/junior team counts derived from a club's selected league keys. A club may
  * field more than one side in a league: `leagueTeams` maps a league key to its team
  * count; a key absent from the map (or no map at all — legacy clubs) counts as 1, so
- * the total always equals at least the number of leagues entered. Keys whose league
- * was deleted from the catalogue count as senior.
+ * the total always equals at least the number of leagues entered.
+ *
+ * Precedence is junior-group → women-label → senior: a league in the `Juniors` group is
+ * junior even if its label reads "Girls", matching the CQI model's junior/women split.
+ * Keys whose league was deleted from the catalogue fall through to senior.
  */
 export function teamCounts(
   leagueKeys: any[],
@@ -162,11 +179,14 @@ export function teamCounts(
 ) {
   const keys = Array.isArray(leagueKeys) ? leagueKeys : [];
   let senior = 0;
+  let women = 0;
   let junior = 0;
   for (const k of keys) {
     const n = Math.max(1, Number(leagueTeams?.[k]) || 1);
-    if (findByKey(allLeagues, k)?.group === JUNIOR_GROUP) junior += n;
+    const lg = findByKey(allLeagues, k);
+    if (lg?.group === JUNIOR_GROUP) junior += n;
+    else if (isWomensLeague(lg)) women += n;
     else senior += n;
   }
-  return { senior, junior };
+  return { senior, women, junior };
 }
