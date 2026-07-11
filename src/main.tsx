@@ -38,6 +38,7 @@ import {
   MIN_SAFEGUARDING_FILES,
   teamIdsForClub,
   distinctClubCount,
+  DISTRICTS,
 } from './data';
 import { exportRowsToXlsx } from './exportXlsx';
 import { openBccReminder } from './mailto';
@@ -455,6 +456,9 @@ function AuthedApp({ tenantConfig }) {
   const users = usersQuery.data ?? [];
   // Leagues live in tenant config (admin-managed catalogue clubs opt into).
   const allLeagues = tenantConfig?.leagues ?? [];
+  // Districts too (operator-managed); legacy tenants without the field fall back
+  // to the shared constant — mirrors resolveDistricts on the API.
+  const allDistricts = tenantConfig?.districts ?? DISTRICTS;
   const onboarded = meQuery.data?.onboardingSeen ?? {};
   const submissionDeadline = tenantConfig?.submissionDeadline ?? SUBMISSION_DEADLINE_DEFAULT;
 
@@ -672,6 +676,7 @@ function AuthedApp({ tenantConfig }) {
                   users,
                   allSeries,
                   allLeagues,
+                  allDistricts,
                   toastShow,
                   onboarded,
                   setOnboarded,
@@ -726,6 +731,7 @@ function AuthedApp({ tenantConfig }) {
                   clubs,
                   allSeries,
                   allLeagues,
+                  allDistricts,
                   toastShow,
                   onboarded,
                   setOnboarded,
@@ -780,6 +786,7 @@ function Shell({
   users = [],
   allSeries,
   allLeagues,
+  allDistricts = DISTRICTS,
   toastShow,
   onboarded,
   setOnboarded,
@@ -2007,6 +2014,7 @@ function Shell({
             goto={gotoClubView}
             toast={toastShow}
             allLeagues={allLeagues}
+            districts={allDistricts}
             onSaveDraft={(payload) =>
               updateClub({
                 district: payload.district,
@@ -2106,6 +2114,7 @@ function Shell({
           <LeagueForm
             league={showLeagueForm.key ? showLeagueForm : null}
             allLeagues={allLeagues}
+            districts={allDistricts}
             onCreate={onCreateLeague}
             onUpdate={updateLeague}
             onClose={() => setShowLeagueForm(null)}

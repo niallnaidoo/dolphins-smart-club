@@ -45,6 +45,11 @@ Deletes the token and clears the config pointer. `200 → { ok: true }`.
 404 → invalid/revoked token, wrong token kind, pointer mismatch, or erased tenant
 ```
 
+> `districts` is the tenant's resolved list (operator-managed; legacy rows fall back to
+> the shared defaults). A freshly created client has `districts: []` — the signup page
+> shows a "not open yet" notice and every POST district is rejected until the operator
+> configures the list.
+
 ## `POST /club-signup?t=<token>` — register a club (public)
 
 Body:
@@ -52,10 +57,10 @@ Body:
 ```jsonc
 {
   "clubName": "Kingsmead CC", // required, ≤ 80 chars, must slug to a non-empty id
-  "district": "…", // required, one of the catalogue districts
+  "district": "…", // required, one of the TENANT's districts (GET returns the list)
   "repName": "…", // required, ≤ 80 chars — becomes the club's chair contact
   "repEmail": "…", // required — becomes the rep's login identity (normalized lowercase)
-  "repCell": "…" // optional, ≤ 20 chars
+  "repCell": "…", // optional, ≤ 20 chars
 }
 ```
 

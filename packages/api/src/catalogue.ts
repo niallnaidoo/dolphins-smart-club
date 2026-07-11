@@ -1,17 +1,39 @@
 /**
- * Server-side copy of the (frozen, v1) cricket catalogue, used to validate
- * affiliation input. These mirror the shared defaults in the frontend's
- * data.jsx; per-tenant catalogue overrides are a phase-2 feature
- * (see docs/architecture/0005), so duplicating the frozen keys here is acceptable.
+ * Server-side copy of the shared cricket catalogue defaults, used to validate
+ * affiliation input. Districts and leagues are per-tenant config (operator-managed);
+ * the constants here are the read-time fallback for legacy tenant rows without an
+ * explicit field. Doc keys remain frozen shared defaults (ADR 0005).
  */
 
-export const VALID_DISTRICTS = new Set([
+/**
+ * Fallback district list for tenants with no `districts` field on their config row
+ * (pre-whitelabel tenants; no backfill — see resolveDistricts). Keep in sync with
+ * DISTRICTS in the frontend's src/data.ts: drift would make a legacy tenant's first
+ * operator save silently drop a default the operator never saw rendered.
+ */
+export const DEFAULT_DISTRICTS: string[] = [
   'Ethekwini Metro Cricket Union',
   'Umkhanyakude Cricket District',
   'Ugu Cricket District',
   'KCCD',
   'Illembe Cricket District',
-]);
+];
+
+/**
+ * Server mirror of OVERARCHING_DISTRICT in the frontend's src/leagues.ts — the
+ * sentinel a league uses to appear in every district's picker. Never a valid
+ * tenant district (validateDistricts reserves it) but always a valid league.district.
+ */
+export const OVERARCHING_DISTRICT = 'All districts';
+
+/**
+ * The tenant's effective district list: the explicit config value when present
+ * (including a deliberate [] on a freshly created client, which blocks club signup
+ * until the operator configures districts), else the shared defaults.
+ */
+export function resolveDistricts(cfg?: { districts?: string[] } | null): string[] {
+  return cfg?.districts ?? DEFAULT_DISTRICTS;
+}
 
 /**
  * Server-side mirror of REQUIRED_DOCS in the frontend's data.jsx — the only
@@ -100,7 +122,9 @@ function isParseableDate(v: unknown): boolean {
  * already on the club (so removing an orphaned/deleted league still validates).
  * Doc keys follow the same union pattern: DOC_KEYS plus keys already on the
  * club, so a patch can still carry/clear a retired key that predates the
- * cleanup script, but can never introduce one.
+ * cleanup script, but can never introduce one. Districts follow it too:
+ * the tenant's resolved list plus the club's current district, so a club with
+ * a since-removed district can still be saved without changing it.
  *
  * exco/coaches bodies were previously unchecked, so the affiliation form's new
  * governance fields (chair ID/term, coach ID/experience) are validated here —
@@ -123,13 +147,14 @@ export function validateClubPatch(
   },
   validLeagueKeys: Set<string>,
   validDocKeys: Set<string>,
+  validDistricts: Set<string>,
 ): string | null {
   if (patch.name !== undefined) {
     const n = patch.name.trim();
     if (!n) return 'club name cannot be empty';
     if (n.length > 80) return 'club name must be 80 characters or fewer';
   }
-  if (patch.district && !VALID_DISTRICTS.has(patch.district)) {
+  if (patch.district && !validDistricts.has(patch.district)) {
     return `unknown district: ${patch.district}`;
   }
   if (patch.leagues) {

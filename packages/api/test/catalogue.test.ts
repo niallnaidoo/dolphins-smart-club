@@ -16,8 +16,9 @@ import {
 
 const leagueKeys = new Set<string>(['premier']);
 const docKeys = new Set<string>(['constitution', 'financials']);
+const districts = new Set<string>(['KCCD']);
 const ok = (patch: Parameters<typeof validateClubPatch>[0]) =>
-  validateClubPatch(patch, leagueKeys, docKeys);
+  validateClubPatch(patch, leagueKeys, docKeys, districts);
 
 describe('isValidSaId', () => {
   test('accepts a 13-digit ID with a real YYMMDD', () => {
@@ -50,6 +51,18 @@ describe('validateClubPatch · chair governance', () => {
   });
   test('ignores chair fields when absent', () => {
     assert.equal(ok({ exco: { chair: { name: 'Mo' } } }), null);
+  });
+});
+
+describe('validateClubPatch · district (caller-supplied union, per-tenant)', () => {
+  test('passes a district in the supplied set', () => {
+    assert.equal(ok({ district: 'KCCD' }), null);
+  });
+  test('rejects a district outside the set', () => {
+    assert.match(String(ok({ district: 'Gotham' })), /unknown district/);
+  });
+  test('ignores an absent district', () => {
+    assert.equal(ok({ name: 'Some CC' }), null);
   });
 });
 

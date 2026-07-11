@@ -325,11 +325,19 @@ export function ClubSignupPage() {
           By registering, you agree the union may store these details to administer your club&apos;s
           affiliation.
         </p>
+        {districts.length === 0 && (
+          // A freshly created client has districts: [] until the operator configures
+          // them — the POST would 400 every district, so say so instead of a dead form.
+          <div style={{ color: 'var(--danger-on-dark)', fontSize: 12.5 }}>
+            Club signup isn&apos;t open yet — the union hasn&apos;t configured its districts.
+            Contact the union office.
+          </div>
+        )}
         {error && <div style={{ color: 'var(--danger-on-dark)', fontSize: 12.5 }}>{error}</div>}
         <button
           className="btn btn-teal"
           type="submit"
-          disabled={busy}
+          disabled={busy || districts.length === 0}
           style={{ width: '100%', marginTop: 4 }}
         >
           {busy ? 'Registering…' : 'Register club'}

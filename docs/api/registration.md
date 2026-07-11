@@ -14,10 +14,14 @@ Registrations drive the derived `club.players` count.
 Resolves the token → `{ tenant, clubId }` and checks it matches `:clubId`.
 
 ```
-200 → { tenant, clubId, clubName }
+200 → { tenant, clubId, clubName, leagues, districts, clubs }
 400 → missing token
 404 → invalid registration link / club not found
 ```
+
+`leagues` (tenant catalogue) populates the Team dropdown, `districts` (tenant list, with
+the shared-defaults fallback for legacy rows) the District dropdown, and `clubs` (sibling
+id+name pairs) the "club for which last registered" dropdown.
 
 ## `POST /register/:clubId?t=<token>` — submit a registration
 

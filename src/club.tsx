@@ -927,7 +927,17 @@ function syncRoster(existing, count, clubName) {
   return out;
 }
 
-export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allLeagues = [] }) {
+export function AffiliationForm({
+  club,
+  goto,
+  toast,
+  onSubmit,
+  onSaveDraft,
+  allLeagues = [],
+  // Tenant-resolved district list (operator-managed); the constant default keeps
+  // the component usable standalone and covers legacy tenants.
+  districts = DISTRICTS,
+}) {
   const copy = useCopy();
   const [data, setData] = useStateC(() => {
     // Pre-fill exco from club.exco (single source of truth shared with the exco roster doc)
@@ -950,7 +960,7 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
     const ground = club.ground || {};
     return {
       clubName: club.name,
-      district: club.district || DISTRICTS[0],
+      district: club.district || districts[0] || '',
       township: 'no',
       chairName: chairSeed.name,
       chairCell: chairSeed.cell,
@@ -980,7 +990,7 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
       // district in step 1 we wipe and re-seed below so the picker always matches.
       leagues: (() => {
         const prior = Array.isArray(club.leagues) ? club.leagues : null;
-        const opts = leagueOptionsForDistrict(allLeagues, club.district || DISTRICTS[0]);
+        const opts = leagueOptionsForDistrict(allLeagues, club.district || districts[0] || '');
         return opts.reduce((acc, L) => {
           acc[L.key] = prior ? prior.includes(L.key) : false;
           return acc;
@@ -1453,9 +1463,13 @@ export function AffiliationForm({ club, goto, toast, onSubmit, onSaveDraft, allL
                       value={data.district}
                       onChange={(e) => setDistrict(e.target.value)}
                     >
-                      {DISTRICTS.map((d) => (
-                        <option key={d}>{d}</option>
-                      ))}
+                      {districts.length === 0 ? (
+                        <option value="" disabled>
+                          No districts configured — contact the union office
+                        </option>
+                      ) : (
+                        districts.map((d) => <option key={d}>{d}</option>)
+                      )}
                     </select>
                   </div>
                   <div className="field">

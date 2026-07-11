@@ -4,11 +4,13 @@
 
 Resolves the tenant from the host (prod) or `x-tenant` / `?tenant=` (dev) and returns the
 **public** subset of config: branding (name, title, logo, favicon, color tokens, copy
-slots), the submission deadline, the league catalogue, the tutorial videos, and the
-per-tenant feature flags. `knownClubs` and `requiredDocs` are not exposed here.
+slots), the submission deadline, the league catalogue, the district list, the tutorial
+videos, and the per-tenant feature flags. `knownClubs` and `requiredDocs` are not exposed
+here. `districts` is the resolved list — a legacy row without the field falls back to the
+shared defaults; an explicit `[]` (freshly created client) comes through empty.
 
 ```
-200 → { tenant, branding, submissionDeadline, leagues, tutorials, features }
+200 → { tenant, branding, submissionDeadline, leagues, districts, tutorials, features }
 400 → unknown tenant
 404 → tenant not found
 ```
@@ -31,10 +33,17 @@ strip-and-merge core backs the operator's `PUT /platform/tenants/:slug`
 > resurrect a revoked link.
 
 > The `leagues` catalogue IS tenant-editable here (whole-array replace, validated:
-> unique string keys, non-blank labels) and operator-editable via
+> unique string keys, non-blank labels, and each `league.district` must be a tenant
+> district or the "All districts" sentinel) and operator-editable via
 > `PUT /platform/tenants/:slug` — the operator route additionally rejects (409)
-> removing a league clubs are still registered for. Districts and CQI remain frozen
-> shared defaults per [ADR 0005](../architecture/0005-frozen-catalogues-v1.md).
+> removing a league clubs are still registered for.
+
+> `districts` is **operator-only** (stripped here like `features`/`tutorials`/`adminCount`,
+> ADR 0006) and edited via `PUT /platform/tenants/:slug`, which rejects (409) removing a
+> district that clubs or leagues still reference. A tenant row without the field resolves
+> to the shared defaults at read time; a freshly created client starts at `[]` (club signup
+> blocked until configured). CQI remains a frozen shared default per
+> [ADR 0005](../architecture/0005-frozen-catalogues-v1.md) (amended — see its status note).
 
 ## `GET /me` — current user (authenticated)
 

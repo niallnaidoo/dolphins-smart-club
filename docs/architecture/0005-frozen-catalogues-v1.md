@@ -1,6 +1,11 @@
 # ADR 0005 — Districts, leagues, and CQI are frozen shared defaults in v1
 
-**Status:** Accepted
+**Status:** Accepted — superseded in part (July 2026): **leagues** and **districts** are now
+per-tenant config (`TenantConfig.leagues`, admin+operator editable; `TenantConfig.districts`,
+operator-only, with a read-time fallback to the shared defaults for legacy rows). Neither
+required the scorer refactor this ADR anticipated — leagues helpers take the catalogue as a
+parameter, and districts are a pure validation-whitelist/dropdown concern. **CQI remains
+frozen** exactly as decided below; the `cqiVersion` concern still applies before it can vary.
 
 ## Context
 

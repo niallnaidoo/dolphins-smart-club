@@ -5,9 +5,9 @@
  * membership: the gate is the platform membership {tenantId:'*', role:'operator'}
  * (isOperator in routing.ts, mirroring requirePlatformOperator on the API).
  * Three screens: client list → per-client settings (identity, branding, copy,
- * color tokens, feature flags, league catalogue, deadline, admins, DNS go-live
- * sheet) → a create-client wizard. All writes go through the /platform/* client
- * in api.ts.
+ * color tokens, feature flags, districts, league catalogue, deadline, admins,
+ * DNS go-live sheet) → a create-client wizard. All writes go through the
+ * /platform/* client in api.ts.
  */
 import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
@@ -20,6 +20,8 @@ import { ApiError, EMAIL_RE } from './api';
 import { resolveCopy } from './branding';
 import { Icon, Pill, Btn, EmptyState, useToast, useEscapeClose } from './atoms';
 import { LeagueForm } from './admin';
+import { DISTRICTS } from './data';
+import { OVERARCHING_DISTRICT } from './leagues';
 import type { TenantConfig, TenantSummary, BrandingCopy, League } from './types';
 import {
   BRAND_ROLES,
@@ -534,8 +536,8 @@ function TenantEditPage({ toast }: { toast: Toast }) {
             {config.branding?.name ?? slug} <em>settings</em>
           </h1>
           <p className="ph-desc">
-            Branding, copy, theme tokens, feature flags, leagues, admin access and the vanity-domain
-            go-live checklist for this client.
+            Branding, copy, theme tokens, feature flags, districts, leagues, admin access and the
+            vanity-domain go-live checklist for this client.
           </p>
         </div>
         <div className="ph-actions">
@@ -579,6 +581,8 @@ function TenantEditPage({ toast }: { toast: Toast }) {
           saveBranding={saveBranding}
           toast={toast}
         />
+        {/* Districts above leagues: the league form's district picker draws from them. */}
+        <DistrictsCard key={`ds-${config.tenant}`} config={config} save={save} toast={toast} />
         <LeaguesCard
           key={`lg-${config.tenant}`}
           slug={slug}
@@ -953,6 +957,135 @@ function FeaturesCard({
   );
 }
 
+function DistrictsCard({
+  config,
+  save,
+  toast,
+}: {
+  config: TenantConfig;
+  save: (p: Partial<TenantConfig>) => Promise<TenantConfig>;
+  toast: Toast;
+}) {
+  // undefined ⇒ legacy tenant running on the shared defaults (shown with a pill);
+  // the first save materializes an explicit array on the config row.
+  const configured = config.districts;
+  const effective = configured ?? DISTRICTS;
+  const [draft, setDraft] = useState<string[]>([...effective]);
+  const [newName, setNewName] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(effective);
+
+  function addDistrict() {
+    const d = newName.trim();
+    setErr('');
+    if (!d) return;
+    if (d === OVERARCHING_DISTRICT) {
+      setErr(`"${OVERARCHING_DISTRICT}" is reserved for overarching leagues`);
+      return;
+    }
+    if (d.length > 80) {
+      setErr('District names must be 80 characters or fewer');
+      return;
+    }
+    if (draft.includes(d)) {
+      setErr(`"${d}" is already listed`);
+      return;
+    }
+    setDraft([...draft, d]);
+    setNewName('');
+  }
+
+  async function saveIt() {
+    setErr('');
+    setBusy(true);
+    try {
+      await save({ districts: draft });
+      toast('Districts saved');
+    } catch (e) {
+      // The referrer guard's 409 names the district and its club/league counts.
+      const msg = e instanceof ApiError ? e.message : 'Could not save — try again';
+      setErr(msg);
+      toast(msg, 'warn');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const rowStyle: CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    padding: '8px 0',
+    borderBottom: '1px solid var(--line2)',
+  };
+
+  return (
+    <Panel
+      title={
+        <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+          Districts
+          {configured === undefined && (
+            <span
+              style={{
+                fontSize: 10.5,
+                color: 'var(--muted-2)',
+                border: '1px solid var(--line2)',
+                borderRadius: 999,
+                padding: '1px 7px',
+                fontWeight: 400,
+              }}
+            >
+              defaults
+            </span>
+          )}
+        </span>
+      }
+      sub="The municipal districts / sub-unions clubs pick during signup and affiliation, and leagues are filed under. Removing one clubs or leagues still reference is blocked."
+    >
+      {draft.map((d) => (
+        <div key={d} style={rowStyle}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>{d}</div>
+          <Btn tone="ghost" size="sm" onClick={() => setDraft(draft.filter((x) => x !== d))}>
+            Remove
+          </Btn>
+        </div>
+      ))}
+      {draft.length === 0 && (
+        <div style={{ fontSize: 12.5, color: 'var(--coral)', padding: '8px 0' }}>
+          Clubs can&apos;t sign up until at least one district is set.
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <input
+          className="field-input"
+          style={{ flex: 1 }}
+          placeholder="e.g. Ethekwini Metro Cricket Union"
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addDistrict())}
+        />
+        <Btn
+          tone="outline"
+          size="sm"
+          icon={Icon.Plus}
+          onClick={addDistrict}
+          disabled={!newName.trim()}
+        >
+          Add
+        </Btn>
+      </div>
+      {err && <div style={ERR}>{err}</div>}
+      <div style={{ marginTop: 14 }}>
+        <Btn tone="teal" size="sm" onClick={saveIt} disabled={!dirty || busy}>
+          {busy ? 'Saving…' : 'Save districts'}
+        </Btn>
+      </div>
+    </Panel>
+  );
+}
+
 /** Modal host for LeagueForm — main.tsx's TaskModal is private (and importing it
  *  would create a cycle), so this reuses the same global task-modal classes. */
 function LeagueModal({
@@ -1124,6 +1257,9 @@ function LeaguesCard({
           <LeagueForm
             league={form !== 'new' ? form : null}
             allLeagues={leagues}
+            // The EDITED CLIENT's district list — never useTenantPayload() here,
+            // that would resolve the operator's own host tenant.
+            districts={config.districts ?? DISTRICTS}
             onCreate={onCreate}
             onUpdate={onUpdate}
             onClose={() => setForm(null)}

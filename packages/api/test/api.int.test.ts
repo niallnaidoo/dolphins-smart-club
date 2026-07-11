@@ -12,6 +12,8 @@
 import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
+// Pure module (no env reads at load) — safe to import before the env block below.
+import { DEFAULT_DISTRICTS } from '../src/catalogue.js';
 
 // Env must be set BEFORE importing repo/app — repo reads TABLE_NAME at module load.
 const DDB_PORT = 4599; // distinct from the dev stack's 4567
@@ -3498,7 +3500,31 @@ describe('public club self-registration (/club-signup)', () => {
     const body = (await res.json()) as { tenant: string; orgName: string; districts: string[] };
     assert.equal(body.tenant, T);
     assert.equal(body.orgName, 'Signup Union');
-    assert.ok(body.districts.includes('KCCD'), 'districts carry the catalogue values');
+    // This tenant's config row has NO districts field → the shared defaults must
+    // resolve (the legacy-tenant fallback path).
+    assert.deepEqual(body.districts, DEFAULT_DISTRICTS);
+  });
+
+  test('a tenant with explicit districts: [] blocks signup (GET empty, POST 400)', async () => {
+    const ET = 'emptydistricts';
+    const EADMIN = devAuthAs('caller-empty-admin', 'empty-admin@su.test', [
+      { tenantId: ET, role: 'admin', clubIds: [] },
+    ]);
+    await repo.putTenantConfig({
+      tenant: ET,
+      branding: { name: 'Empty Union', title: 'Empty', logoUrl: '', colors: {}, copy: {} },
+      submissionDeadline: '2026-12-31',
+      knownClubs: [],
+      leagues: [],
+      districts: [], // freshly created client — operator hasn't configured districts yet
+    });
+    const etoken = await mintLink(ET, EADMIN);
+    const get = await signupGet(etoken);
+    assert.equal(get.status, 200);
+    assert.deepEqual(((await get.json()) as { districts: string[] }).districts, []);
+    const post = await signupPost(validBody(), etoken);
+    assert.equal(post.status, 400);
+    assert.match(((await post.json()) as { error: string }).error, /unknown district/);
   });
 
   test('GET without a token is a 400', async () => {
@@ -4391,7 +4417,12 @@ describe('branding merge-patch + tenant feature flags', () => {
     // A tenant with no features attribute (the seeded dolphins row) → empty map.
     const dolphins = await app.request('/tenant', { headers: { 'x-tenant': 'dolphins' } });
     assert.equal(dolphins.status, 200);
-    const dolphinsBody = (await dolphins.json()) as { features: Record<string, boolean> };
+    const dolphinsBody = (await dolphins.json()) as {
+      features: Record<string, boolean>;
+      districts: string[];
+    };
     assert.deepEqual(dolphinsBody.features, {});
+    // No districts field on the seeded row either → the shared defaults resolve.
+    assert.deepEqual(dolphinsBody.districts, DEFAULT_DISTRICTS);
   });
 });

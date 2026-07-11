@@ -77,6 +77,8 @@ export function RegisterPage() {
   const [state, setState] = useState('loading'); // loading | ready | invalid | done
   const [clubName, setClubName] = useState('');
   const [leagues, setLeagues] = useState([]);
+  // Tenant district list; the constant fallback covers deploy skew (SPA ahead of API).
+  const [districts, setDistricts] = useState<string[]>(DISTRICTS);
   // Sibling clubs for the previous-club dropdown; empty ⇒ free-text fallback.
   const [clubs, setClubs] = useState<{ id: string; name: string }[]>([]);
   // Set when the submit opened a transfer — drives the clearance success variant.
@@ -98,6 +100,7 @@ export function RegisterPage() {
         if (!live) return;
         setClubName(r.clubName);
         setLeagues(r.leagues ?? []);
+        setDistricts(r.districts ?? DISTRICTS);
         setClubs(r.clubs ?? []);
         setState('ready');
       } catch {
@@ -301,11 +304,19 @@ export function RegisterPage() {
             onChange={(e) => setD((f) => ({ ...f, district: e.target.value, team: '' }))}
             placeholder="Select district"
           >
-            {DISTRICTS.map((ds) => (
-              <option key={ds} value={ds}>
-                {ds}
+            {districts.length === 0 ? (
+              // Near-unreachable (empty-districts tenants can't sign clubs up), but
+              // honest: registration needs a district, so block rather than mislead.
+              <option value="" disabled>
+                Registration isn't open yet — contact the union office
               </option>
-            ))}
+            ) : (
+              districts.map((ds) => (
+                <option key={ds} value={ds}>
+                  {ds}
+                </option>
+              ))
+            )}
           </Select>
           <Select
             label="Team"

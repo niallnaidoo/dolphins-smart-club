@@ -110,6 +110,10 @@ export function buildTenantConfig(
   submissionDeadline: string,
   features?: Record<string, boolean>,
   leagues: League[] = [],
+  // Omit (seed path) to leave the field ABSENT so legacy rows keep the
+  // DEFAULT_DISTRICTS read-time fallback; the operator portal passes [] so a
+  // fresh client explicitly starts empty (signup blocked until configured).
+  districts?: string[],
 ): TenantConfig {
   const name = branding.name.trim();
   return {
@@ -126,6 +130,7 @@ export function buildTenantConfig(
     submissionDeadline,
     knownClubs: [],
     leagues,
+    ...(districts !== undefined ? { districts } : {}),
     ...(features ? { features } : {}),
   };
 }

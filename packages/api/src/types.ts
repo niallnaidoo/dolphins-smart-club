@@ -135,6 +135,14 @@ export interface TenantConfig {
   clubSignupLink?: { token: string; createdAt: string };
   /** Admin-managed league catalogue clubs opt into. Empty for a fresh tenant. */
   leagues?: League[];
+  /**
+   * Operator-managed district list clubs pick during signup/affiliation and leagues
+   * are filed under. Absent ⇒ DEFAULT_DISTRICTS fallback at read time (legacy tenants,
+   * no backfill); [] ⇒ freshly created client — club signup is blocked until the
+   * operator configures districts. Operator-only: PUT /tenant/config strips it
+   * (ADR 0006), only PUT /platform/tenants/:slug writes it.
+   */
+  districts?: string[];
   /** Optional per-tenant required-docs override; falls back to shared default. */
   requiredDocs?: unknown[];
   /**

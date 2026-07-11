@@ -48,7 +48,8 @@ import * as repo from './repo.js';
 import { VersionConflictError, LastAdminError } from './repo.js';
 import {
   validateClubPatch,
-  VALID_DISTRICTS,
+  resolveDistricts,
+  OVERARCHING_DISTRICT,
   DOC_KEYS,
   DOC_CONTENT_TYPES,
   MIN_SAFEGUARDING_FILES,
@@ -299,6 +300,9 @@ app.get('/tenant', async (c) => {
     branding: config.branding,
     submissionDeadline: config.submissionDeadline,
     leagues: config.leagues ?? [],
+    // District names are as public as league names — signup/affiliation pickers
+    // need them. Legacy rows without the field resolve to the shared defaults.
+    districts: resolveDistricts(config),
     // How-to-use-the-app videos for the public /tutorials page (non-sensitive; falls
     // back to the shared default set when the tenant has no override).
     tutorials: tutorialsFor(config),
@@ -329,6 +333,9 @@ app.get('/register/:clubId', async (c) => {
     clubId: club.id,
     clubName: club.name,
     leagues: cfg?.leagues ?? [],
+    // District picker for the public registration form — same non-sensitive set
+    // already exposed on /tenant.
+    districts: resolveDistricts(cfg),
     // Sibling clubs for the "club for which last registered" dropdown. Public
     // (token-gated) exposure of id+name ONLY — the same projection reps get from
     // /clubs/directory; club names are non-sensitive here.
@@ -617,7 +624,9 @@ app.get('/club-signup', async (c) => {
     tenant: cfg.tenant,
     // resolveSignupTenant already fetched this config — resolve locally, no second read.
     orgName: orgCopy(cfg).name,
-    districts: [...VALID_DISTRICTS],
+    // Per-tenant list; a freshly created client (districts: []) renders no options
+    // and ClubSignupPage shows its "signup isn't open yet" notice.
+    districts: resolveDistricts(cfg),
   });
 });
 
@@ -652,7 +661,8 @@ app.post('/club-signup', async (c) => {
     throw new HttpError(400, 'clubName, district, repName and repEmail are required');
   }
   if (!EMAIL_RE.test(email)) throw new HttpError(400, 'valid repEmail required');
-  if (!VALID_DISTRICTS.has(district)) throw new HttpError(400, `unknown district: ${district}`);
+  if (!resolveDistricts(cfg).includes(district))
+    throw new HttpError(400, `unknown district: ${district}`);
   if (clubName.length > SIGNUP_NAME_MAX || repName.length > SIGNUP_NAME_MAX) {
     throw new HttpError(400, `names must be ${SIGNUP_NAME_MAX} characters or fewer`);
   }
@@ -1022,7 +1032,14 @@ app.patch('/clubs/:id', async (c) => {
     ...Object.keys(current.docs ?? {}),
     ...Object.keys(current.docMeta ?? {}),
   ]);
-  const invalid = validateClubPatch(patch, validLeagueKeys, validDocKeys);
+  // Same union for districts: the tenant's resolved list plus the club's current
+  // district, so a club whose district was since removed can still be saved
+  // without changing it — but can never move to another unknown one.
+  const validDistricts = new Set([
+    ...resolveDistricts(cfg),
+    ...(current.district ? [current.district] : []),
+  ]);
+  const invalid = validateClubPatch(patch, validLeagueKeys, validDocKeys, validDistricts);
   if (invalid) throw new HttpError(400, invalid);
   if (patch.docMeta) assertDocMetaObjectKeys(ra.tenant, id, patch.docMeta);
   // Stale-client guard: docMeta is replaced wholesale (see repo.updateClub), so a
@@ -2104,10 +2121,49 @@ async function applyTenantConfigPatch(
   delete (patch as { sk?: unknown }).sk;
   delete (patch as { gsi1pk?: unknown }).gsi1pk;
   delete (patch as { gsi1sk?: unknown }).gsi1sk;
-  if (patch.leagues !== undefined) validateLeagues(patch.leagues);
+  // Districts validate (and trim) before leagues so a combined patch checks its
+  // leagues against the INCOMING district list, not the stored one.
+  if (patch.districts !== undefined) {
+    validateDistricts(patch.districts);
+    patch.districts = patch.districts.map((d) => d.trim());
+  }
+  if (patch.leagues !== undefined)
+    validateLeagues(
+      patch.leagues,
+      // A league's district must be real for the tenant — or the overarching
+      // sentinel, or a district already on the stored catalogue (value-level
+      // orphan tolerance: an untouched stale league keeps saving).
+      new Set([
+        ...resolveDistricts({ districts: patch.districts ?? current.districts }),
+        OVERARCHING_DISTRICT,
+        ...(current.leagues ?? []).map((l) => l.district),
+      ]),
+    );
   const next = { ...current, ...patch, tenant };
   await repo.putTenantConfig(next);
   return next;
+}
+
+/**
+ * District-list shape guard: non-blank unique strings, ≤80 chars, and never the
+ * OVERARCHING_DISTRICT sentinel (reserved for leagues that span all districts).
+ * An EMPTY array is valid — it is the deliberate starting state of a freshly
+ * created client (club signup stays blocked until the operator sets districts).
+ * The operator route also calls this BEFORE its referrer delete guard so a
+ * malformed body gets its 400 instead of a misleading "still in use" 409.
+ */
+function validateDistricts(districts: unknown): asserts districts is string[] {
+  if (!Array.isArray(districts)) throw new HttpError(400, 'districts must be an array');
+  if (districts.some((d) => typeof d !== 'string' || !d.trim()))
+    throw new HttpError(400, 'every district needs a name');
+  if (districts.some((d) => d.trim().length > 80))
+    throw new HttpError(400, 'district names must be 80 characters or fewer');
+  // Compare trimmed — names are STORED trimmed, so ' All districts ' would
+  // otherwise slip past here and then trip this very check on the next save.
+  if (districts.some((d) => d.trim() === OVERARCHING_DISTRICT))
+    throw new HttpError(400, `"${OVERARCHING_DISTRICT}" is reserved for overarching leagues`);
+  if (new Set(districts.map((d) => d.trim())).size !== districts.length)
+    throw new HttpError(409, 'duplicate district');
 }
 
 /**
@@ -2117,7 +2173,10 @@ async function applyTenantConfigPatch(
  * The operator route also calls this BEFORE its club-reference delete guard so a
  * malformed body gets its 400 instead of a misleading "clubs are registered" 409.
  */
-function validateLeagues(leagues: unknown): asserts leagues is League[] {
+function validateLeagues(
+  leagues: unknown,
+  validDistricts?: Set<string>,
+): asserts leagues is League[] {
   if (!Array.isArray(leagues)) throw new HttpError(400, 'leagues must be an array');
   const keys = leagues.map((l) => (l as League | undefined)?.key);
   if (keys.some((k) => typeof k !== 'string' || !k.trim()))
@@ -2125,17 +2184,23 @@ function validateLeagues(leagues: unknown): asserts leagues is League[] {
   if (leagues.some((l) => !(l as League).label?.trim()))
     throw new HttpError(400, 'every league needs a label');
   if (new Set(keys).size !== keys.length) throw new HttpError(409, 'duplicate league key');
+  if (validDistricts) {
+    const bad = (leagues as League[]).find((l) => !validDistricts.has(l.district));
+    if (bad)
+      throw new HttpError(400, `unknown district "${bad.district}" on league "${bad.label}"`);
+  }
 }
 
 app.put('/tenant/config', requireAdmin, async (c) => {
   const { tenant } = c.get('requestAuth')!;
   const patch = await c.req.json<Partial<TenantConfig>>();
-  // Operator-only fields (ADR 0006): feature flags, tutorials and the admin count
-  // are never writable by a tenant admin. Stripped here (not in the shared
-  // applyTenantConfigPatch) because the operator route whitelists separately.
+  // Operator-only fields (ADR 0006): feature flags, tutorials, the admin count and
+  // the district list are never writable by a tenant admin. Stripped here (not in
+  // the shared applyTenantConfigPatch) because the operator route whitelists separately.
   delete (patch as { features?: unknown }).features;
   delete (patch as { tutorials?: unknown }).tutorials;
   delete (patch as { adminCount?: unknown }).adminCount;
+  delete (patch as { districts?: unknown }).districts;
   const next = await applyTenantConfigPatch(tenant, patch);
   return c.json(next);
 });
@@ -2215,7 +2280,17 @@ app.post('/platform/tenants', async (c) => {
   const deadline = (body.submissionDeadline ?? '').trim();
   if (!deadline || Number.isNaN(Date.parse(deadline)))
     throw new HttpError(400, 'valid submissionDeadline required (ISO date)');
-  const config = buildTenantConfig(slug, { ...body.branding, name }, deadline, body.features);
+  // Explicit empty leagues AND districts: a portal-created client starts with a
+  // blank catalogue the operator fills in; districts:[] (vs field-absent) opts the
+  // new client OUT of the legacy DEFAULT_DISTRICTS fallback.
+  const config = buildTenantConfig(
+    slug,
+    { ...body.branding, name },
+    deadline,
+    body.features,
+    [],
+    [],
+  );
   try {
     await repo.createTenantConfig(config);
   } catch (err: unknown) {
@@ -2235,14 +2310,28 @@ app.get('/platform/tenants/:slug', async (c) => {
 
 /**
  * PUT /platform/tenants/:slug — merge-patch branding / features / leagues /
- * submissionDeadline (whitelisted: the operator portal edits nothing else). Shares
- * applyTenantConfigPatch with PUT /tenant/config, so the same strip-and-merge +
- * league guards apply.
+ * districts / submissionDeadline (whitelisted: the operator portal edits nothing
+ * else). Shares applyTenantConfigPatch with PUT /tenant/config, so the same
+ * strip-and-merge + catalogue guards apply. The leagues/districts referrer guards
+ * below are best-effort, not atomic: a concurrent tenant-admin league write can
+ * land between the reads and the final Put (same accepted window as branding).
  */
 app.put('/platform/tenants/:slug', async (c) => {
   const slug = c.req.param('slug');
   const body = await c.req.json<Partial<TenantConfig>>();
   const patch: Partial<TenantConfig> = {};
+  // Lazily fetched once, shared by the leagues and districts referrer guards.
+  let currentCfg: TenantConfig | undefined;
+  const getCurrent = async (): Promise<TenantConfig> => {
+    if (!currentCfg) {
+      const cfg = await repo.getTenantConfig(slug);
+      if (!cfg) throw new HttpError(404, 'tenant not found');
+      currentCfg = cfg;
+    }
+    return currentCfg;
+  };
+  let tenantClubs: Club[] | undefined;
+  const getClubs = async (): Promise<Club[]> => (tenantClubs ??= await repo.listClubs(slug));
   if (body.branding !== undefined) patch.branding = body.branding;
   if (body.features !== undefined) patch.features = body.features;
   if (body.leagues !== undefined) {
@@ -2251,12 +2340,11 @@ app.put('/platform/tenants/:slug', async (c) => {
     // Operator-side delete guard: unlike the tenant admin console, the operator has
     // no view of club registrations, so a write that drops a league key clubs still
     // reference is rejected outright — an orphaned key breaks player registration.
-    const current = await repo.getTenantConfig(slug);
-    if (!current) throw new HttpError(404, 'tenant not found');
+    const current = await getCurrent();
     const nextKeys = new Set(body.leagues.map((l) => l.key));
     const removed = (current.leagues ?? []).filter((l) => !nextKeys.has(l.key));
     if (removed.length > 0) {
-      const clubs = await repo.listClubs(slug);
+      const clubs = await getClubs();
       for (const league of removed) {
         const n = clubs.filter(
           (club) => Array.isArray(club.leagues) && club.leagues.includes(league.key),
@@ -2265,6 +2353,38 @@ app.put('/platform/tenants/:slug', async (c) => {
           throw new HttpError(
             409,
             `${n} club${n === 1 ? ' is' : 's are'} registered for "${league.label}" — it can only be deleted from the tenant admin console`,
+          );
+      }
+    }
+  }
+  if (body.districts !== undefined) {
+    // Shape 400s must win over the guard's 409. Re-validated in the shared patch
+    // core (cheap) — do NOT "deduplicate" this call; the ordering guarantee lives here.
+    validateDistricts(body.districts);
+    patch.districts = body.districts;
+    // Referrer delete guard, TWO referrer types: a removed district orphans clubs
+    // (Club.district) and silently hides its leagues from every picker
+    // (leagueOptionsForDistrict exact-matches League.district). Only REMOVED
+    // districts are checked, so pre-existing orphan references never block
+    // unrelated saves. For a legacy tenant with no districts field, removal is
+    // computed against the DEFAULT_DISTRICTS fallback — the first explicit save
+    // that drops a referenced default is correctly blocked. A body carrying both
+    // an invalid league.district and a referenced removal gets this 409 before
+    // applyTenantConfigPatch's league 400 — accepted precedence trade-off.
+    const current = await getCurrent();
+    const nextDistricts = new Set(body.districts.map((d) => d.trim()));
+    const removed = resolveDistricts(current).filter((d) => !nextDistricts.has(d));
+    if (removed.length > 0) {
+      const clubs = await getClubs();
+      // Post-patch league view: one PUT may drop a district AND its leagues together.
+      const nextLeagues = body.leagues ?? current.leagues ?? [];
+      for (const d of removed) {
+        const clubRefs = clubs.filter((cl) => cl.district === d).length;
+        const leagueRefs = nextLeagues.filter((l) => l.district === d).length;
+        if (clubRefs + leagueRefs > 0)
+          throw new HttpError(
+            409,
+            `"${d}" is still in use — ${clubRefs} club${clubRefs === 1 ? '' : 's'} and ${leagueRefs} league${leagueRefs === 1 ? '' : 's'} reference it; reassign them first`,
           );
       }
     }

@@ -356,6 +356,9 @@ export const getRegistration = (clubId: string, token: string) =>
     clubId: string;
     clubName: string;
     leagues: League[];
+    // Tenant district list for the form's picker (absent on older backends —
+    // the page falls back to the shared constant).
+    districts?: string[];
     clubs?: { id: string; name: string }[];
   }>(`/register/${clubId}`, { auth: false, query: { t: token } });
 // `clearance` present ⇔ the registration opened a transfer from the named previous club

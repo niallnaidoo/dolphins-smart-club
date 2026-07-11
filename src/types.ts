@@ -103,6 +103,11 @@ export interface TenantConfig {
   knownClubs: unknown[];
   clubSignupLink?: { token: string; createdAt: string };
   leagues?: League[];
+  /**
+   * Operator-managed district list. Absent ⇒ frontend falls back to the shared
+   * DISTRICTS constant (data.ts); [] ⇒ new client awaiting operator setup.
+   */
+  districts?: string[];
   requiredDocs?: unknown[];
   adminCount?: number;
   tutorials?: TutorialVideo[];

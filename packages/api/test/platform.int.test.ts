@@ -148,9 +148,13 @@ describe('tenant create → list → get → patch', () => {
     assert.equal(cfg.branding.name, 'Hollywoodbets Sharks');
     assert.equal(cfg.branding.title, 'Hollywoodbets Sharks'); // title ← name default
     assert.equal(cfg.branding.copy.footer, 'Powered by Medicoach');
-    assert.ok(cfg.branding.colors['--green'], 'neutral color family seeded');
+    // Role-token era (semantic theming): the neutral family seeds --brand-* tokens.
+    assert.ok(cfg.branding.colors['--brand-primary'], 'neutral color family seeded');
     assert.deepEqual(cfg.features, { whatsappInvites: false });
     assert.deepEqual(cfg.leagues, []);
+    // Explicit [] (not field-absent): a portal-created client opts OUT of the
+    // legacy DEFAULT_DISTRICTS fallback — signup is blocked until configured.
+    assert.deepEqual(cfg.districts, []);
   });
 
   test('duplicate slug → 409', async () => {
@@ -386,6 +390,137 @@ describe('tenant create → list → get → patch', () => {
     assert.equal(res.status, 200);
     assert.deepEqual((await repo.getTenantConfig('sharks'))?.leagues, []);
   });
+
+  // ── Operator-managed districts (order-dependent: continues on 'sharks', which now
+  //    has leagues: [] and explicit districts: []; ends by resetting districts to []
+  //    and guardcc to its original 'Test District'). ──
+
+  const DISTRICTS2 = ['North', 'South'];
+
+  test('PUT /platform/tenants/:slug districts round-trips and persists', async () => {
+    const res = await app.request('/platform/tenants/sharks', {
+      method: 'PUT',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({ districts: DISTRICTS2 }),
+    });
+    assert.equal(res.status, 200);
+    const cfg = (await res.json()) as import('../src/types.js').TenantConfig;
+    assert.deepEqual(cfg.districts, DISTRICTS2);
+    assert.deepEqual((await repo.getTenantConfig('sharks'))?.districts, DISTRICTS2);
+  });
+
+  // Error bodies asserted so the shape 400s can't regress into the referrer
+  // guard's "still in use" 409 (validation must run before the guard).
+  for (const [name, districts, status, message] of [
+    ['a non-array payload', { north: true }, 400, /must be an array/],
+    ['a blank entry', ['North', '  '], 400, /needs a name/],
+    ['the reserved sentinel', ['North', 'All districts'], 400, /reserved/],
+    // Names are stored trimmed, so the reserved check must compare trimmed too —
+    // otherwise this persists and bricks the operator's next save.
+    ['a whitespace-padded sentinel', ['North', ' All districts '], 400, /reserved/],
+    ['a duplicate', ['North', 'North'], 409, /duplicate district/],
+  ] as const) {
+    test(`PUT /platform/tenants/:slug districts with ${name} → ${status}`, async () => {
+      const res = await app.request('/platform/tenants/sharks', {
+        method: 'PUT',
+        headers: platformHeaders(OPERATOR),
+        body: JSON.stringify({ districts }),
+      });
+      assert.equal(res.status, status);
+      assert.match(((await res.json()) as { error: string }).error, message);
+      assert.deepEqual((await repo.getTenantConfig('sharks'))?.districts, DISTRICTS2); // untouched
+    });
+  }
+
+  test('district names are stored trimmed', async () => {
+    const res = await app.request('/platform/tenants/sharks', {
+      method: 'PUT',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({ districts: [' North ', 'South'] }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual((await repo.getTenantConfig('sharks'))?.districts, DISTRICTS2);
+  });
+
+  test('league.district is validated against the tenant districts (+ sentinel)', async () => {
+    const zonal = { key: 'zonal', label: 'Zonal League', group: 'Senior Leagues' };
+    const bad = await app.request('/platform/tenants/sharks', {
+      method: 'PUT',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({ leagues: [{ ...zonal, district: 'East' }] }),
+    });
+    assert.equal(bad.status, 400);
+    assert.match(((await bad.json()) as { error: string }).error, /unknown district "East"/);
+    assert.deepEqual((await repo.getTenantConfig('sharks'))?.leagues, []); // untouched
+
+    const ok = await app.request('/platform/tenants/sharks', {
+      method: 'PUT',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({ leagues: [{ ...zonal, district: 'North' }] }),
+    });
+    assert.equal(ok.status, 200);
+  });
+
+  test('district referrer guard: club reference blocks removal', async (t) => {
+    const guard = await repo.getClub('sharks', 'guardcc');
+    assert.ok(guard);
+    await repo.putClub('sharks', { ...guard, district: 'North' });
+    // Restore guardcc BEFORE the league-referrer test even if an assertion below
+    // fails — the 409 leaves it in 'North', which would otherwise wrongly block
+    // the combined-patch 200 and cascade-fail the downstream tests.
+    t.after(() => repo.putClub('sharks', { ...guard, district: 'Test District' }));
+    const res = await app.request('/platform/tenants/sharks', {
+      method: 'PUT',
+      headers: platformHeaders(OPERATOR),
+      // Drops 'North' — referenced by guardcc AND the zonal league from above.
+      body: JSON.stringify({ districts: ['South'] }),
+    });
+    assert.equal(res.status, 409);
+    assert.match(
+      ((await res.json()) as { error: string }).error,
+      /"North" is still in use — 1 club and 1 league/,
+    );
+    assert.deepEqual((await repo.getTenantConfig('sharks'))?.districts, DISTRICTS2); // untouched
+  });
+
+  test('district referrer guard: league reference blocks removal; combined patch passes', async () => {
+    // Only the zonal league references 'North' now.
+    const blocked = await app.request('/platform/tenants/sharks', {
+      method: 'PUT',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({ districts: ['South'] }),
+    });
+    assert.equal(blocked.status, 409);
+    assert.match(
+      ((await blocked.json()) as { error: string }).error,
+      /"North" is still in use — 0 clubs and 1 league/,
+    );
+
+    // One PUT may drop a district AND its leagues together — the guard evaluates
+    // the post-patch league view, so this passes.
+    const combined = await app.request('/platform/tenants/sharks', {
+      method: 'PUT',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({ districts: ['South'], leagues: [] }),
+    });
+    assert.equal(combined.status, 200);
+    const stored = await repo.getTenantConfig('sharks');
+    assert.deepEqual(stored?.districts, ['South']);
+    assert.deepEqual(stored?.leagues, []);
+  });
+
+  test('districts cleanup: clear the catalogue', async () => {
+    // Passes because the guard only checks REMOVED districts and guardcc's
+    // 'Test District' was never in the catalogue (pre-existing orphan references
+    // never block unrelated saves).
+    const res = await app.request('/platform/tenants/sharks', {
+      method: 'PUT',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({ districts: [] }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual((await repo.getTenantConfig('sharks'))?.districts, []);
+  });
 });
 
 describe('registry GSI persistence (delisting regression)', () => {
@@ -493,7 +628,7 @@ describe('tenant-admin PUT /tenant/config hardening', () => {
     );
   });
 
-  test('features/tutorials/adminCount are stripped from tenant-admin patches', async () => {
+  test('features/tutorials/adminCount/districts are stripped from tenant-admin patches', async () => {
     const before = await repo.getTenantConfig('dolphins');
     const res = await app.request('/tenant/config', {
       method: 'PUT',
@@ -502,6 +637,7 @@ describe('tenant-admin PUT /tenant/config hardening', () => {
         features: { selfServeBranding: true, whatsappInvites: false },
         tutorials: [{ key: 'evil', title: 'Evil', src: 'https://evil.example/x.mp4' }],
         adminCount: 99,
+        districts: ['Evil District'],
       }),
     });
     assert.equal(res.status, 200);
@@ -509,6 +645,42 @@ describe('tenant-admin PUT /tenant/config hardening', () => {
     assert.deepEqual(after?.features, before?.features, 'flags unchanged');
     assert.deepEqual(after?.tutorials, before?.tutorials);
     assert.equal(after?.adminCount, before?.adminCount);
+    assert.deepEqual(
+      after?.districts,
+      before?.districts,
+      'district list unchanged (operator-only)',
+    );
+  });
+
+  // Dolphins has NO districts field, so tenant-admin league writes validate against
+  // the DEFAULT_DISTRICTS fallback union — a regression here would lock every
+  // legacy-tenant admin out of league edits.
+  test('tenant-admin league write validates district against the fallback union', async (t) => {
+    const before = await repo.getTenantConfig('dolphins');
+    assert.ok(before);
+    t.after(() => repo.putTenantConfig(before)); // restore the seeded catalogue
+
+    const newLeague = { key: 'hardening-lg', label: 'Hardening League', group: 'Senior Leagues' };
+    const bad = await app.request('/tenant/config', {
+      method: 'PUT',
+      headers: tenantHeaders(DOLPHINS_ADMIN, 'dolphins'),
+      body: JSON.stringify({
+        leagues: [...(before.leagues ?? []), { ...newLeague, district: 'Atlantis' }],
+      }),
+    });
+    assert.equal(bad.status, 400);
+    assert.match(((await bad.json()) as { error: string }).error, /unknown district "Atlantis"/);
+
+    const ok = await app.request('/tenant/config', {
+      method: 'PUT',
+      headers: tenantHeaders(DOLPHINS_ADMIN, 'dolphins'),
+      body: JSON.stringify({
+        leagues: [...(before.leagues ?? []), { ...newLeague, district: 'KCCD' }],
+      }),
+    });
+    assert.equal(ok.status, 200);
+    const stored = await repo.getTenantConfig('dolphins');
+    assert.ok(stored?.leagues?.some((l) => l.key === 'hardening-lg'));
   });
 });
 

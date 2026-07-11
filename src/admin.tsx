@@ -1879,7 +1879,17 @@ export function AdminLeagues({ allLeagues, clubs, onCreate, onEdit, onDeleteLeag
 }
 
 /* ─── LeagueForm — create/edit a league (rendered inside a TaskModal) ─── */
-export function LeagueForm({ league, allLeagues, onCreate, onUpdate, onClose, toast }) {
+// districts: the tenant-resolved list (operator-managed); the constant default
+// keeps legacy callers working. The overarching sentinel is always offered first.
+export function LeagueForm({
+  league,
+  allLeagues,
+  onCreate,
+  onUpdate,
+  onClose,
+  toast,
+  districts = DISTRICTS,
+}) {
   const editing = !!league;
   const [label, setLabel] = useStateA(league?.label || '');
   const [group, setGroup] = useStateA(league?.group || 'Overarching Leagues');
@@ -1950,7 +1960,14 @@ export function LeagueForm({ league, allLeagues, onCreate, onUpdate, onClose, to
             onChange={(e) => setDistrict(e.target.value)}
           >
             <option value={OVERARCHING_DISTRICT}>{OVERARCHING_DISTRICT}</option>
-            {DISTRICTS.map((d) => (
+            {/* A league can hold a since-removed district (server orphan tolerance) —
+                surface it as a labelled option instead of a blank select. */}
+            {league?.district &&
+              league.district !== OVERARCHING_DISTRICT &&
+              !districts.includes(league.district) && (
+                <option value={league.district}>{league.district} (removed district)</option>
+              )}
+            {districts.map((d) => (
               <option key={d} value={d}>
                 {d}
               </option>
