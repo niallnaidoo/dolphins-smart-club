@@ -142,3 +142,24 @@ current onboarding rate. Revisit if instant demo URLs become a sales need.
 - **Separate operator app** (own Vite app or subdomain): duplicated auth/deploy/design for
   three screens.
 - **Wildcard subdomains now:** deferred, above.
+
+## Addendum (July 2026): operator reads of tenant data — allowlist projections
+
+The original premise ("the operator surface reads only tenant _configs_") no longer
+holds: `GET /platform/tenants/:slug/overview` is the first operator read of tenant
+**club data** (the per-client Insights breakdown), and `GET /platform/tenants` now
+rolls up per-tenant club/team/player counts.
+
+The convention these establish for any future operator read of tenant data:
+
+- **Allowlist projection, never raw records.** Club rows cross the cross-tenant
+  surface only via `toInsightsClub` (packages/api/src/index.ts), an explicit field
+  pick. Tenant records carry POPIA-sensitive data (chair/exco contacts and ID
+  numbers, coach IDs, ground addresses) and live credentials (`playerRegLink.token`)
+  that must never reach the operator console. Ship only what the page renders.
+- **Prove it with a shape test.** The integration test seeds a club carrying every
+  sensitive field and asserts the exact key set of the response
+  (packages/api/test/platform.int.test.ts) — add the same for any new projection.
+- **Aggregates degrade, the registry doesn't.** The fleet rollup catches per-tenant
+  read failures and omits that row's counts instead of failing the listing; only the
+  registry read itself is fail-fast.

@@ -61,6 +61,16 @@ export const Icon = {
       />
     </svg>
   ),
+  Chart: () => (
+    <svg viewBox="0 0 16 16" fill="none">
+      <path
+        d="M3 13.5V9M8 13.5V5M13 13.5V2.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+    </svg>
+  ),
   Star: () => (
     <svg viewBox="0 0 16 16" fill="none">
       <path

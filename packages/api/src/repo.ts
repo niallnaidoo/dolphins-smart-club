@@ -391,15 +391,16 @@ export async function mergeBrandingPatch(tenant: string, patch: BrandingMergePat
 // ── Clubs ──
 
 export async function listClubs(tenant: string): Promise<Club[]> {
-  const res = await ddb.send(
-    new QueryCommand({
-      TableName: TABLE,
-      IndexName: 'gsi1',
-      KeyConditionExpression: 'gsi1pk = :p',
-      ExpressionAttributeValues: { ':p': clubsListGsi1pk(tenant) },
-    }),
-  );
-  return (res.Items ?? []).map((i) => stripKeys<Club>(i)!);
+  // queryAll, not a single Query: the gsi1 projects full club items (ALL), so a growing
+  // cohort crosses the 1MB page cap at roughly 50–200 clubs — a single page would
+  // silently truncate every count and dashboard derived from this list.
+  const items = await queryAll({
+    TableName: TABLE,
+    IndexName: 'gsi1',
+    KeyConditionExpression: 'gsi1pk = :p',
+    ExpressionAttributeValues: { ':p': clubsListGsi1pk(tenant) },
+  });
+  return items.map((i) => stripKeys<Club>(i)!);
 }
 
 export async function getClub(tenant: string, clubId: string): Promise<Club | null> {
@@ -1018,17 +1019,18 @@ export async function listInboundForDest(
   return items.map((i) => stripKeys<PlayerClearance>(i)!);
 }
 
-/** Every clearance in the tenant (admin console) — one row per request via the gsi1. */
+/**
+ * Every clearance in the tenant (admin console) — one row per request via the gsi1.
+ * queryAll so a season's worth of requests can't silently truncate at the 1MB page.
+ */
 export async function listAllClearances(tenant: string): Promise<PlayerClearance[]> {
-  const res = await ddb.send(
-    new QueryCommand({
-      TableName: TABLE,
-      IndexName: 'gsi1',
-      KeyConditionExpression: 'gsi1pk = :p',
-      ExpressionAttributeValues: { ':p': clearancesListGsi1pk(tenant) },
-    }),
-  );
-  return (res.Items ?? []).map((i) => stripKeys<PlayerClearance>(i)!);
+  const items = await queryAll({
+    TableName: TABLE,
+    IndexName: 'gsi1',
+    KeyConditionExpression: 'gsi1pk = :p',
+    ExpressionAttributeValues: { ':p': clearancesListGsi1pk(tenant) },
+  });
+  return items.map((i) => stripKeys<PlayerClearance>(i)!);
 }
 
 /** The canonical (source) + mirror (destination) put items for a clearance. */

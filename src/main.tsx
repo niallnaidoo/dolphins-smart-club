@@ -67,6 +67,7 @@ import {
   LeagueForm,
   CreateSeriesForm,
 } from './admin';
+import { AdminInsightsPage } from './insights';
 import { parseSupport } from './support';
 import {
   ClubHome,
@@ -1443,6 +1444,7 @@ function Shell({
       dot: 'gold',
     },
     { v: 'leagues', label: 'Leagues', icon: Icon.Shield, num: allLeagues.length },
+    { v: 'insights', label: 'Insights', icon: Icon.Chart },
     { v: 'fixtures', label: 'Fixtures & Venues', icon: Icon.Field, dot: 'teal' },
     {
       v: 'clearances',
@@ -1629,6 +1631,15 @@ function Shell({
             onEdit={(L) => setShowLeagueForm(L)}
             onDeleteLeague={deleteLeague}
             toast={toastShow}
+          />
+        );
+      if (view === 'insights')
+        return (
+          <AdminInsightsPage
+            clubs={clubs}
+            leagues={allLeagues}
+            districts={allDistricts}
+            clearances={allClearances}
           />
         );
       if (view === 'players')

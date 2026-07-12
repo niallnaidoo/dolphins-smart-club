@@ -26,6 +26,7 @@ import type {
   SendResult,
   LogoUploadPost,
   DnsSheet,
+  TenantOverview,
 } from './types';
 
 /**
@@ -426,6 +427,10 @@ export const platformLogoUploadUrl = (slug: string, contentType: string) =>
   });
 export const platformDnsSheet = (slug: string) =>
   request<DnsSheet>(`/platform/tenants/${encodeURIComponent(slug)}/dns`);
+// Read-only breakdown payload for the per-client overview page. Clubs are the
+// sanitized InsightsClub projection — never the full Club records.
+export const platformTenantOverview = (slug: string) =>
+  request<TenantOverview>(`/platform/tenants/${encodeURIComponent(slug)}/overview`);
 
 /**
  * Submit a logo to S3 via the presigned POST grant (not the API — plain fetch, no

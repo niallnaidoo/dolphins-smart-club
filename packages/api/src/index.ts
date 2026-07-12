@@ -2266,19 +2266,77 @@ const LOGO_CONTENT_TYPES: Record<string, string> = {
 };
 const MAX_LOGO_BYTES = 1024 * 1024; // 1 MB
 
-/** GET /platform/tenants — registry listing (projection, not full configs). */
+/** Sides a club fields in one league — absent map/key counts as 1 (legacy clubs). */
+function clubTeamCount(club: Club): number {
+  return (club.leagues ?? []).reduce(
+    (sum, k) => sum + Math.max(1, Number(club.leagueTeams?.[k]) || 1),
+    0,
+  );
+}
+
+/**
+ * Cross-tenant-safe club projection for the operator overview. A deliberate ALLOWLIST:
+ * exco/chair contacts (POPIA: carries ID numbers), coaches, notes, commLog, docMeta
+ * (S3 keys), cqiAnswers, ground addresses and the LIVE playerRegLink token must never
+ * cross the operator surface. Add fields here only after checking what they carry.
+ */
+function toInsightsClub(club: Club) {
+  return {
+    id: club.id,
+    name: club.name,
+    district: club.district ?? '',
+    affiliation: club.affiliation,
+    cqi: club.cqi ?? 0,
+    docs: club.docs ?? {},
+    leagues: club.leagues ?? [],
+    leagueTeams: club.leagueTeams ?? {},
+    players: (club as { playerCount?: number }).playerCount ?? 0,
+  };
+}
+
+/**
+ * GET /platform/tenants — registry listing (projection, not full configs) with fleet
+ * rollup counts. The rollup fans out one listClubs per tenant (parallel gsi1 queries);
+ * cost scales with the ITEM BYTES read (the gsi1 projects full club items), not just
+ * the tenant count. Fine while the fleet is hand-created and small — revisit with
+ * denormalized counters or a cache once it grows past a few dozen tenants or clubs
+ * get heavy enough that the fan-out visibly drags the client list.
+ */
 app.get('/platform/tenants', async (c) => {
   const tenants = await repo.listTenants();
+  // Per-tenant catch: the counts are decorative, so one throttled/failed club
+  // partition must not 500 the whole registry listing — the row just ships without
+  // counts and the client list renders '—' for them. Only the registry read itself
+  // stays fail-fast.
+  const clubLists = await Promise.all(
+    tenants.map((t) =>
+      repo.listClubs(t.tenant).catch((err) => {
+        console.error(`fleet rollup: listClubs failed for ${t.tenant}`, err);
+        return null;
+      }),
+    ),
+  );
   return c.json(
-    tenants.map((t) => ({
-      tenant: t.tenant,
-      name: t.branding?.name ?? t.tenant,
-      title: t.branding?.title ?? '',
-      logoUrl: t.branding?.logoUrl ?? '',
-      submissionDeadline: t.submissionDeadline,
-      adminCount: t.adminCount ?? 0,
-      features: t.features ?? {},
-    })),
+    tenants.map((t, i) => {
+      const clubs = clubLists[i];
+      return {
+        tenant: t.tenant,
+        name: t.branding?.name ?? t.tenant,
+        title: t.branding?.title ?? '',
+        logoUrl: t.branding?.logoUrl ?? '',
+        submissionDeadline: t.submissionDeadline,
+        adminCount: t.adminCount ?? 0,
+        features: t.features ?? {},
+        ...(clubs && {
+          clubCount: clubs.length,
+          teamCount: clubs.reduce((sum, cl) => sum + clubTeamCount(cl), 0),
+          playerCount: clubs.reduce(
+            (sum, cl) => sum + ((cl as { playerCount?: number }).playerCount ?? 0),
+            0,
+          ),
+        }),
+      };
+    }),
   );
 });
 
@@ -2329,6 +2387,31 @@ app.get('/platform/tenants/:slug', async (c) => {
   const config = await repo.getTenantConfig(c.req.param('slug'));
   if (!config) throw new HttpError(404, 'tenant not found');
   return c.json(config);
+});
+
+/**
+ * GET /platform/tenants/:slug/overview — everything the operator per-client breakdown
+ * renders, in one read-only payload (config context + sanitized clubs + clearance
+ * pipeline), and NOTHING more: clubs ride through toInsightsClub (allowlist — see
+ * above) and clearances carry only their status. The tightest cross-tenant projection
+ * is the one that ships only what the page renders.
+ */
+app.get('/platform/tenants/:slug/overview', async (c) => {
+  const slug = c.req.param('slug');
+  const config = await repo.getTenantConfig(slug);
+  if (!config) throw new HttpError(404, 'tenant not found');
+  const [clubs, clearances] = await Promise.all([
+    repo.listClubs(slug),
+    repo.listAllClearances(slug),
+  ]);
+  return c.json({
+    tenant: slug,
+    name: config.branding?.name ?? slug,
+    leagues: config.leagues ?? [],
+    districts: resolveDistricts(config),
+    clubs: clubs.map(toInsightsClub),
+    clearances: clearances.map((r) => ({ status: r.status })),
+  });
 });
 
 /**

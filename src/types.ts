@@ -122,6 +122,40 @@ export interface TenantSummary {
   submissionDeadline: string;
   adminCount: number;
   features: Record<string, boolean>;
+  /** Fleet rollup counts. Optional: react-query rows cached before the rollup shipped lack them. */
+  clubCount?: number;
+  teamCount?: number;
+  playerCount?: number;
+}
+
+/**
+ * Cross-tenant-safe club projection served by GET /platform/tenants/:slug/overview.
+ * A deliberate allowlist — no exco/chair contacts, coach ID numbers, notes, comm log,
+ * doc metadata, CQI answers, or live registration tokens ever cross the operator
+ * surface. The full admin Club satisfies this shape structurally, so InsightsBreakdown
+ * (src/insights.tsx) accepts both.
+ */
+export interface InsightsClub {
+  id: string;
+  name: string;
+  district: string;
+  affiliation: 'not_started' | 'in_progress' | 'complete';
+  cqi: number;
+  docs: Record<string, boolean>;
+  /** Denormalized registered-player count. */
+  players: number;
+  leagues?: string[];
+  leagueTeams?: Record<string, number>;
+}
+
+/** GET /platform/tenants/:slug/overview — exactly what the operator breakdown renders. */
+export interface TenantOverview {
+  tenant: string;
+  name: string;
+  leagues: League[];
+  districts: string[];
+  clubs: InsightsClub[];
+  clearances: Array<{ status: ClearanceStatus }>;
 }
 
 /** Presigned-POST grant from POST /platform/tenants/:slug/logo-upload. */

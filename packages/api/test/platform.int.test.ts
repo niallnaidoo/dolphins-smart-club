@@ -224,14 +224,104 @@ describe('tenant create → list → get → patch', () => {
     const sharks = rows.find((r) => r.tenant === 'sharks')!;
     assert.deepEqual(Object.keys(sharks).sort(), [
       'adminCount',
+      'clubCount',
       'features',
       'logoUrl',
       'name',
+      'playerCount',
       'submissionDeadline',
+      'teamCount',
       'tenant',
       'title',
     ]);
     assert.equal(sharks.adminCount, 0);
+    // Fresh tenant: fleet rollup counts start at zero.
+    assert.equal(sharks.clubCount, 0);
+    assert.equal(sharks.teamCount, 0);
+    assert.equal(sharks.playerCount, 0);
+  });
+
+  test('GET /platform/tenants/:slug/overview sanitizes clubs and rolls up counts', async () => {
+    // A club carrying every sensitive field the projection must strip.
+    await repo.createClub('sharks', {
+      id: 'leaky',
+      name: 'Leaky CC',
+      district: 'Test District',
+      sub: 'rep-sub',
+      chair: 'Chair Person',
+      affiliation: 'complete' as const,
+      cqi: 75,
+      docs: { constitution: true },
+      players: 0,
+      playerCount: 7,
+      teams: 0,
+      women: 0,
+      juniors: 0,
+      color: '#123456',
+      ground: { venue: 'Secret Oval', address: '1 Private Rd' },
+      leagues: ['premier', 'u13'],
+      leagueTeams: { premier: 3 },
+      exco: { chair: { name: 'Chair Person', email: 'chair@leaky.test', idNumber: '900101' } },
+      notes: [{ id: 'n1', text: 'internal admin note', author: 'a', at: '2026-06-01' }],
+      playerRegLink: { token: 'live-secret-token', createdAt: '2026-06-01' },
+      docMeta: { constitution: { objectKey: 'sharks/leaky/const.pdf', size: 1 } },
+      cqiAnswers: { q1: 'answer' },
+      version: 1,
+    } as unknown as Parameters<typeof repo.createClub>[1]);
+
+    // finally, not inline: an assertion failure must still erase the club, or the
+    // leak cascades into the later sharks count assertions and buries the real error.
+    try {
+      const res = await app.request('/platform/tenants/sharks/overview', {
+        headers: platformHeaders(OPERATOR),
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        clubs: Array<Record<string, unknown>>;
+        clearances: unknown[];
+        leagues: unknown[];
+        districts: string[];
+      };
+      const club = body.clubs.find((c) => c.id === 'leaky')!;
+      // Allowlist projection — nothing sensitive may ride along (POPIA + live token).
+      assert.deepEqual(Object.keys(club).sort(), [
+        'affiliation',
+        'cqi',
+        'district',
+        'docs',
+        'id',
+        'leagueTeams',
+        'leagues',
+        'name',
+        'players',
+      ]);
+      assert.equal(club.players, 7); // denormalized playerCount surfaces as `players`
+      assert.ok(Array.isArray(body.clearances));
+
+      // The list rollup reflects the same club: 3 premier sides + 1 u13 default.
+      const list = await app.request('/platform/tenants', { headers: platformHeaders(OPERATOR) });
+      const row = ((await list.json()) as Array<Record<string, unknown>>).find(
+        (r) => r.tenant === 'sharks',
+      )!;
+      assert.equal(row.clubCount, 1);
+      assert.equal(row.teamCount, 4);
+      assert.equal(row.playerCount, 7);
+    } finally {
+      // Erase via the real cascade so later sharks count assertions stay unaffected.
+      const leaky = await repo.getClub('sharks', 'leaky');
+      if (leaky) await repo.eraseClubData('sharks', leaky);
+    }
+  });
+
+  test('overview: unknown slug → 404, tenant admin → 403', async () => {
+    const missing = await app.request('/platform/tenants/ghost/overview', {
+      headers: platformHeaders(OPERATOR),
+    });
+    assert.equal(missing.status, 404);
+    const forbidden = await app.request('/platform/tenants/dolphins/overview', {
+      headers: platformHeaders(DOLPHINS_ADMIN),
+    });
+    assert.equal(forbidden.status, 403);
   });
 
   test('GET /platform/tenants/:slug returns the full config; unknown → 404', async () => {

@@ -713,9 +713,9 @@
   .icon-btn:hover{color:var(--ink)}
   .icon-btn svg{width:14px;height:14px}
 
-  /* KPI strip */
+  /* KPI strip — auto-fit so 4- and 5-card strips wrap instead of squishing. */
   .kpi-strip{
-    display:grid;grid-template-columns:repeat(5,1fr);gap:14px;
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;
     margin-bottom:24px;
   }
   .kpi{
@@ -804,6 +804,11 @@
   .tbl tbody tr.clickable{cursor:pointer}
   .tbl td{padding:12px 14px;font-size:13px;vertical-align:middle}
   .tbl-w{border-radius:var(--radius-lg);overflow:hidden;border:1px solid var(--line);background:var(--white)}
+  /* Utility: drop secondary table columns on narrow viewports so the row's
+     primary action stays on-canvas instead of behind a horizontal scroll. */
+  @media (max-width: 1200px){
+    .hide-narrow{display:none}
+  }
 
   /* progress bar */
   .pbar{height:6px;background:var(--paper2);border-radius:99px;overflow:hidden;position:relative}
@@ -1924,7 +1929,7 @@
   .insights-card:nth-child(2){animation-delay:.12s}
   .insights-card:nth-child(3){animation-delay:.19s}
   .insights-card-head{
-    display:flex;align-items:center;justify-content:space-between;
+    display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
     margin-bottom:12px;
   }
   .insights-card-title{
@@ -1934,6 +1939,7 @@
   .insights-card-meta{
     font-family:'Montserrat',sans-serif;font-size:11px;font-weight:600;
     color:var(--muted);letter-spacing:0.04em;
+    white-space:nowrap;flex-shrink:0;
   }
   .insights-bar-row{
     display:grid;grid-template-columns:74px 1fr 38px;
@@ -1947,7 +1953,7 @@
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   }
   .insights-bar-track{
-    height:9px;background:var(--paper2);
+    position:relative;height:9px;background:var(--paper2);
     border-radius:99px;overflow:hidden;
   }
   .insights-bar-fill{
@@ -1979,6 +1985,45 @@
   .insights-callout.good{background:var(--green-pale);color:var(--green)}
   .insights-callout.good strong{color:var(--green)}
 
+  /* Insights page: long league/district lists scroll inside their card, with a
+     bottom fade so cut-off rows read as "more below" rather than missing. */
+  .insights-scroll{max-height:340px;overflow-y:auto;margin:0 -4px;padding:0 4px}
+  .insights-scroll::after{
+    content:'';position:sticky;bottom:0;display:block;height:26px;margin-top:-26px;
+    background:linear-gradient(to bottom,rgba(255,255,255,0),var(--white));
+    pointer-events:none;
+  }
+  .insights-group-label{
+    font-family:'Montserrat',sans-serif;font-size:10px;font-weight:700;
+    letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);
+    padding:8px 0 2px;
+  }
+  /* Dual-value rows (clubs solid, teams tinted) — one shared scale per card.
+     Tighter label/num columns than wide-label: the track needs the room. */
+  .insights-bar-row.duo{grid-template-columns:118px 1fr 24px 30px;gap:8px}
+  .insights-bar-fill.ghost{position:absolute;inset:0 auto 0 0;opacity:.22}
+  /* Teams fewer than clubs (clubs without league entries): the ghost flips to a
+     white overlay that LIGHTENS the covered clubs segment — still "tinted = teams". */
+  .insights-bar-fill.ghost.inset{background:var(--white);opacity:.55}
+  .insights-bar-num.sub{color:var(--muted);font-weight:600;font-size:12px}
+  .insights-legend{
+    display:flex;gap:12px;align-items:center;white-space:nowrap;flex-shrink:0;
+    font-family:'Montserrat',sans-serif;font-size:10.5px;font-weight:600;
+    color:var(--muted);letter-spacing:0.04em;
+  }
+  .insights-legend i{
+    display:inline-block;width:8px;height:8px;border-radius:99px;
+    background:var(--green);margin-right:5px;
+  }
+  .insights-legend i.ghost{opacity:.22}
+  .insights-card:nth-child(4){animation-delay:.26s}
+  .insights-card:nth-child(5){animation-delay:.33s}
+  .insights-card:nth-child(6){animation-delay:.40s}
+  @media (max-width: 768px){
+    .insights-bar-row.duo{grid-template-columns:96px 1fr 22px 28px}
+    .insights-bar-row.wide-label{grid-template-columns:104px 1fr 44px}
+  }
+
   .resource-list{display:flex;flex-direction:column;gap:10px;margin-top:2px}
   .resource-row{
     display:flex;align-items:center;gap:14px;
@@ -1998,9 +2043,12 @@
   .resource-text{font-size:12px;color:var(--ink3);font-weight:500;line-height:1.4}
   .resource-text strong{color:var(--ink);font-weight:600}
 
-  @media (max-width: 1100px){
+  /* 2 cols below 1360px: three-up cards get too narrow for the dual-value bars.
+     The last card spans both columns only when the count is odd (3-card ClubInsights
+     panel) — an even set (6-card Insights page) tiles cleanly without it. */
+  @media (max-width: 1360px){
     .insights-panel{grid-template-columns:repeat(2,1fr)}
-    .insights-panel .insights-card:last-child{grid-column:span 2}
+    .insights-panel .insights-card:last-child:nth-child(odd){grid-column:span 2}
   }
   @media (max-width: 768px){
     .insights-panel{grid-template-columns:1fr}

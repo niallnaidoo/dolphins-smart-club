@@ -22,6 +22,7 @@ import { Icon, Pill, Btn, EmptyState, useToast, useEscapeClose } from './atoms';
 import { LeagueForm } from './admin';
 import { DISTRICTS } from './data';
 import { OVERARCHING_DISTRICT } from './leagues';
+import { InsightsBreakdown } from './insights';
 import type { TenantConfig, TenantSummary, BrandingCopy, League } from './types';
 import {
   BRAND_ROLES,
@@ -110,6 +111,12 @@ const fmtDate = (iso?: string) =>
 const MONO: CSSProperties = {
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
   fontSize: 12.5,
+};
+/** Numeric table cells (client-list counts). */
+const COUNT: CSSProperties = {
+  fontFamily: "'Montserrat',sans-serif",
+  fontSize: 13,
+  fontWeight: 700,
 };
 const ERR: CSSProperties = { color: 'var(--coral, #C0392B)', fontSize: 12, marginTop: 6 };
 const HINT: CSSProperties = { fontSize: 11.5, color: 'var(--muted-2)', margin: '8px 0 0' };
@@ -338,6 +345,7 @@ export function PlatformPortal({
             <Route path="/platform" element={<TenantListPage />} />
             <Route path="/platform/new" element={<CreateTenantWizard toast={toastShow} />} />
             <Route path="/platform/tenants/:slug" element={<TenantEditPage toast={toastShow} />} />
+            <Route path="/platform/tenants/:slug/overview" element={<TenantOverviewPage />} />
             <Route path="*" element={<Navigate to="/platform" replace />} />
           </Routes>
         </main>
@@ -348,6 +356,29 @@ export function PlatformPortal({
 }
 
 /* ─── Client list ─── */
+
+/**
+ * Micro-stat for the client list's Cohort column: number over label. Zeros render
+ * muted (quiet, not alarming); '—' guards rows cached before the rollup shipped.
+ */
+function CohortStat({ n, label }: { n?: number; label: string }) {
+  return (
+    <span style={{ display: 'inline-flex', flexDirection: 'column', minWidth: 44 }}>
+      <span style={{ ...COUNT, color: n ? 'var(--ink)' : 'var(--muted-2)' }}>{n ?? '—'}</span>
+      <span
+        style={{
+          fontSize: 9.5,
+          textTransform: 'uppercase',
+          letterSpacing: '0.09em',
+          color: 'var(--muted-2)',
+          fontWeight: 600,
+        }}
+      >
+        {label}
+      </span>
+    </span>
+  );
+}
 
 function TenantListPage() {
   const navigate = useNavigate();
@@ -396,22 +427,17 @@ function TenantListPage() {
             <thead>
               <tr>
                 <th>Client</th>
-                <th>Slug</th>
-                <th>Deadline</th>
+                {/* Slug/deadline are secondary (both live on the settings page) —
+                    drop them on narrow viewports so Overview stays on-canvas. */}
+                <th className="hide-narrow">Slug</th>
+                <th className="hide-narrow">Deadline</th>
+                <th>Cohort</th>
                 <th>Admins</th>
-                <th>Features</th>
-                <th style={{ width: 60 }}></th>
+                <th style={{ width: 110 }}></th>
               </tr>
             </thead>
             <tbody>
               {tenants.map((t: TenantSummary) => {
-                // Effective flags: explicit truthy keys plus known flags whose
-                // per-flag default kicks in when the key is absent from the row.
-                const effective = new Set<string>();
-                for (const f of KNOWN_FLAGS)
-                  if ((t.features?.[f.key] ?? f.def) === true) effective.add(f.key);
-                for (const [k, v] of Object.entries(t.features ?? {})) if (v) effective.add(k);
-                const flags = [...effective];
                 return (
                   <tr
                     key={t.tenant}
@@ -438,38 +464,37 @@ function TenantListPage() {
                         </span>
                       </span>
                     </td>
-                    <td>
+                    <td className="hide-narrow">
                       <span style={MONO}>{t.tenant}</span>
                     </td>
-                    <td>
+                    <td className="hide-narrow">
                       <span style={{ fontSize: 12.5 }}>{fmtDate(t.submissionDeadline)}</span>
                     </td>
                     <td>
-                      <span
-                        style={{
-                          fontFamily: "'Montserrat',sans-serif",
-                          fontSize: 13,
-                          fontWeight: 700,
-                        }}
-                      >
-                        {t.adminCount}
+                      {/* One compact stat trio instead of three columns — keeps the
+                          row scannable and the table inside the viewport. */}
+                      <span style={{ display: 'inline-flex', gap: 18 }}>
+                        <CohortStat n={t.clubCount} label="clubs" />
+                        <CohortStat n={t.teamCount} label="teams" />
+                        <CohortStat n={t.playerCount} label="players" />
                       </span>
                     </td>
                     <td>
-                      {flags.length === 0 ? (
-                        <span style={{ color: 'var(--muted-2)', fontSize: 12 }}>—</span>
-                      ) : (
-                        <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}>
-                          {flags.map((k) => (
-                            <Pill key={k} tone="teal">
-                              {k}
-                            </Pill>
-                          ))}
-                        </span>
-                      )}
+                      <span style={COUNT}>{t.adminCount}</span>
                     </td>
-                    <td style={{ textAlign: 'right', paddingRight: 18 }}>
-                      <Icon.Arrow />
+                    <td style={{ textAlign: 'right', paddingRight: 18, whiteSpace: 'nowrap' }}>
+                      {/* Row click opens settings; this drills into the breakdown. */}
+                      <Btn
+                        tone="outline"
+                        size="sm"
+                        icon={Icon.Chart}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate(`/platform/tenants/${t.tenant}/overview`);
+                        }}
+                      >
+                        Overview
+                      </Btn>
                     </td>
                   </tr>
                 );
@@ -519,6 +544,9 @@ function TenantEditPage({ toast }: { toast: Toast }) {
     const next = await api.platformUpdateTenant(slug, patch);
     queryClient.setQueryData(qk.platformTenant(slug), next);
     queryClient.invalidateQueries({ queryKey: qk.platformTenants() });
+    // The Overview button makes edit→overview a one-click flow; without this the
+    // breakdown can show pre-edit leagues/districts/name for up to staleTime (30s).
+    queryClient.invalidateQueries({ queryKey: qk.platformTenantOverview(slug) });
     return next;
   }
   function latest(): TenantConfig {
@@ -541,6 +569,14 @@ function TenantEditPage({ toast }: { toast: Toast }) {
           </p>
         </div>
         <div className="ph-actions">
+          <Btn
+            tone="outline"
+            size="sm"
+            icon={Icon.Chart}
+            onClick={() => navigate(`/platform/tenants/${slug}/overview`)}
+          >
+            Overview
+          </Btn>
           <Btn tone="outline" size="sm" onClick={() => navigate('/platform')}>
             All clients
           </Btn>
@@ -592,6 +628,66 @@ function TenantEditPage({ toast }: { toast: Toast }) {
         />
         <DnsPanel slug={slug} />
       </div>
+    </div>
+  );
+}
+
+/* ─── Client overview (read-only breakdown for any client) ─── */
+
+function TenantOverviewPage() {
+  const { slug = '' } = useParams();
+  const navigate = useNavigate();
+  const q = useQuery({
+    queryKey: qk.platformTenantOverview(slug),
+    queryFn: () => api.platformTenantOverview(slug),
+    retry: 0,
+  });
+
+  if (q.isLoading) return <p style={{ color: 'var(--muted)', fontSize: 13 }}>Loading overview…</p>;
+  if (q.isError || !q.data)
+    return (
+      <div>
+        <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 14 }}>
+          {q.error instanceof ApiError && q.error.status === 404
+            ? `No client with slug “${slug}”.`
+            : 'Could not load this client’s overview — refresh to retry.'}
+        </p>
+        <Btn tone="outline" size="sm" onClick={() => navigate('/platform')}>
+          All clients
+        </Btn>
+      </div>
+    );
+  const d = q.data;
+
+  return (
+    <div>
+      <div className="page-head">
+        <div className="ph-left">
+          <div className="ph-crumb">Platform / Clients / {d.name} / Overview</div>
+          <h1 className="ph-title">
+            {d.name} <em>overview</em>
+          </h1>
+          <p className="ph-desc">
+            How this client is organised — clubs and teams across every league, district and status,
+            plus the player and clearance pipeline. Read-only.
+          </p>
+        </div>
+        <div className="ph-actions">
+          <Btn tone="outline" size="sm" onClick={() => navigate(`/platform/tenants/${slug}`)}>
+            Settings
+          </Btn>
+          <Btn tone="outline" size="sm" onClick={() => navigate('/platform')}>
+            All clients
+          </Btn>
+        </div>
+      </div>
+      <InsightsBreakdown
+        clubs={d.clubs}
+        leagues={d.leagues}
+        districts={d.districts}
+        clearances={d.clearances}
+        context="operator"
+      />
     </div>
   );
 }

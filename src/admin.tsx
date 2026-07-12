@@ -59,6 +59,7 @@ import {
   clubTeamsForLeague,
   OVERARCHING_DISTRICT,
 } from './leagues';
+import { cqiBandTone, cqiBandRows, docComplianceRows, docTone } from './insights';
 import { exportRowsToXlsx, clubExportRow } from './exportXlsx';
 import { openBccReminder } from './mailto';
 import { EMAIL_RE } from './api';
@@ -2701,28 +2702,11 @@ export function AdminSettingsView({
 function ClubInsights({ clubs, submissionDeadline }) {
   const deadlineShort = formatDeadlineShort(submissionDeadline);
   const deadlineMid = formatDeadlineMid(submissionDeadline);
-  // CQI bands
-  const bandTone = (key) =>
-    key === 'C' ? 'warn' : key === 'D' ? 'danger' : key === 'P' ? 'pending' : '';
-  const bands = [
-    { key: 'A', label: 'A · 80+', count: clubs.filter((c) => c.cqi >= 80).length },
-    { key: 'B', label: 'B · 65–80', count: clubs.filter((c) => c.cqi >= 65 && c.cqi < 80).length },
-    { key: 'C', label: 'C · 50–65', count: clubs.filter((c) => c.cqi >= 50 && c.cqi < 65).length },
-    { key: 'D', label: 'D · <50', count: clubs.filter((c) => c.cqi > 0 && c.cqi < 50).length },
-    { key: 'P', label: 'Pending', count: clubs.filter((c) => c.cqi === 0).length },
-  ];
-  const maxBand = Math.max(...bands.map((b) => b.count), 1);
-  const submitted = clubs.filter((c) => c.cqi > 0);
-  const avgCqi = submitted.length ? submitted.reduce((s, c) => s + c.cqi, 0) / submitted.length : 0;
-
-  // Doc compliance per required doc
-  const docStats = REQUIRED_DOCS.map((d) => {
-    const uploaded = clubs.filter((c) => c.docs[d.key]).length;
-    const pct = clubs.length ? Math.round((uploaded / clubs.length) * 100) : 0;
-    return { key: d.key, name: d.name, count: uploaded, total: clubs.length, pct };
-  });
-  const mostMissing = [...docStats].sort((a, b) => a.count - b.count)[0];
-  const docTone = (pct) => (pct >= 70 ? '' : pct >= 40 ? 'warn' : 'danger');
+  // CQI bands + doc compliance — shared derivations (src/insights.tsx) so the
+  // band/threshold definitions can't drift between this panel and the Insights page.
+  const bandTone = cqiBandTone;
+  const { bands, maxBand, submitted, avgCqi } = cqiBandRows(clubs);
+  const { docStats, mostMissing } = docComplianceRows(clubs);
 
   // Resources required — "behind" is keyed on the form fact.
   const notAffiliated = clubs.filter((c) => !affiliationSubmitted(c)).length;

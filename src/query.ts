@@ -36,5 +36,6 @@ export const qk = {
   // tenant-independent (the slug in the key names the MANAGED tenant, not the host's).
   platformTenants: () => ['platform-tenants'],
   platformTenant: (slug: string) => ['platform-tenant', slug],
+  platformTenantOverview: (slug: string) => ['platform-tenant-overview', slug],
   platformDns: (slug: string) => ['platform-dns', slug],
 };
