@@ -2140,7 +2140,30 @@ async function applyTenantConfigPatch(
       ]),
     );
   const next = { ...current, ...patch, tenant };
-  await repo.putTenantConfig(next);
+  try {
+    await repo.putTenantConfig(next);
+  } catch (err) {
+    // DynamoDB's 400KB item ceiling — the only real bound on catalogue size
+    // (~2,000+ leagues; there is deliberately NO count limit on leagues/districts).
+    // Surface it as an actionable 400 instead of an opaque 500. Copy stays
+    // ceiling-neutral: the item also carries knownClubs/branding/tutorials, so
+    // leagues may not be what filled it. Real DynamoDB and dynalite share the
+    // "Item size has exceeded the maximum allowed size" phrasing; other
+    // ValidationExceptions don't mention "item size" and keep 500ing unchanged.
+    if (
+      (err as { name?: string }).name === 'ValidationException' &&
+      /item size/i.test((err as Error).message ?? '')
+    ) {
+      // As an HttpError this no longer Sentry-captures via app.onError — keep a
+      // log breadcrumb for the rare tenant that ever hits the physical ceiling.
+      console.warn(`tenant config for ${tenant} hit the DynamoDB item-size ceiling`);
+      throw new HttpError(
+        400,
+        "This client's configuration has reached the platform storage ceiling — remove unused leagues/districts or contact support",
+      );
+    }
+    throw err;
+  }
   return next;
 }
 

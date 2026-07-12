@@ -521,6 +521,57 @@ describe('tenant create → list → get → patch', () => {
     assert.equal(res.status, 200);
     assert.deepEqual((await repo.getTenantConfig('sharks'))?.districts, []);
   });
+
+  // ── Catalogue size: no artificial count limit; only the DynamoDB 400KB item
+  //    ceiling, which must degrade to a clear 400 rather than an opaque 500.
+  //    NB sharks has explicit districts: [] here, so every league below must use
+  //    the 'All districts' sentinel — any other district would 400 on validation
+  //    before the size path is ever exercised. ──
+
+  test('no count limit: 500 leagues save and round-trip', async (t) => {
+    // Reset via t.after so a failed assertion can't leave 500 leagues on sharks
+    // for the rest of this order-dependent file.
+    t.after(async () => {
+      const cfg = await repo.getTenantConfig('sharks');
+      if (cfg) await repo.putTenantConfig({ ...cfg, leagues: [] });
+    });
+    const many = Array.from({ length: 500 }, (_, i) => ({
+      key: `bulk-${i}`,
+      label: `Bulk League ${i}`,
+      group: 'Senior Leagues',
+      district: 'All districts',
+    }));
+    const res = await app.request('/platform/tenants/sharks', {
+      method: 'PUT',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({ leagues: many }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await repo.getTenantConfig('sharks'))?.leagues?.length, 500);
+  });
+
+  test('DynamoDB item-size ceiling degrades to a clear 400, not a 500', async () => {
+    // ~50 leagues × ~10KB notes ≈ 500KB — a legitimate payload (league fields
+    // have no length caps) that exceeds the 400KB item limit, which dynalite
+    // enforces with the same message as real DynamoDB.
+    const huge = Array.from({ length: 50 }, (_, i) => ({
+      key: `huge-${i}`,
+      label: `Huge League ${i}`,
+      group: 'Senior Leagues',
+      district: 'All districts',
+      note: 'x'.repeat(10_000),
+    }));
+    const res = await app.request('/platform/tenants/sharks', {
+      method: 'PUT',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({ leagues: huge }),
+    });
+    assert.equal(res.status, 400);
+    // The message assertion matters: it distinguishes the ceiling 400 from a
+    // wrong-reason validation 400.
+    assert.match(((await res.json()) as { error: string }).error, /storage ceiling/);
+    assert.deepEqual((await repo.getTenantConfig('sharks'))?.leagues, []); // untouched
+  });
 });
 
 describe('registry GSI persistence (delisting regression)', () => {
