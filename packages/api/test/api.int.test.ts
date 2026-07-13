@@ -4426,3 +4426,95 @@ describe('branding merge-patch + tenant feature flags', () => {
     assert.deepEqual(dolphinsBody.districts, DEFAULT_DISTRICTS);
   });
 });
+
+describe('playerCount — client-clobber guard + drift reconcile', () => {
+  const club = {
+    id: 'countdrift',
+    name: 'Countdrift CC',
+    district: 'Test District',
+    sub: 's',
+    chair: 'Chair',
+    affiliation: 'not_started' as const,
+    cqi: 0,
+    docs: {},
+    players: 0,
+    teams: 0,
+    women: 0,
+    juniors: 0,
+    color: '#123456',
+    ground: {},
+    leagues: [],
+    version: 1,
+  };
+  const player = (n: string) => ({
+    naturalKey: n,
+    clubId: 'countdrift',
+    firstName: n,
+    lastName: 'Player',
+    dob: '1995-01-01',
+    isMinor: false,
+    consentAt: '2026-05-01T00:00:00.000Z',
+    createdAt: '2026-05-01T00:00:00.000Z',
+  });
+
+  before(async () => {
+    await repo.createClub('dolphins', club);
+    await repo.createPlayer('dolphins', player('Alpha'));
+    await repo.createPlayer('dolphins', player('Bravo')); // counter now 2
+  });
+
+  test('PATCH strips a stale playerCount from the body (whole-item PUT cannot clobber it)', async () => {
+    // A client re-sends the object it last loaded, including a now-stale playerCount:0.
+    // Without the strip, updateClub's `{...current, ...patch}` PUT would persist 0.
+    const res = await app.request('/clubs/countdrift', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ playerCount: 0, players: 0 }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { players: number };
+    assert.equal(body.players, 2, 'derived count survives the stale patch');
+    const stored = (await repo.getClub('dolphins', 'countdrift')) as { playerCount?: number };
+    assert.equal(stored.playerCount, 2, 'stored counter untouched');
+  });
+
+  test('editing a benign field cannot round-trip a stale playerCount (the real prod trigger)', async () => {
+    // The production path: an admin renames the club and the client's last-loaded object
+    // carries a now-stale playerCount:0 along in the same PATCH body. updateClub's whole-item
+    // PUT would persist it without the strip.
+    const res = await app.request('/clubs/countdrift', {
+      method: 'PATCH',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ name: 'Countdrift Renamed CC', playerCount: 0 }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { players: number; name: string };
+    assert.equal(body.name, 'Countdrift Renamed CC');
+    assert.equal(body.players, 2, 'rename must not clobber the counter');
+    const stored = (await repo.getClub('dolphins', 'countdrift')) as { playerCount?: number };
+    assert.equal(stored.playerCount, 2);
+  });
+
+  test('reconcilePlayerCount heals a drifted counter from the real PLAYER# rows', async () => {
+    // Force drift the way the server race does: overwrite the stored counter low while the
+    // two real rows remain (updateClub itself does not strip — only the route does).
+    const before = await repo.getClub('dolphins', 'countdrift');
+    await repo.updateClub(
+      'dolphins',
+      'countdrift',
+      { playerCount: 0, version: before!.version },
+      'test',
+      new Date().toISOString(),
+    );
+
+    const result = await repo.reconcilePlayerCount('dolphins', 'countdrift');
+    assert.deepEqual(result, { previous: 0, actual: 2, delta: 2 });
+
+    const healed = (await repo.getClub('dolphins', 'countdrift')) as { playerCount?: number };
+    assert.equal(healed.playerCount, 2);
+
+    // Idempotent: a second pass is a no-op (delta 0, no write).
+    const again = await repo.reconcilePlayerCount('dolphins', 'countdrift');
+    assert.deepEqual(again, { previous: 2, actual: 2, delta: 0 });
+  });
+});

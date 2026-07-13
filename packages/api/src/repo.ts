@@ -825,6 +825,42 @@ export async function listPlayers(tenant: string, clubId: string): Promise<Playe
 }
 
 /**
+ * Recompute a club's denormalized `playerCount` from the source-of-truth PLAYER# rows and
+ * correct any drift with an ATOMIC delta bump (`ADD playerCount :delta`) — never a whole-value
+ * SET. The delta is strictly safer than a SET: a registration whose `ADD playerCount` lands
+ * entirely after our `listPlayers` read composes with our bump (a SET would clobber it). It is
+ * NOT perfectly exact under live traffic, though — `getClub` (reads `previous`) and
+ * `listPlayers` (reads `actual`) are two separate reads, so a registration straddling that gap
+ * can leave a ±1; that self-heals on any later quiescent run. Intended as an OUT-OF-BAND healer
+ * (backfill-player-counts), not a live-path correction. Idempotent: a no-drift club skips the
+ * write. Returns the counts so callers can report what changed.
+ */
+export async function reconcilePlayerCount(
+  tenant: string,
+  clubId: string,
+): Promise<{ actual: number; previous: number; delta: number }> {
+  const club = await getClub(tenant, clubId);
+  if (!club) throw new Error('club not found');
+  const previous = (club as { playerCount?: number }).playerCount ?? 0;
+  const actual = (await listPlayers(tenant, clubId)).length;
+  const delta = actual - previous;
+  if (delta !== 0) {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: TABLE,
+        Key: clubKey(tenant, clubId),
+        UpdateExpression: 'ADD playerCount :d',
+        // Guard on the club still existing so a reconcile racing a club delete can't
+        // resurrect a phantom item (same invariant createPlayer's bump protects).
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeValues: { ':d': delta },
+      }),
+    );
+  }
+  return { actual, previous, delta };
+}
+
+/**
  * Insert a registration (dedup on (club, naturalKey) via attribute_not_exists)
  * and atomically bump the club's denormalized `playerCount`. The count is read
  * straight off the club item on list/get, so the admin dashboard avoids an N+1

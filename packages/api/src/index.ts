@@ -969,6 +969,18 @@ app.patch('/clubs/:id', async (c) => {
   const id = c.req.param('id');
   assertClubAccess(ra, id);
   const patch = await c.req.json<Partial<Club>>();
+  // The player counter is server-owned and must never be written from a client patch.
+  // `playerCount` is maintained only by the atomic registration/delete bumps
+  // (repo.createPlayer / deletePlayer); `players` is derived on read by withPlayerCount.
+  // Because updateClub PUTs the WHOLE club item, a stale `playerCount` round-tripped from
+  // the client's last load (it's returned alongside `players`) would otherwise overwrite the
+  // live counter and stick forever. Strip both before validation/merge. Drift from the
+  // narrower read-to-PUT race is healed out-of-band by backfill-player-counts.
+  // NOTE: this is the ONLY route that spreads a raw client body into updateClub — the other
+  // applyClubPatch callers build their patch server-side. Any future route added over
+  // updateClub that forwards a client body must repeat this strip.
+  delete (patch as { playerCount?: unknown }).playerCount;
+  delete (patch as { players?: unknown }).players;
   const current = await repo.getClub(ra.tenant, id);
   if (!current) throw new HttpError(404, 'club not found');
   // Rename handling: normalise, drop no-ops, and enforce the SAME name/slug uniqueness
