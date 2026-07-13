@@ -7,7 +7,7 @@
  * See docs/architecture/data-model.md for the full access-pattern → key mapping.
  */
 
-export type EntityType = 'CLUB' | 'SERIES' | 'USER' | 'CLEARANCE';
+export type EntityType = 'CLUB' | 'SERIES' | 'USER' | 'CLEARANCE' | 'REGREVIEW';
 
 const tenantPrefix = (tenant: string) => `TENANT#${tenant}`;
 
@@ -123,6 +123,35 @@ export const clearanceGsi1 = (tenant: string, requestedAt: string) => ({
 
 /** gsi1pk used to query every clearance in a tenant (admin console). */
 export const clearancesListGsi1pk = (tenant: string) => `${tenantPrefix(tenant)}#TYPE#CLEARANCE`;
+
+/**
+ * A registration review (off-system alert or cross-club hold). ONE canonical item
+ * under the DESTINATION club (the club that must action a hold), carrying the gsi1
+ * entry so admins list every review cohort-wide in one query — same own-partition
+ * read model as clearances, but without a mirror (a review has a single owner).
+ * Like clearances/invites it has no META/gsi1-CLUB listing, so tenant/club erasure
+ * must enumerate `REGREVIEW#` items explicitly (see listReviewsForClub).
+ */
+export const registrationReviewKey = (tenant: string, destClubId: string, id: string) => ({
+  pk: `${tenantPrefix(tenant)}#CLUB#${destClubId}`,
+  sk: `REGREVIEW#${id}`,
+});
+
+/** pk + sk-prefix to query a club's own registration reviews (it is the destination). */
+export const registrationReviewsListKey = (tenant: string, destClubId: string) => ({
+  pk: `${tenantPrefix(tenant)}#CLUB#${destClubId}`,
+  skPrefix: 'REGREVIEW#',
+});
+
+/** gsi1 attributes that make a registration review listable tenant-wide (admin). */
+export const registrationReviewGsi1 = (tenant: string, createdAt: string) => ({
+  gsi1pk: `${tenantPrefix(tenant)}#TYPE#REGREVIEW`,
+  gsi1sk: createdAt ?? '',
+});
+
+/** gsi1pk used to query every registration review in a tenant (admin console). */
+export const registrationReviewsListGsi1pk = (tenant: string) =>
+  `${tenantPrefix(tenant)}#TYPE#REGREVIEW`;
 
 /**
  * Registration-link token. GLOBAL (not tenant-prefixed) and self-describing:

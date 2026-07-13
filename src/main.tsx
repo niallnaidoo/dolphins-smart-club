@@ -64,6 +64,7 @@ import {
   AdminSettingsView,
   AdminTeamAccessView,
   AdminClearances,
+  AdminRegistrationReviews,
   LeagueForm,
   CreateSeriesForm,
 } from './admin';
@@ -78,6 +79,7 @@ import {
   ClubPlayersView,
   RequestPlayerForm,
   ClubClearancesView,
+  ClubJoinRequestsView,
 } from './club';
 import { Onboarding } from './onboarding';
 
@@ -879,6 +881,7 @@ function Shell({
   // ── Player roster + clearance state/data (lives here, where clubId is known) ──
   const [showRequestPlayer, setShowRequestPlayer] = useStateApp(false);
   const [busyClearanceId, setBusyClearanceId] = useStateApp(null);
+  const [busyReviewId, setBusyReviewId] = useStateApp(null);
   // Signup-link share modal, lifted to Shell (which persists across admin views)
   // so empty-state buttons can open it in one click: set true + route to the
   // clubs list, where AdminClubsList renders it.
@@ -910,10 +913,24 @@ function Shell({
     queryFn: api.getClubSignupLink,
     enabled: role === 'admin',
   });
+  // Cross-club holds a club must accept/decline (its own inbound self-registrations).
+  const registrationReviewsQuery = useQuery({
+    queryKey: qk.registrationReviews(clubId),
+    queryFn: () => api.getRegistrationReviews(clubId),
+    enabled: role === 'club' && !!clubId,
+  });
+  // Every registration review in the tenant (admin console): off-system alerts + holds.
+  const allReviewsQuery = useQuery({
+    queryKey: qk.allRegistrationReviews(),
+    queryFn: api.getAllRegistrationReviews,
+    enabled: role === 'admin',
+  });
   const players = playersQuery.data ?? [];
   const clearances = clearancesQuery.data ?? { incoming: [], outbound: [] };
   const clubDirectory = clubDirectoryQuery.data ?? [];
   const allClearances = allClearancesQuery.data ?? [];
+  const registrationReviews = registrationReviewsQuery.data ?? [];
+  const allReviews = allReviewsQuery.data ?? [];
   const signupLink = signupLinkQuery.data?.clubSignupLink ?? null;
 
   // ── Derive view from URL ──
@@ -1312,6 +1329,61 @@ function Shell({
       .catch(() => {})
       .finally(() => setBusyClearanceId(null));
   }
+  // Destination chair accepts an inbound cross-club hold: the player lands on this roster
+  // (opening a clearance to their previous club if found there).
+  function acceptRegistrationReview(review) {
+    setBusyReviewId(review.id);
+    return withToast(
+      () => api.acceptRegistrationReview(clubId, review.id, { version: review.version }),
+      'Could not accept the registration',
+      // On a 409 (someone else actioned this hold), refresh the reviews list — not the
+      // default clubs/series/tenant set — so the stale card actually drops.
+      { rawConflict: true, invalidate: [qk.registrationReviews(clubId)] },
+    )
+      .then(() => {
+        invalidate(qk.registrationReviews(clubId));
+        invalidate(qk.players(clubId));
+        invalidate(qk.clearances(clubId));
+        toastShow(`${review.playerName} added to your roster`);
+      })
+      .catch(() => {})
+      .finally(() => setBusyReviewId(null));
+  }
+  // Destination chair declines an inbound hold: nothing was ever added; the parked
+  // registration (and its uploaded ID doc) is discarded.
+  function declineRegistrationReview(review) {
+    setBusyReviewId(review.id);
+    return withToast(
+      () => api.declineRegistrationReview(clubId, review.id, { version: review.version }),
+      'Could not decline the registration',
+      { rawConflict: true, invalidate: [qk.registrationReviews(clubId)] },
+    )
+      .then(() => {
+        invalidate(qk.registrationReviews(clubId));
+        toastShow(`${review.playerName}'s registration declined`);
+      })
+      .catch(() => {})
+      .finally(() => setBusyReviewId(null));
+  }
+  // Admin acknowledges an off-system alert (a player named a club not on the system).
+  function ackRegistrationReview(review) {
+    setBusyReviewId(review.id);
+    return withToast(
+      () =>
+        api.ackRegistrationReview(review.id, {
+          destClubId: review.destClubId,
+          version: review.version,
+        }),
+      'Could not mark the alert reviewed',
+      { rawConflict: true, invalidate: [qk.allRegistrationReviews()] },
+    )
+      .then(() => {
+        invalidate(qk.allRegistrationReviews());
+        toastShow('Marked reviewed');
+      })
+      .catch(() => {})
+      .finally(() => setBusyReviewId(null));
+  }
   function saveExco(members) {
     return withToast(() => api.saveExco(clubId, members), 'Could not save exco')
       .then(() => {
@@ -1446,6 +1518,10 @@ function Shell({
   const myIncomingClearances = (clearances.incoming ?? []).filter((r) => r.status === 'pending');
   const myPendingClearances = myIncomingClearances.length;
   const myPlayerCount = players.length;
+  // Registration-review badges: admin sees every open review cohort-wide; a club counts
+  // only the inbound cross-club holds it must action.
+  const adminOpenReviews = allReviews.filter((r) => r.status === 'open').length;
+  const myOpenHolds = registrationReviews.filter((r) => r.status === 'open').length;
 
   // Nav items are listed in their natural journey order here, then sorted alphabetically
   // by label for display (see the `.sort` below) — same for clubNav.
@@ -1483,6 +1559,13 @@ function Shell({
       icon: Icon.Shield,
       num: adminPendingClearances || undefined,
       dot: adminPendingClearances ? 'gold' : 'teal',
+    },
+    {
+      v: 'reg_reviews',
+      label: 'Registration Reviews',
+      icon: Icon.Bell,
+      num: adminOpenReviews || undefined,
+      dot: adminOpenReviews ? 'gold' : 'teal',
     },
     { v: 'team', label: 'Team & Access', icon: Icon.Users, num: users.length || undefined },
   ].sort((a, b) => a.label.localeCompare(b.label));
@@ -1529,6 +1612,13 @@ function Shell({
             icon: Icon.Shield,
             num: myPendingClearances || undefined,
             dot: myPendingClearances ? 'gold' : 'muted',
+          },
+          {
+            v: 'join_requests',
+            label: 'Join Requests',
+            icon: Icon.Bell,
+            num: myOpenHolds || undefined,
+            dot: myOpenHolds ? 'gold' : 'muted',
           },
           {
             v: 'fixtures',
@@ -1699,6 +1789,14 @@ function Shell({
             busyId={busyClearanceId}
           />
         );
+      if (view === 'reg_reviews')
+        return (
+          <AdminRegistrationReviews
+            reviews={allReviews}
+            onAck={ackRegistrationReview}
+            busyId={busyReviewId}
+          />
+        );
       if (view === 'team')
         return (
           <AdminTeamAccessView
@@ -1796,6 +1894,18 @@ function Shell({
             onApprove={approveClearance}
             onOpenRequest={() => setShowRequestPlayer(true)}
             busyId={busyClearanceId}
+          />
+        );
+      }
+      if (view === 'join_requests') {
+        return (
+          <ClubJoinRequestsView
+            club={activeClub}
+            reviews={registrationReviews}
+            leagues={allLeagues}
+            onAccept={acceptRegistrationReview}
+            onDecline={declineRegistrationReview}
+            busyId={busyReviewId}
           />
         );
       }

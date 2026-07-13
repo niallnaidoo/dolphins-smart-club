@@ -403,3 +403,36 @@ export interface PlayerClearance {
   rejectReason?: string;
   version: number;
 }
+
+export type RegistrationReviewKind = 'off-system-alert' | 'cross-club-hold';
+export type RegistrationReviewStatus = 'open' | 'resolved';
+export type RegistrationReviewResolution = 'acknowledged' | 'accepted' | 'declined';
+
+/**
+ * A self-registration needing a human look. `off-system-alert` = admin-only FYI that a
+ * player named an off-system previous club (row already active). `cross-club-hold` = a
+ * registration that chose a different club than the link, parked (no row yet) for the
+ * destination chair to accept/decline. Mirror of the backend type.
+ */
+export interface RegistrationReview {
+  id: string;
+  kind: RegistrationReviewKind;
+  playerNaturalKey: string;
+  playerName: string;
+  idNumber?: string;
+  destClubId: string;
+  destClubName: string;
+  linkClubId: string;
+  linkClubName: string;
+  typedPreviousClub?: string;
+  previousClubName?: string;
+  /** Present only on open cross-club holds (self-asserted; the chair needs it to decide). */
+  pendingPlayer?: PlayerRegistration;
+  pendingLastClubId?: string;
+  createdAt: string;
+  status: RegistrationReviewStatus;
+  resolution?: RegistrationReviewResolution;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  version: number;
+}

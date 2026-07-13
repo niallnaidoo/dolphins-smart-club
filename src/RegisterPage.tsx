@@ -48,6 +48,9 @@ const EMPTY = {
   // club list and the page falls back to the legacy free-text field).
   lastClubChoice: '',
   lastClub: '',
+  // Current/destination club. '' ⇒ the link club (default). Only shown, and only sent, when
+  // the player's previous club differs from the link club (see showCurrentClub below).
+  currentClubChoice: '',
   battingHand: 'Right',
   battingType: 'Mid Order',
   bowlingHand: 'Right',
@@ -83,6 +86,9 @@ export function RegisterPage() {
   const [clubs, setClubs] = useState<{ id: string; name: string }[]>([]);
   // Set when the submit opened a transfer — drives the clearance success variant.
   const [clearanceFrom, setClearanceFrom] = useState('');
+  // Set (to the destination club name) when the submit was HELD for a cross-club chair to
+  // accept — drives the pending-approval success variant.
+  const [heldAt, setHeldAt] = useState('');
   const [d, setD] = useState(EMPTY);
   const [idFile, setIdFile] = useState<File | null>(null);
   const [error, setError] = useState('');
@@ -118,6 +124,20 @@ export function RegisterPage() {
   // The team picker uses the same district-scoped helper as the portal; the registrant
   // picks their own district here, so the options follow that selection.
   const teamOptions = leagueOptionsForDistrict(leagues, d.district);
+  // Current-club dropdown: shown only when the previous club differs from the link club —
+  // i.e. the player picked a real on-system previous club, or "Other". Hidden for a first
+  // registration ('__first__') or when unanswered, where the link club IS the current club.
+  const showCurrentClub =
+    clubs.length > 0 &&
+    (d.lastClubChoice === '__other__' ||
+      (!!d.lastClubChoice && d.lastClubChoice !== '__first__' && d.lastClubChoice !== '__other__'));
+  // Options = the link club (default) + every sibling, minus the club chosen as previous
+  // (you can't transfer to the club you came from). `clubs` already excludes the link club.
+  const currentClubOptions = [{ id: clubId, name: clubName }, ...clubs].filter(
+    (cl) => cl.id !== d.lastClubChoice,
+  );
+  // The effective destination: the picked current club, or the link club when hidden/default.
+  const currentClubId = showCurrentClub ? d.currentClubChoice || clubId : clubId;
   const isPassport = d.idType === 'passport';
   // SA citizens derive dob from the RSA ID; non-SA enter it directly (no oracle for a passport).
   const dob = isPassport ? d.dob : dobFromSaId(d.idNumber);
@@ -221,6 +241,10 @@ export function RegisterPage() {
               : d.lastClubChoice
                 ? { lastClubId: d.lastClubChoice }
                 : {}),
+        // Only sent when the current-club dropdown is shown AND the player picked a club
+        // other than the link club — that registers them into (and holds them for) that
+        // club instead. Omitted ⇒ backend defaults the destination to the link club.
+        ...(currentClubId !== clubId ? { currentClubId } : {}),
         battingHand: d.battingHand,
         bowlingHand: d.bowlingHand,
         battingType: d.battingType,
@@ -230,7 +254,8 @@ export function RegisterPage() {
         guardianName: minor ? d.guardianName : undefined,
         idDocMeta: { objectKey, size: idFile.size, contentType },
       });
-      if (res?.clearance?.fromClubName) setClearanceFrom(res.clearance.fromClubName);
+      if (res?.held) setHeldAt(res.destClubName || '');
+      else if (res?.clearance?.fromClubName) setClearanceFrom(res.clearance.fromClubName);
       setState('done');
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
@@ -261,6 +286,20 @@ export function RegisterPage() {
     );
   }
   if (state === 'done') {
+    if (heldAt) {
+      return (
+        <CenterCard>
+          <h1 className="ps-title" style={{ fontSize: 22 }}>
+            Request sent — pending {heldAt} approval
+          </h1>
+          <p className="ps-desc">
+            Because you chose <strong>{heldAt}</strong> as your current club — different from the
+            club whose link you used — your registration has been sent to {heldAt} to approve. You
+            won&apos;t appear on their roster until they accept it.
+          </p>
+        </CenterCard>
+      );
+    }
     if (clearanceFrom) {
       return (
         <CenterCard>
@@ -503,12 +542,20 @@ export function RegisterPage() {
                 value={d.lastClubChoice}
                 onChange={(e) =>
                   // Leaving 'Other' clears the typed name so it can't ride along with
-                  // a club pick (same pattern as the admin venue picker).
-                  setD((f) => ({ ...f, lastClubChoice: e.target.value, lastClub: '' }))
+                  // a club pick (same pattern as the admin venue picker). Reset the
+                  // current-club pick too: the options exclude the chosen previous club,
+                  // so a stale currentClubChoice could otherwise equal the new previous
+                  // club and submit an invalid previous==current pair (backend 400).
+                  setD((f) => ({
+                    ...f,
+                    lastClubChoice: e.target.value,
+                    lastClub: '',
+                    currentClubChoice: '',
+                  }))
                 }
                 placeholder="Select…"
               >
-                <option value="__first__">— First registration —</option>
+                <option value="__first__">None (first registration)</option>
                 {clubs.map((cl) => (
                   <option key={cl.id} value={cl.id}>
                     {cl.name}
@@ -534,9 +581,36 @@ export function RegisterPage() {
                   >
                     If you&apos;re still registered there under this ID number, a clearance request
                     will be sent to that club — they (or the Union office) must approve it before
-                    you join {clubName}.
+                    you join your current club.
                   </div>
                 )}
+              {showCurrentClub && (
+                <>
+                  <Select
+                    span
+                    label="Current club"
+                    value={d.currentClubChoice || clubId}
+                    onChange={(e) => setD((f) => ({ ...f, currentClubChoice: e.target.value }))}
+                  >
+                    {currentClubOptions.map((cl) => (
+                      <option key={cl.id} value={cl.id}>
+                        {cl.name}
+                        {cl.id === clubId ? ' (this link)' : ''}
+                      </option>
+                    ))}
+                  </Select>
+                  {currentClubId !== clubId && (
+                    <div
+                      className="reg-span"
+                      style={{ fontSize: 12, color: 'rgba(255,255,255,0.55)' }}
+                    >
+                      You&apos;re registering with a club other than the one whose link you used, so
+                      your registration will be sent to that club to approve before you appear on
+                      their roster.
+                    </div>
+                  )}
+                </>
+              )}
             </>
           )}
         </Section>

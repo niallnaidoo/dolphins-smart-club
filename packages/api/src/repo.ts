@@ -32,6 +32,10 @@ import {
   inboundClearancesListKey,
   clearanceGsi1,
   clearancesListGsi1pk,
+  registrationReviewKey,
+  registrationReviewsListKey,
+  registrationReviewGsi1,
+  registrationReviewsListGsi1pk,
   tokenKey,
   tenantConfigKey,
   tenantConfigGsi1,
@@ -52,6 +56,8 @@ import type {
   UserProfile,
   PlayerRegistration,
   PlayerClearance,
+  RegistrationReview,
+  RegistrationReviewResolution,
 } from './types.js';
 
 import { tableName } from './env.js';
@@ -1744,6 +1750,146 @@ export async function rejectClearance(
   return next;
 }
 
+// ── Registration reviews (off-system alerts + cross-club holds) ──
+
+/** The single canonical put item for a review (destination-club partition + gsi1). */
+function reviewItem(tenant: string, r: RegistrationReview) {
+  return {
+    ...registrationReviewKey(tenant, r.destClubId, r.id),
+    ...registrationReviewGsi1(tenant, r.createdAt),
+    ...r,
+  };
+}
+
+/** Create a registration review (dedup on the id via attribute_not_exists). */
+export async function createRegistrationReview(
+  tenant: string,
+  r: RegistrationReview,
+): Promise<void> {
+  await ddb.send(
+    new PutCommand({
+      TableName: TABLE,
+      Item: reviewItem(tenant, r),
+      ConditionExpression: 'attribute_not_exists(sk)',
+    }),
+  );
+}
+
+export async function getRegistrationReview(
+  tenant: string,
+  destClubId: string,
+  id: string,
+): Promise<RegistrationReview | null> {
+  const res = await ddb.send(
+    new GetCommand({ TableName: TABLE, Key: registrationReviewKey(tenant, destClubId, id) }),
+  );
+  return stripKeys<RegistrationReview>(res.Item);
+}
+
+/** A club's own registration reviews (it is the destination). */
+export async function listReviewsForClub(
+  tenant: string,
+  destClubId: string,
+): Promise<RegistrationReview[]> {
+  const { pk, skPrefix } = registrationReviewsListKey(tenant, destClubId);
+  const items = await queryAll({
+    TableName: TABLE,
+    KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
+    ExpressionAttributeValues: { ':p': pk, ':s': skPrefix },
+  });
+  return items.map((i) => stripKeys<RegistrationReview>(i)!);
+}
+
+/**
+ * Every registration review in the tenant (admin console) — one row each via the gsi1.
+ * queryAll so a season's worth can't silently truncate at the 1MB page.
+ */
+export async function listAllReviews(tenant: string): Promise<RegistrationReview[]> {
+  const items = await queryAll({
+    TableName: TABLE,
+    IndexName: 'gsi1',
+    KeyConditionExpression: 'gsi1pk = :p',
+    ExpressionAttributeValues: { ':p': registrationReviewsListGsi1pk(tenant) },
+  });
+  return items.map((i) => stripKeys<RegistrationReview>(i)!);
+}
+
+/**
+ * Flip an open review to 'resolved' with the given resolution, version-guarded. Also
+ * REMOVEs the parked `pendingPlayer`/`pendingLastClubId` so a resolved review keeps no
+ * self-asserted PII (the accepted row now lives on the roster; a declined one is gone).
+ * The `version = :v AND status = 'open'` guard is the mutual-exclusion: a double-action,
+ * or accept racing decline, loses → VersionConflictError → 409 refetch.
+ */
+export async function resolveReview(
+  tenant: string,
+  destClubId: string,
+  id: string,
+  opts: {
+    resolution: RegistrationReviewResolution;
+    at: string;
+    by: string;
+    expectedVersion?: number;
+  },
+): Promise<RegistrationReview> {
+  const current = await getRegistrationReview(tenant, destClubId, id);
+  if (!current) throw new Error('registration review not found');
+  const expectedVersion = opts.expectedVersion ?? current.version ?? 0;
+  try {
+    const res = await ddb.send(
+      new UpdateCommand({
+        TableName: TABLE,
+        Key: registrationReviewKey(tenant, destClubId, id),
+        UpdateExpression:
+          'SET #st = :resolved, resolution = :res, resolvedAt = :at, resolvedBy = :by, version = :nv REMOVE pendingPlayer, pendingLastClubId',
+        ConditionExpression: 'attribute_exists(sk) AND version = :v AND #st = :open',
+        ExpressionAttributeNames: { '#st': 'status' },
+        ExpressionAttributeValues: {
+          ':resolved': 'resolved',
+          ':res': opts.resolution,
+          ':at': opts.at,
+          ':by': opts.by,
+          ':nv': expectedVersion + 1,
+          ':v': expectedVersion,
+          ':open': 'open',
+        },
+        ReturnValues: 'ALL_NEW',
+      }),
+    );
+    return stripKeys<RegistrationReview>(res.Attributes)!;
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name === 'ConditionalCheckFailedException') {
+      throw new VersionConflictError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Decline a cross-club hold: flip it to 'resolved'/'declined' (which drops the parked
+ * payload) and purge the self-asserted ID doc from S3 (POPIA) — no player row ever
+ * existed, so there is nothing else to unwind. The objectKey is captured BEFORE the
+ * flip removes `pendingPlayer`; the purge is best-effort (swallowed + lifecycle-recoverable).
+ */
+export async function declineReview(
+  tenant: string,
+  destClubId: string,
+  id: string,
+  opts: { at: string; by: string; expectedVersion?: number },
+): Promise<RegistrationReview> {
+  const current = await getRegistrationReview(tenant, destClubId, id);
+  if (!current) throw new Error('registration review not found');
+  const objectKey = current.pendingPlayer?.idDocMeta?.objectKey;
+  const resolved = await resolveReview(tenant, destClubId, id, {
+    resolution: 'declined',
+    at: opts.at,
+    by: opts.by,
+    expectedVersion: opts.expectedVersion,
+  });
+  if (objectKey) await deleteUploadObjects([objectKey]);
+  return resolved;
+}
+
 // ── Registration tokens (global, self-describing) ──
 
 /**
@@ -1837,6 +1983,55 @@ export async function bumpSignupTokenCounter(
         Key: tokenKey(token),
         UpdateExpression: 'SET signupCount = signupCount + :one',
         ConditionExpression: 'signupWindowStart >= :cutoff AND signupCount < :limit',
+        ExpressionAttributeValues: { ':one': 1, ':cutoff': cutoff, ':limit': limit },
+      }),
+    );
+    return true;
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name === 'ConditionalCheckFailedException') return false;
+    throw err;
+  }
+}
+
+/**
+ * Per-destination-club hourly cap on inbound cross-club self-registrations. Where the
+ * token counter throttles a single link, this throttles a single VICTIM club regardless
+ * of which (or how many) links an attacker holds — so a leaked link can't be used to
+ * spam another club's roster past this cap. The counter rides on the club META item
+ * (definitely-exists, validated by the route just before, and swept with the club on
+ * erasure) under `inboundReg*` attributes, using the same two-step window/increment race
+ * discipline as bumpSignupTokenCounter: a window-boundary race only ever ADMITS a request
+ * the cap might have refused, never blocks a legitimate one.
+ */
+export async function bumpClubInboundCounter(
+  tenant: string,
+  clubId: string,
+  nowIso: string,
+  limit: number,
+): Promise<boolean> {
+  const cutoff = new Date(new Date(nowIso).getTime() - SIGNUP_WINDOW_MS).toISOString();
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: TABLE,
+        Key: clubKey(tenant, clubId),
+        UpdateExpression: 'SET inboundRegWindowStart = :now, inboundRegCount = :one',
+        ConditionExpression:
+          'attribute_exists(pk) AND (attribute_not_exists(inboundRegWindowStart) OR inboundRegWindowStart < :cutoff)',
+        ExpressionAttributeValues: { ':now': nowIso, ':one': 1, ':cutoff': cutoff },
+      }),
+    );
+    return true;
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name !== 'ConditionalCheckFailedException') throw err;
+  }
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: TABLE,
+        Key: clubKey(tenant, clubId),
+        UpdateExpression: 'SET inboundRegCount = inboundRegCount + :one',
+        ConditionExpression: 'inboundRegWindowStart >= :cutoff AND inboundRegCount < :limit',
         ExpressionAttributeValues: { ':one': 1, ':cutoff': cutoff, ':limit': limit },
       }),
     );
@@ -2272,6 +2467,13 @@ export async function eraseTenantData(tenant: string): Promise<number> {
     for (const x of await listInboundForDest(tenant, club.id)) {
       keys.push(inboundClearanceKey(tenant, club.id, x.id));
     }
+    // Registration reviews (REGREVIEW#) also live under club pks without a gsi1/META
+    // listing — enumerate per club, and purge any held (cross-club) ID doc.
+    for (const r of await listReviewsForClub(tenant, club.id)) {
+      keys.push(registrationReviewKey(tenant, club.id, r.id));
+      if (r.pendingPlayer?.idDocMeta?.objectKey)
+        objectKeys.push(r.pendingPlayer.idDocMeta.objectKey);
+    }
     // Invite markers aren't in the gsi1 listing — enumerate + delete them explicitly.
     for (const k of await listClubInviteKeys(tenant, club.id)) keys.push(k);
   }
@@ -2304,6 +2506,11 @@ export async function clearCohort(tenant: string): Promise<number> {
     }
     for (const x of await listInboundForDest(tenant, club.id)) {
       keys.push(inboundClearanceKey(tenant, club.id, x.id));
+    }
+    for (const r of await listReviewsForClub(tenant, club.id)) {
+      keys.push(registrationReviewKey(tenant, club.id, r.id));
+      if (r.pendingPlayer?.idDocMeta?.objectKey)
+        objectKeys.push(r.pendingPlayer.idDocMeta.objectKey);
     }
     for (const k of await listClubInviteKeys(tenant, club.id)) keys.push(k);
   }
@@ -2422,6 +2629,13 @@ export async function eraseClubData(
         if ((err as { name?: string }).name !== 'ConditionalCheckFailedException') throw err;
       }
     }
+  }
+
+  // Registration reviews addressed to this club (it is the destination). Enumerate +
+  // delete, and purge any held cross-club ID doc (self-asserted PII, POPIA).
+  for (const r of await listReviewsForClub(tenant, club.id)) {
+    keys.push(registrationReviewKey(tenant, club.id, r.id));
+    if (r.pendingPlayer?.idDocMeta?.objectKey) objectKeys.push(r.pendingPlayer.idDocMeta.objectKey);
   }
 
   // Invite markers aren't in the gsi1 listing — enumerate + delete them explicitly

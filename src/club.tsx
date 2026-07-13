@@ -84,6 +84,7 @@ import {
 import { getDocUploadUrl, uploadToPresigned } from './api';
 import { DocPreviewModal } from './DocPreviewModal';
 import { RegLinkModal } from './RegLinkModal';
+import { PlayerDetailModal } from './PlayerDetailModal';
 import { ClubNameModal } from './ClubNameModal';
 
 /* ─── Compliance doc upload — presigned S3 PUT, then mark uploaded ─── */
@@ -4651,6 +4652,7 @@ export function ClubPlayersView({
 }) {
   const [showLink, setShowLink] = useStateC(false);
   const [confirmDelete, setConfirmDelete] = useStateC(null); // the player pending confirmation
+  const [selectedPlayer, setSelectedPlayer] = useStateC(null); // row-click detail modal
   const [busyNk, setBusyNk] = useStateC(null); // naturalKey of the row being deleted
   const [filters, setFilters] = useStateC(emptyPlayerFilters);
   async function openLink() {
@@ -4808,7 +4810,11 @@ export function ClubPlayersView({
                 .filter(Boolean)
                 .join(' · ');
               return (
-                <tr key={p.naturalKey}>
+                <tr
+                  key={p.naturalKey}
+                  onClick={() => setSelectedPlayer(p)}
+                  style={{ cursor: 'pointer' }}
+                >
                   <td>
                     <div className="rost-name">
                       {p.firstName} {p.lastName}
@@ -4857,7 +4863,10 @@ export function ClubPlayersView({
                       </Pill>
                     )}
                   </td>
-                  <td style={{ textAlign: 'right', paddingRight: 14 }}>
+                  <td
+                    style={{ textAlign: 'right', paddingRight: 14 }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     {outbound ? (
                       <span className="rost-sub">→ {outbound.toClubName}</span>
                     ) : inbound ? (
@@ -4909,6 +4918,15 @@ export function ClubPlayersView({
           </tbody>
         </table>
       </div>
+      {selectedPlayer && (
+        <PlayerDetailModal
+          player={selectedPlayer}
+          clubId={club.id}
+          clubName={club.name}
+          teamLabel={selectedPlayer.team ? label(selectedPlayer.team) : ''}
+          onClose={() => setSelectedPlayer(null)}
+        />
+      )}
     </div>
   );
 }
@@ -5209,6 +5227,125 @@ export function ClubClearancesView({
   );
 }
 
+/* ─── ClubJoinRequestsView — inbound cross-club holds this club must accept/decline ─── */
+
+export function ClubJoinRequestsView({ club, reviews, leagues, onAccept, onDecline, busyId }) {
+  const teamLabel = labelByKey(leagues);
+  const all = reviews ?? [];
+  // Pending: oldest request first (FIFO, so nothing languishes). Resolved: most recent first.
+  const openHolds = all
+    .filter((r) => r.status === 'open')
+    .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+  const resolvedHolds = all
+    .filter((r) => r.status !== 'open')
+    .sort((a, b) => (b.resolvedAt || '').localeCompare(a.resolvedAt || ''));
+  const fmtDay = (iso) =>
+    iso
+      ? new Date(iso).toLocaleDateString('en-GB', {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        })
+      : '';
+  const prevLabel = (r) => r.previousClubName || r.typedPreviousClub || 'None (first registration)';
+
+  return (
+    <div>
+      <div className="page-head">
+        <div className="ph-left">
+          <div className="ph-crumb">Club Portal · {club.name} / Join Requests</div>
+          <h1 className="ph-title">
+            Player <em>Join Requests</em>
+          </h1>
+          <p className="ph-desc">
+            Players who registered for {club.name} using another club's link. Accept to add them to
+            your roster (a clearance is opened to their previous club if they're still registered
+            there), or decline to discard the registration.
+          </p>
+        </div>
+      </div>
+
+      <Card title="Pending requests" sub="Registrations awaiting your decision.">
+        {openHolds.length === 0 && (
+          <div
+            style={{
+              padding: '24px 16px',
+              textAlign: 'center',
+              color: 'var(--muted)',
+              fontSize: 13,
+            }}
+          >
+            No join requests pending. Players registering for {club.name} via another club's link
+            will appear here.
+          </div>
+        )}
+        <div className="clr-list">
+          {openHolds.map((r) => {
+            const busy = busyId === r.id;
+            const p = r.pendingPlayer || {};
+            return (
+              <div key={r.id} className="clr-card">
+                <div className="clr-card-head">
+                  <div>
+                    <div className="clr-eyebrow">Pending your decision</div>
+                    <div className="clr-name">{r.playerName}</div>
+                    <div className="clr-meta">
+                      ID {r.idNumber || '—'} · {teamLabel[p.team] || p.team || '—'} · Previous:{' '}
+                      {prevLabel(r)} · {fmtDay(r.createdAt)}
+                    </div>
+                    <div className="clr-meta" style={{ marginTop: 2 }}>
+                      Registered via {r.linkClubName}'s link
+                    </div>
+                  </div>
+                </div>
+                <div className="clr-override">
+                  <div className="clr-override-text">
+                    <div className="clr-override-sub">
+                      {r.previousClubName
+                        ? `If accepted and ${r.playerName} is still registered at ${r.previousClubName}, a clearance request goes to that club before the player becomes active.`
+                        : `Accepting adds ${r.playerName} to your roster.`}
+                    </div>
+                  </div>
+                  <Btn tone="outline" disabled={busy} onClick={() => onDecline(r)}>
+                    Decline
+                  </Btn>
+                  <Btn tone="teal" icon={Icon.Check} disabled={busy} onClick={() => onAccept(r)}>
+                    {busy ? 'Accepting…' : 'Accept'}
+                  </Btn>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {resolvedHolds.length > 0 && (
+        <Card title="Resolved" sub="Past join requests.">
+          <div className="clr-list">
+            {resolvedHolds.map((r) => (
+              <div key={r.id} className="clr-card resolved">
+                <div className="clr-card-head">
+                  <div>
+                    <div className="clr-name">{r.playerName}</div>
+                    <div className="clr-meta">
+                      Previous: {prevLabel(r)} · {fmtDay(r.resolvedAt)}
+                    </div>
+                  </div>
+                  <div className="clr-resolved-bar">
+                    <Pill tone={r.resolution === 'declined' ? 'coral' : 'teal'} dot>
+                      {r.resolution === 'accepted' ? 'Accepted' : 'Declined'}
+                    </Pill>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 Object.assign(window, {
   ClubHome,
   AffiliationForm,
@@ -5218,4 +5355,5 @@ Object.assign(window, {
   ClubPlayersView,
   RequestPlayerForm,
   ClubClearancesView,
+  ClubJoinRequestsView,
 });

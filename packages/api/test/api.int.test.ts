@@ -1630,6 +1630,204 @@ describe('POST /register/:clubId (public self-registration body)', () => {
   });
 });
 
+describe('POST /register — cross-club holds, off-system alerts, review actions', () => {
+  const mkClub = (id: string, name: string) => ({
+    id,
+    name,
+    district: 'Test District',
+    sub: `sub-${id}`,
+    chair: 'Chair',
+    affiliation: 'not_started' as const,
+    cqi: 0,
+    docs: {},
+    players: 0,
+    teams: 0,
+    women: 0,
+    juniors: 0,
+    color: '#333333',
+    ground: {},
+    leagues: [],
+    version: 1,
+  });
+  const DEST_REP = devAuthAs('dest-rep', 'destrep@test', [
+    { tenantId: 'dolphins', role: 'rep', clubIds: ['rdest'] },
+  ]);
+  let teamKey: string;
+  let linkKey: string;
+  let prevKey: string;
+
+  before(async () => {
+    await repo.createClub('dolphins', mkClub('rlink', 'Reg Link CC'));
+    await repo.createClub('dolphins', mkClub('rdest', 'Reg Dest CC'));
+    await repo.createClub('dolphins', mkClub('rprev', 'Reg Prev CC'));
+    await repo.putToken('rev-link-token', 'dolphins', 'rlink', '2026-06-01T00:00:00.000Z');
+    await repo.putToken('rev-prev-token', 'dolphins', 'rprev', '2026-06-01T00:00:00.000Z');
+    teamKey = ((await repo.getTenantConfig('dolphins'))?.leagues ?? [])[0]?.key ?? '';
+    const upLink = await app.request('/register/rlink/id-doc/upload-url?t=rev-link-token', {
+      method: 'POST',
+      body: JSON.stringify({ contentType: 'image/png' }),
+    });
+    linkKey = ((await upLink.json()) as { objectKey: string }).objectKey;
+    const upPrev = await app.request('/register/rprev/id-doc/upload-url?t=rev-prev-token', {
+      method: 'POST',
+      body: JSON.stringify({ contentType: 'image/png' }),
+    });
+    prevKey = ((await upPrev.json()) as { objectKey: string }).objectKey;
+  });
+
+  const body = (objectKey: string, extra: Record<string, unknown> = {}) => ({
+    firstName: 'Sipho',
+    lastName: 'Ndlovu',
+    idType: 'passport',
+    idNumber: 'RV0001',
+    dob: '1995-06-15',
+    nationality: 'South African',
+    race: 'African',
+    gender: 'Male',
+    cell: '0821110000',
+    team: teamKey,
+    district: 'Ethekwini',
+    idDocMeta: { objectKey, size: 100, contentType: 'image/png' },
+    ...extra,
+  });
+  const postLink = (extra: Record<string, unknown>) =>
+    app.request('/register/rlink?t=rev-link-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body(linkKey, extra)),
+    });
+  const rosterIds = async (clubId: string) =>
+    (
+      (await (
+        await app.request(`/clubs/${clubId}/players`, { headers: headers(ADMIN) })
+      ).json()) as { idNumber?: string }[]
+    ).map((p) => p.idNumber);
+  const reviewByName = async (name: string) =>
+    (await repo.listAllReviews('dolphins')).find((r) => r.playerName === name);
+
+  test('first registration ("—") creates an active player and NO review', async () => {
+    const res = await postLink({ firstName: 'First', lastName: 'Reg', idNumber: 'RVA', lastClub: '—' });
+    assert.equal(res.status, 201);
+    assert.ok((await rosterIds('rlink')).includes('RVA'), 'player active in the link club');
+    assert.equal(await reviewByName('First Reg'), undefined, 'first registration raises no alert');
+  });
+
+  test('off-system "Other" previous club → active player + admin off-system alert', async () => {
+    const res = await postLink({
+      firstName: 'Other',
+      lastName: 'Sys',
+      idNumber: 'RVB',
+      lastClub: 'Ghost CC',
+    });
+    assert.equal(res.status, 201);
+    assert.ok((await rosterIds('rlink')).includes('RVB'), 'player active in own club');
+    const review = await reviewByName('Other Sys');
+    assert.equal(review?.kind, 'off-system-alert');
+    assert.equal(review?.typedPreviousClub, 'Ghost CC');
+    assert.equal(review?.status, 'open');
+
+    // Admin acknowledges it (must carry destClubId to rebuild the key).
+    const ack = await app.request(`/admin/registration-reviews/${review!.id}/ack`, {
+      method: 'POST',
+      headers: headers(ADMIN),
+      body: JSON.stringify({ destClubId: review!.destClubId }),
+    });
+    assert.equal(ack.status, 200);
+    assert.equal((await reviewByName('Other Sys'))?.status, 'resolved');
+  });
+
+  test('cross-club (currentClubId ≠ link) is HELD — no row until the chair accepts', async () => {
+    const res = await postLink({
+      firstName: 'Cross',
+      lastName: 'Hold',
+      idNumber: 'RVC',
+      currentClubId: 'rdest',
+      lastClub: '—',
+    });
+    assert.equal(res.status, 201);
+    assert.deepEqual(await res.json(), { ok: true, held: true, destClubName: 'Reg Dest CC' });
+    assert.ok(!(await rosterIds('rdest')).includes('RVC'), 'no player row at the destination yet');
+    assert.ok(!(await rosterIds('rlink')).includes('RVC'), 'no player row at the link club');
+    const review = await reviewByName('Cross Hold');
+    assert.equal(review?.kind, 'cross-club-hold');
+    assert.equal(review?.destClubId, 'rdest');
+
+    // The destination chair accepts → the player lands on their roster.
+    const accept = await app.request(`/clubs/rdest/registration-reviews/${review!.id}/accept`, {
+      method: 'POST',
+      headers: headers(DEST_REP),
+      body: JSON.stringify({}),
+    });
+    assert.equal(accept.status, 200);
+    assert.ok((await rosterIds('rdest')).includes('RVC'), 'player now active at the destination');
+    assert.equal((await reviewByName('Cross Hold'))?.status, 'resolved');
+  });
+
+  test('cross-club hold can be DECLINED — the registration is discarded', async () => {
+    const res = await postLink({
+      firstName: 'Decl',
+      lastName: 'Ined',
+      idNumber: 'RVD',
+      currentClubId: 'rdest',
+      lastClub: '—',
+    });
+    assert.equal(res.status, 201);
+    const review = await reviewByName('Decl Ined');
+    const decline = await app.request(`/clubs/rdest/registration-reviews/${review!.id}/decline`, {
+      method: 'POST',
+      headers: headers(DEST_REP),
+      body: JSON.stringify({}),
+    });
+    assert.equal(decline.status, 200);
+    assert.ok(!(await rosterIds('rdest')).includes('RVD'), 'declined player never joined');
+    assert.equal((await reviewByName('Decl Ined'))?.resolution, 'declined');
+  });
+
+  test('previous club cannot be the link club or the current club (400)', async () => {
+    const linkGuard = await postLink({ idNumber: 'RVE', currentClubId: 'rdest', lastClubId: 'rlink' });
+    assert.equal(linkGuard.status, 400);
+    const selfGuard = await postLink({ idNumber: 'RVF', currentClubId: 'rdest', lastClubId: 'rdest' });
+    assert.equal(selfGuard.status, 400);
+  });
+
+  test('accepting a cross-club hold whose previous club has a match opens a clearance', async () => {
+    // Seed the player at rprev via that club's own registration link (identical natural key).
+    const seed = await app.request('/register/rprev?t=rev-prev-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(
+        body(prevKey, { firstName: 'Trans', lastName: 'Fer', idNumber: 'RVG', lastClub: '—' }),
+      ),
+    });
+    assert.equal(seed.status, 201);
+
+    // Now the same person cross-registers to rdest via rlink's link, naming rprev as previous.
+    const held = await postLink({
+      firstName: 'Trans',
+      lastName: 'Fer',
+      idNumber: 'RVG',
+      currentClubId: 'rdest',
+      lastClubId: 'rprev',
+    });
+    assert.equal(held.status, 201);
+    const review = await reviewByName('Trans Fer');
+    assert.equal(review?.previousClubName, 'Reg Prev CC');
+
+    const accept = await app.request(`/clubs/rdest/registration-reviews/${review!.id}/accept`, {
+      method: 'POST',
+      headers: headers(DEST_REP),
+      body: JSON.stringify({}),
+    });
+    assert.equal(accept.status, 200);
+    // A registration-origin clearance rprev → rdest now exists, and the dest row is pending.
+    const clearances = await repo.listAllClearances('dolphins');
+    const clr = clearances.find((c) => c.playerName === 'Trans Fer');
+    assert.equal(clr?.fromClubId, 'rprev');
+    assert.equal(clr?.toClubId, 'rdest');
+    assert.equal(clr?.origin, 'registration');
+  });
+});
+
 describe('/admin/users', () => {
   // A dedicated tenant so the admin marker GSI (which drives the last-admin counter)
   // is isolated from the other suites' users. FROM_EMAIL/WHATSAPP_* unset ⇒ notify/

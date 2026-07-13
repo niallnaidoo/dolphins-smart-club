@@ -459,3 +459,59 @@ export interface PlayerClearance {
   rejectReason?: string;
   version: number;
 }
+
+export type RegistrationReviewKind = 'off-system-alert' | 'cross-club-hold';
+export type RegistrationReviewStatus = 'open' | 'resolved';
+export type RegistrationReviewResolution = 'acknowledged' | 'accepted' | 'declined';
+
+/**
+ * A self-registration that needs a human look before it's fully trusted. Two kinds,
+ * distinguished by audience + action:
+ *
+ *  - `off-system-alert` — the player registered into their OWN link club but named an
+ *    "Other" (off-system) previous club, so no clearance could be opened. The player row
+ *    is already active; this is an admin-only FYI carrying the typed club name.
+ *  - `cross-club-hold` — the player used one club's link but chose a DIFFERENT current
+ *    club (`currentClubId`). Because a per-club link must not silently write onto another
+ *    club's active roster, NO player row exists yet: the fully-validated registration is
+ *    parked in `pendingPlayer` until the destination club's chair accepts (→ the row, and
+ *    any previous-club clearance, are materialized) or declines (→ discarded, ID doc purged).
+ *
+ * Stored as ONE canonical item under the DESTINATION club (sk `REGREVIEW#<id>`, gsi1 for
+ * the admin cohort-wide listing) — the same own-partition-only read model as clearances.
+ */
+export interface RegistrationReview {
+  id: string;
+  kind: RegistrationReviewKind;
+  playerNaturalKey: string;
+  /** Denormalized "First Last" for display + audit. */
+  playerName: string;
+  idNumber?: string;
+  /** The club the player registered INTO — partition owner + who actions a hold. */
+  destClubId: string;
+  destClubName: string;
+  /** The club whose public link/token was used (may equal destClubId for off-system alerts). */
+  linkClubId: string;
+  linkClubName: string;
+  /** Free-text off-system previous club, when the player picked "Other". */
+  typedPreviousClub?: string;
+  /** On-system previous club name, when the player named a real club (cross-club holds). */
+  previousClubName?: string;
+  /**
+   * Fully-validated player payload awaiting the destination chair's acceptance
+   * (cross-club-hold only; `status` omitted). Materialized into a PLAYER# row on accept,
+   * discarded (ID doc purged) on decline. Absent on off-system alerts (row already active).
+   */
+  pendingPlayer?: PlayerRegistration;
+  /**
+   * The on-system previous club id the player selected, if any — re-resolved at accept
+   * time to decide whether the materialized row opens a clearance to that club.
+   */
+  pendingLastClubId?: string;
+  createdAt: string;
+  status: RegistrationReviewStatus;
+  resolution?: RegistrationReviewResolution;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  version: number;
+}
