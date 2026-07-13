@@ -336,7 +336,10 @@ function AppRoutes() {
   const { status } = useAuth();
 
   // Tenant branding/config (public). Apply theme as soon as it loads.
-  const tenantQuery = useQuery({ queryKey: qk.tenant(), queryFn: api.getTenant, retry: 0 });
+  // retry the tenant config: it carries the league/district catalogue the authed app
+  // derives everything from, so a transient failure here (previously retry:0) would
+  // otherwise leave `tenantConfig` undefined and silently zero the leagues/teams breakdown.
+  const tenantQuery = useQuery({ queryKey: qk.tenant(), queryFn: api.getTenant, retry: 2 });
   useEffect(() => {
     if (tenantQuery.data?.branding) applyTheme(tenantQuery.data.branding);
   }, [tenantQuery.data]);
@@ -355,7 +358,15 @@ function AppRoutes() {
           status === 'loading' ? (
             <Splash message="Loading…" />
           ) : status === 'signedIn' ? (
-            <AuthedApp tenantConfig={tenantQuery.data} />
+            // The tenant config carries the league/district catalogue; AuthedApp gates its
+            // tenant-scoped console on it internally (after the operator branch, so the
+            // tenant-INDEPENDENT platform portal is never blocked). Pass the error/retry
+            // handle down for that gate.
+            <AuthedApp
+              tenantConfig={tenantQuery.data}
+              tenantConfigError={tenantQuery.isError}
+              onRetryTenantConfig={() => tenantQuery.refetch()}
+            />
           ) : (
             <Login tenantConfig={tenantQuery.data} />
           )
@@ -366,7 +377,7 @@ function AppRoutes() {
 }
 
 /* ─── Authenticated app: loads tenant-scoped data + builds API-backed handlers ─── */
-function AuthedApp({ tenantConfig }) {
+function AuthedApp({ tenantConfig, tenantConfigError, onRetryTenantConfig }) {
   const { memberships, email, signOutUser } = useAuth();
   const location = useLocation();
   const [toastShow, toastNode] = useToast();
@@ -450,6 +461,26 @@ function AuthedApp({ tenantConfig }) {
       </div>
     );
   }
+
+  // Gate the tenant-scoped console on the tenant config having loaded. Everything below
+  // derives from it (`allLeagues = tenantConfig?.leagues ?? []`); rendering with an
+  // undefined config silently collapses the catalogue to [], zeroing the leagues/teams
+  // breakdown (every club league key becomes an "orphan") while the rest of the page renders.
+  // This sits AFTER the operator/`/platform` branch on purpose — the tenant-independent
+  // platform portal must never be blocked by a broken/absent tenant config.
+  if (!tenantConfig)
+    return tenantConfigError ? (
+      <Splash
+        message="Couldn't load configuration for this union. Refresh to retry."
+        action={
+          <Btn tone="ink" size="sm" onClick={onRetryTenantConfig}>
+            Retry
+          </Btn>
+        }
+      />
+    ) : (
+      <Splash message="Loading…" />
+    );
 
   const clubs =
     role === 'admin' ? (clubsQuery.data ?? []) : repClubQueries.map((q) => q.data).filter(Boolean);
