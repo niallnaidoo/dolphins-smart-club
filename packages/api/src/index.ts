@@ -2351,6 +2351,12 @@ async function applyTenantConfigPatch(
   // is retired; strip it too so an old client can't write it back onto the row.
   delete (patch as { clubSignupLink?: unknown }).clubSignupLink;
   delete (patch as { registrationAccess?: unknown }).registrationAccess;
+  // The setup milestone is written ONLY via POST/DELETE /platform/tenants/:slug/setup-complete
+  // (a direct, audited put). Strip it from EVERY merge-patch — the tenant-admin PUT
+  // /tenant/config and the operator PUT /platform/tenants/:slug — so a club admin can't forge
+  // their own Live chip or the setupCompletedBy audit field. See types.ts.
+  delete (patch as { setupCompletedAt?: unknown }).setupCompletedAt;
+  delete (patch as { setupCompletedBy?: unknown }).setupCompletedBy;
   // Table/index keys are derived at the repo write choke point — strip them here
   // too so a malicious patch can't even attempt to retarget another tenant's row
   // or corrupt the platform registry index.
@@ -2895,21 +2901,23 @@ app.get('/platform/tenants/:slug/dns', async (c) => {
 app.post('/platform/tenants/:slug/setup-complete', async (c) => {
   const auth = c.get('auth')!;
   const slug = c.req.param('slug');
-  // applyTenantConfigPatch 404s on a missing tenant.
-  const next = await applyTenantConfigPatch(slug, {
-    setupCompletedAt: now(),
-    setupCompletedBy: auth.email,
-  });
+  // Direct put (NOT applyTenantConfigPatch — that strips these fields as a forgery guard).
+  const config = await repo.getTenantConfig(slug);
+  if (!config) throw new HttpError(404, 'tenant not found');
+  const next: TenantConfig = { ...config, setupCompletedAt: now(), setupCompletedBy: auth.email };
+  await repo.putTenantConfig(next);
   return c.json(next);
 });
 
 app.delete('/platform/tenants/:slug/setup-complete', async (c) => {
   const slug = c.req.param('slug');
-  // undefined drops the fields (repo marshals with removeUndefinedValues), reopening setup.
-  const next = await applyTenantConfigPatch(slug, {
-    setupCompletedAt: undefined,
-    setupCompletedBy: undefined,
-  });
+  const config = await repo.getTenantConfig(slug);
+  if (!config) throw new HttpError(404, 'tenant not found');
+  // Drop the fields to reopen setup (putTenantConfig marshals with removeUndefinedValues).
+  const next = { ...config };
+  delete next.setupCompletedAt;
+  delete next.setupCompletedBy;
+  await repo.putTenantConfig(next);
   return c.json(next);
 });
 

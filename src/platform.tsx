@@ -2188,7 +2188,8 @@ function SetupCard({ slug, config, toast }: { slug: string; config: TenantConfig
       queryClient.setQueryData(qk.platformTenant(slug), next);
       queryClient.invalidateQueries({ queryKey: qk.platformTenants() });
       toast(msg);
-    } catch {
+    } catch (e) {
+      console.error('setup-status update failed', e);
       toast('Could not update setup status — try again', 'error');
     } finally {
       setBusy(false);
@@ -2307,7 +2308,8 @@ function LinkRow({ label, url }: { label: string; url: string }) {
               setCopied(true);
               setTimeout(() => setCopied(false), 1500);
             },
-            () => {},
+            // Clipboard denied/unavailable — the URL stays a selectable link for manual copy.
+            (e) => console.warn('clipboard copy failed', e),
           );
         }}
       >
@@ -2443,6 +2445,9 @@ const WIZARD_STEPS = ['Slug', 'Identity', 'Logo', 'Brand', 'Deadline', 'First ad
 
 function CreateTenantWizard({ toast }: { toast: Toast }) {
   const navigate = useNavigate();
+  // Only promise the instant club URL when the wildcard platform is armed — otherwise
+  // `<slug>.club.medicoach.co.za` doesn't resolve yet (dormant pre-rollout).
+  const wildcardLive = import.meta.env.VITE_WILDCARD_ENABLED === '1';
   const [step, setStep] = useState<number>(STEP.Slug);
   const [brand, setBrand] = useState<BrandDraft>(() => ({
     colors: { ...DEFAULT_BRAND_COLORS },
@@ -2615,8 +2620,10 @@ function CreateTenantWizard({ toast }: { toast: Toast }) {
             New <em>client</em>
           </h1>
           <p className="ph-desc">
-            Slug, branding basics, deadline and the first admin — the client is live at its own club
-            subdomain the moment it’s created; a vanity domain is an optional extra.
+            Slug, branding basics, deadline and the first admin.{' '}
+            {wildcardLive
+              ? 'The client is live at its own club subdomain the moment it’s created; a vanity domain is an optional extra.'
+              : 'The client is usable on the platform host at once; its domain goes live per the DNS sheet.'}
           </p>
         </div>
         <div className="ph-actions">
@@ -2897,11 +2904,17 @@ function CreateTenantWizard({ toast }: { toast: Toast }) {
                   lineHeight: 1.6,
                 }}
               >
-                The client is live immediately at{' '}
-                <span style={MONO}>https://{created.tenant}.club.medicoach.co.za</span>. Finish
-                branding, districts, leagues and the first admin on the settings page, then mark
-                setup complete for the hand-off summary. A dedicated vanity domain is an optional
-                extra (DNS / go-live panel).
+                {wildcardLive ? (
+                  <>
+                    The client is live immediately at{' '}
+                    <span style={MONO}>https://{created.tenant}.club.medicoach.co.za</span>.{' '}
+                  </>
+                ) : (
+                  'The client serves from the platform host immediately. '
+                )}
+                Finish branding, districts, leagues and the first admin on the settings page, then
+                mark setup complete for the hand-off summary. A dedicated vanity domain is an
+                optional extra (DNS / go-live panel).
               </p>
               <div style={footRow}>
                 <Btn

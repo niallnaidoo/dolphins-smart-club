@@ -1099,6 +1099,23 @@ describe('setup-complete milestone (D6)', () => {
     assert.equal(reopenedBody.setupCompletedBy, undefined);
   });
 
+  test('a config merge-patch cannot forge the milestone (shared strip choke point)', async () => {
+    // PUT /platform/tenants/:slug and the tenant-admin PUT /tenant/config both run through
+    // applyTenantConfigPatch, which strips setup fields — so neither can forge them.
+    const res = await app.request('/platform/tenants/setupco', {
+      method: 'PUT',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({
+        setupCompletedAt: '2020-01-01T00:00:00.000Z',
+        setupCompletedBy: 'forged@evil',
+      }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { setupCompletedAt?: string; setupCompletedBy?: string };
+    assert.equal(body.setupCompletedAt, undefined);
+    assert.equal(body.setupCompletedBy, undefined);
+  });
+
   test('unknown tenant → 404', async () => {
     const res = await app.request('/platform/tenants/ghost/setup-complete', {
       method: 'POST',

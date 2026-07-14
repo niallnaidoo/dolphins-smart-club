@@ -50,10 +50,13 @@ export function apiBase(): string {
   if (host && map[host]) return map[host];
   // Wildcard host `<slug>.club.medicoach.co.za` → the ONE shared API host (the API
   // resolves the tenant from this SPA's Origin header). Checked after the explicit map
-  // so a vanity host with its own API host still wins.
+  // so a vanity host with its own API host still wins. Gated on VITE_WILDCARD_ENABLED to
+  // match the API/auth.ts gating (inert until the wildcard platform is armed).
+  const wildcardEnabled = import.meta.env.VITE_WILDCARD_ENABLED === '1';
   const suffix = import.meta.env.VITE_WILDCARD_WEB_SUFFIX ?? '';
   const sharedApiUrl = import.meta.env.VITE_SHARED_API_URL ?? '';
-  if (host && suffix && sharedApiUrl && host.endsWith(suffix)) return sharedApiUrl;
+  if (wildcardEnabled && host && suffix && sharedApiUrl && host.endsWith(suffix))
+    return sharedApiUrl;
   return import.meta.env.VITE_API_URL ?? '';
 }
 

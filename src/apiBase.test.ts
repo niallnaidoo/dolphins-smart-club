@@ -63,6 +63,7 @@ describe('apiBase', () => {
 
   it('routes a wildcard club host to the shared API URL', () => {
     vi.stubEnv('VITE_API_URL', FALLBACK);
+    vi.stubEnv('VITE_WILDCARD_ENABLED', '1');
     vi.stubEnv('VITE_WILDCARD_WEB_SUFFIX', '.club.medicoach.co.za');
     vi.stubEnv('VITE_SHARED_API_URL', SHARED_API_URL);
     withMap('{}');
@@ -70,8 +71,19 @@ describe('apiBase', () => {
     expect(apiBase()).toBe(SHARED_API_URL);
   });
 
+  it('ignores the wildcard suffix while the wildcard platform is dormant', () => {
+    vi.stubEnv('VITE_API_URL', FALLBACK);
+    vi.stubEnv('VITE_WILDCARD_ENABLED', '');
+    vi.stubEnv('VITE_WILDCARD_WEB_SUFFIX', '.club.medicoach.co.za');
+    vi.stubEnv('VITE_SHARED_API_URL', SHARED_API_URL);
+    withMap('{}');
+    atHost('demo.club.medicoach.co.za');
+    expect(apiBase()).toBe(FALLBACK);
+  });
+
   it('prefers an explicit API-host map entry over the wildcard suffix', () => {
     vi.stubEnv('VITE_API_URL', FALLBACK);
+    vi.stubEnv('VITE_WILDCARD_ENABLED', '1');
     vi.stubEnv('VITE_WILDCARD_WEB_SUFFIX', '.club.medicoach.co.za');
     vi.stubEnv('VITE_SHARED_API_URL', SHARED_API_URL);
     // A vanity tenant that also happens to live under the suffix keeps its own API host.
