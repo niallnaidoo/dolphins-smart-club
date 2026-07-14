@@ -3258,9 +3258,10 @@ app.post('/admin/clearances/:cid/override', async (c) => {
 
 /**
  * Union reject: decline a pending clearance on the clubs' behalf. Admin-only (the
- * /admin/* middleware enforces it). The source player returns to 'active'; a
- * registration-origin clearance's pre-created destination row is removed. Same
- * 404/409 semantics as the override route.
+ * /admin/* middleware enforces it). For a rep-initiated clearance the source player returns
+ * to 'active'. For a REGISTRATION-origin clearance the player STAYS on the destination
+ * (current) club's roster flagged 'clearance-rejected' (reason copied onto the row) and is
+ * removed from the source (previous) club. Same 404/409 semantics as the override route.
  */
 app.post('/admin/clearances/:cid/reject', async (c) => {
   const ra = c.get('requestAuth')!;

@@ -331,7 +331,7 @@ export interface PlayerIdDocMeta {
   contentType?: string;
 }
 
-export type PlayerStatus = 'active' | 'clearance-pending' | 'inactive';
+export type PlayerStatus = 'active' | 'clearance-pending' | 'inactive' | 'clearance-rejected';
 
 export interface PlayerRegistration {
   naturalKey: string;
@@ -370,6 +370,9 @@ export interface PlayerRegistration {
   /** Previous club's vetted ID doc, carried over when a registration-origin clearance is approved. */
   previousIdDocMeta?: PlayerIdDocMeta;
   status?: PlayerStatus;
+  /** Set when a registration-origin clearance was rejected; meaningful only while status is 'clearance-rejected'. */
+  clearanceRejectedAt?: string;
+  clearanceRejectedReason?: string;
   registeredBy?: string;
   registeredVia?: 'link' | 'portal';
   version?: number;

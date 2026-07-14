@@ -351,7 +351,7 @@ export interface PlayerIdDocMeta {
   contentType?: string;
 }
 
-export type PlayerStatus = 'active' | 'clearance-pending' | 'inactive';
+export type PlayerStatus = 'active' | 'clearance-pending' | 'inactive' | 'clearance-rejected';
 
 export interface PlayerRegistration {
   naturalKey: string;
@@ -404,6 +404,14 @@ export interface PlayerRegistration {
   previousIdDocMeta?: PlayerIdDocMeta;
   /** Roster lifecycle. Absent ⇒ treated as 'active'. */
   status?: PlayerStatus;
+  /**
+   * Set when a registration-origin clearance was REJECTED: the player stays on this
+   * (current) club's roster flagged 'clearance-rejected' instead of reverting to the
+   * previous club. Meaningful ONLY while status === 'clearance-rejected' — cleared on
+   * any later activation (see resolveClearance). `lastClub` holds the previous club name.
+   */
+  clearanceRejectedAt?: string;
+  clearanceRejectedReason?: string;
   /** Email of the chair/admin who registered the player via the portal. */
   registeredBy?: string;
   /** Which path created the row. Absent ⇒ 'link' (back-compat with pre-existing rows). */

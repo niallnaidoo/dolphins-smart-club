@@ -1432,6 +1432,11 @@ export async function resolveClearance(
     ...player,
     clubId: current.toClubId,
     status: 'active',
+    // Never carry a stale clearance-rejected flag onto the new club: a player rejected at
+    // their previous club can later be transferred out cleanly (removeUndefinedValues drops
+    // these before the put).
+    clearanceRejectedAt: undefined,
+    clearanceRejectedReason: undefined,
     version: (player.version ?? 0) + 1,
   };
   const { canonical, mirror } = clearanceItems(tenant, next);
@@ -1443,9 +1448,11 @@ export async function resolveClearance(
   const destActivate = {
     TableName: TABLE,
     Key: playerKey(tenant, current.toClubId, player.naturalKey),
+    // REMOVE also scrubs any clearance-rejected flag (a no-op on a normal pending row) so a
+    // player who was rejected and later cleared doesn't keep a stale warning.
     UpdateExpression: carriedDoc
-      ? 'SET #s = :active, previousIdDocMeta = :doc ADD version :one'
-      : 'SET #s = :active ADD version :one',
+      ? 'SET #s = :active, previousIdDocMeta = :doc ADD version :one REMOVE clearanceRejectedAt, clearanceRejectedReason'
+      : 'SET #s = :active ADD version :one REMOVE clearanceRejectedAt, clearanceRejectedReason',
     ConditionExpression: 'attribute_exists(sk) AND #s = :pending',
     ExpressionAttributeNames: { '#s': 'status' },
     ExpressionAttributeValues: {
@@ -1623,16 +1630,23 @@ export async function resolveClearance(
 
 /**
  * Reject a pending clearance (union admin, on the clubs' behalf): flip the canonical +
- * mirror to 'rejected' and return the SOURCE player to 'active', atomically. For
- * registration-origin clearances the pre-created destination row is deleted too — it
- * never became active, so its self-asserted ID doc is purged from S3 afterwards
- * (POPIA) and the dest playerCount bumped back down (both best-effort, same swallowed
- * style as deletePlayer).
+ * mirror to 'rejected', atomically.
+ *
+ * NON-registration (rep-initiated) clearances: the SOURCE player is returned to 'active'
+ * (no destination row exists pre-approval).
+ *
+ * REGISTRATION-origin clearances: the player STAYS on the destination (current) club's
+ * roster — the pre-created destination row is flipped 'clearance-pending' →
+ * 'clearance-rejected' with the reject reason/date copied onto it (its self-asserted ID
+ * doc is RETAINED) — and the SOURCE (previous) club row is DELETED, its playerCount
+ * decremented and its ID docs purged from S3 (POPIA). The destination count is left alone
+ * (the row was counted at registration and survives).
  *
  * The canonical's version guard is the OCC race protection (double reject, or reject
- * racing an approve, → VersionConflictError → 409 refetch). The source flip and dest
- * delete are status-guarded so a lost race can never clobber a row the clearance no
- * longer holds pending.
+ * racing an approve, → VersionConflictError → 409 refetch). Every player write is
+ * status-guarded (#s = 'clearance-pending') so a lost race can't clobber a row the
+ * clearance no longer holds. The source item gets EITHER a reactivate (non-registration)
+ * OR a delete (registration) — never both, which one TransactWriteItems would reject.
  *
  * dynalite (offline/test) sequential fallback: canonical FIRST (a lost race mutates
  * nothing), then mirror, then the guarded player writes with conditional failures
@@ -1656,10 +1670,11 @@ export async function rejectClearance(
     version: expectedVersion + 1,
   };
   const isRegistrationOrigin = current.origin === 'registration';
-  // Capture the pending destination row up-front: after the delete its ID-doc
-  // objectKey is unrecoverable, and the S3 purge needs it.
-  const destPending = isRegistrationOrigin
-    ? await getPlayer(tenant, current.toClubId, current.playerNaturalKey)
+  // Capture the SOURCE (previous club) row up-front: it is deleted below, after which its
+  // ID-doc objectKeys are unrecoverable and the S3 purge needs them. A long-lived source
+  // row may carry BOTH a self-asserted idDocMeta and a vetted previousIdDocMeta.
+  const sourcePending = isRegistrationOrigin
+    ? await getPlayer(tenant, fromClubId, current.playerNaturalKey)
     : null;
 
   const { canonical, mirror } = clearanceItems(tenant, next);
@@ -1670,6 +1685,7 @@ export async function rejectClearance(
     ExpressionAttributeValues: { ':v': expectedVersion },
   };
   const mirrorPut = { TableName: TABLE, Item: mirror };
+  // Non-registration: restore the source player to active.
   const sourceReactivate = {
     TableName: TABLE,
     Key: playerKey(tenant, fromClubId, current.playerNaturalKey),
@@ -1682,9 +1698,31 @@ export async function rejectClearance(
       ':one': 1,
     },
   };
-  const destDelete = {
+  // Registration-origin: flag the destination (current club) row as clearance-rejected in
+  // place (kept on the roster), copying the reject reason/date onto it.
+  const destRejectValues: Record<string, unknown> = {
+    ':rejected': 'clearance-rejected',
+    ':pending': 'clearance-pending',
+    ':at': opts.at,
+    ':one': 1,
+  };
+  let destRejectSet = 'SET #s = :rejected, clearanceRejectedAt = :at';
+  if (opts.reason) {
+    destRejectSet += ', clearanceRejectedReason = :reason';
+    destRejectValues[':reason'] = opts.reason;
+  }
+  const destReject = {
     TableName: TABLE,
     Key: playerKey(tenant, current.toClubId, current.playerNaturalKey),
+    UpdateExpression: `${destRejectSet} ADD version :one`,
+    ConditionExpression: 'attribute_exists(sk) AND #s = :pending',
+    ExpressionAttributeNames: { '#s': 'status' },
+    ExpressionAttributeValues: destRejectValues,
+  };
+  // Registration-origin: delete the source (previous club) row — the player has moved.
+  const sourceDelete = {
+    TableName: TABLE,
+    Key: playerKey(tenant, fromClubId, current.playerNaturalKey),
     ConditionExpression: 'attribute_exists(sk) AND #s = :pending',
     ExpressionAttributeNames: { '#s': 'status' },
     ExpressionAttributeValues: { ':pending': 'clearance-pending' },
@@ -1700,14 +1738,20 @@ export async function rejectClearance(
       throw err;
     }
     await ddb.send(new PutCommand(mirrorPut));
-    try {
-      await ddb.send(new UpdateCommand(sourceReactivate));
-    } catch (err: unknown) {
-      if ((err as { name?: string }).name !== 'ConditionalCheckFailedException') throw err;
-    }
     if (isRegistrationOrigin) {
       try {
-        await ddb.send(new DeleteCommand(destDelete));
+        await ddb.send(new UpdateCommand(destReject));
+      } catch (err: unknown) {
+        if ((err as { name?: string }).name !== 'ConditionalCheckFailedException') throw err;
+      }
+      try {
+        await ddb.send(new DeleteCommand(sourceDelete));
+      } catch (err: unknown) {
+        if ((err as { name?: string }).name !== 'ConditionalCheckFailedException') throw err;
+      }
+    } else {
+      try {
+        await ddb.send(new UpdateCommand(sourceReactivate));
       } catch (err: unknown) {
         if ((err as { name?: string }).name !== 'ConditionalCheckFailedException') throw err;
       }
@@ -1715,8 +1759,14 @@ export async function rejectClearance(
   } else {
     const items: NonNullable<
       ConstructorParameters<typeof TransactWriteCommand>[0]['TransactItems']
-    > = [{ Put: canonicalPut }, { Put: mirrorPut }, { Update: sourceReactivate }];
-    if (isRegistrationOrigin) items.push({ Delete: destDelete });
+    > = [{ Put: canonicalPut }, { Put: mirrorPut }];
+    // The source item gets a reactivate OR a delete — never both (registration-origin
+    // keeps the destination and deletes the source; otherwise just restore the source).
+    if (isRegistrationOrigin) {
+      items.push({ Update: destReject }, { Delete: sourceDelete });
+    } else {
+      items.push({ Update: sourceReactivate });
+    }
     try {
       await ddb.send(new TransactWriteCommand({ TransactItems: items }));
     } catch (err: unknown) {
@@ -1729,13 +1779,14 @@ export async function rejectClearance(
   }
 
   if (isRegistrationOrigin) {
-    // Inverse of createPlayerWithClearance's bump; display-only, swallowed on a
-    // vanished club (a bare ADD would resurrect a phantom club item).
+    // The SOURCE row is gone — decrement the SOURCE club's count. Display-only, swallowed
+    // on a vanished club (a bare ADD would resurrect a phantom club item). The destination
+    // count is untouched: that row was counted at registration and survives.
     try {
       await ddb.send(
         new UpdateCommand({
           TableName: TABLE,
-          Key: clubKey(tenant, current.toClubId),
+          Key: clubKey(tenant, fromClubId),
           UpdateExpression: 'ADD playerCount :neg1',
           ConditionExpression: 'attribute_exists(pk)',
           ExpressionAttributeValues: { ':neg1': -1 },
@@ -1744,8 +1795,13 @@ export async function rejectClearance(
     } catch (err: unknown) {
       if ((err as { name?: string }).name !== 'ConditionalCheckFailedException') throw err;
     }
-    const objectKey = destPending?.idDocMeta?.objectKey;
-    if (objectKey) await deleteUploadObjects([objectKey]);
+    // Purge BOTH of the deleted source row's S3 objects (self-asserted + any vetted
+    // previous-club doc it carried from an earlier approved transfer).
+    await deleteUploadObjects(
+      [sourcePending?.idDocMeta?.objectKey, sourcePending?.previousIdDocMeta?.objectKey].filter(
+        (k): k is string => !!k,
+      ),
+    );
   }
   return next;
 }

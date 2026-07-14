@@ -130,6 +130,7 @@ export function PlayerFilterBar({ filters, onChange, players, teamLabel, clubs =
         <option value="all">All statuses</option>
         <option value="active">Active</option>
         <option value="clearance-pending">Clearance pending</option>
+        <option value="clearance-rejected">Clearance rejected</option>
         <option value="inactive">Inactive</option>
       </select>
       <select

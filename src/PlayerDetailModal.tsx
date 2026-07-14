@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Icon, Btn, Pill, useEscapeClose } from './atoms';
+import { Icon, Btn, useEscapeClose, playerStatusPill } from './atoms';
 import { getPlayerIdDocViewUrl } from './api';
 import type { PlayerRegistration } from './types';
 
@@ -18,21 +18,6 @@ function roleLabel(p: PlayerRegistration): string {
     bits.push(p.bowlerType);
   }
   return bits.join(' · ') || '—';
-}
-
-function statusPill(status?: string) {
-  if (status === 'clearance-pending')
-    return (
-      <Pill tone="gold" dot>
-        Clearance pending
-      </Pill>
-    );
-  if (status === 'inactive') return <Pill tone="muted">Inactive</Pill>;
-  return (
-    <Pill tone="teal" dot>
-      Active
-    </Pill>
-  );
 }
 
 function fmtDate(iso?: string): string {
@@ -136,7 +121,7 @@ export function PlayerDetailModal({
           </button>
         </div>
         <div className="task-modal-body">
-          <div style={{ marginBottom: 4 }}>{statusPill(player.status)}</div>
+          <div style={{ marginBottom: 4 }}>{playerStatusPill(player.status)}</div>
 
           <SectionTitle>Identity</SectionTitle>
           <Row
@@ -180,6 +165,24 @@ export function PlayerDetailModal({
             value={player.registeredVia === 'portal' ? 'Portal' : 'Link'}
           />
           <Row label="Registered on" value={fmtDate(player.createdAt)} />
+          {player.status === 'clearance-rejected' && (
+            <div
+              style={{
+                marginTop: 10,
+                padding: '8px 10px',
+                borderRadius: 8,
+                background: 'rgba(224, 82, 82, 0.10)',
+                border: '1px solid rgba(224, 82, 82, 0.35)',
+                fontSize: 12,
+                color: 'var(--ink)',
+              }}
+            >
+              <strong style={{ color: 'var(--coral, #c0392b)' }}>Clearance rejected</strong>
+              {player.lastClub && player.lastClub !== '—' ? ` by ${player.lastClub}` : ''}
+              {player.clearanceRejectedAt ? ` · ${fmtDate(player.clearanceRejectedAt)}` : ''}
+              {player.clearanceRejectedReason ? ` — “${player.clearanceRejectedReason}”` : ''}
+            </div>
+          )}
 
           {player.idDocMeta?.objectKey && (
             <>

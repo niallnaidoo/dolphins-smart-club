@@ -1304,8 +1304,9 @@ function Shell({
       .catch(() => {})
       .finally(() => setBusyClearanceId(null));
   }
-  // Admin rejects a pending request on the clubs' behalf: the source player returns to
-  // active; a registration-origin clearance's pending destination row is removed.
+  // Admin rejects a pending request on the clubs' behalf. Rep-initiated: the source player
+  // returns to active. Registration-origin: the player STAYS at the destination (current)
+  // club flagged 'clearance-rejected' and is removed from the source (previous) club.
   function rejectClearanceReq(req, reason) {
     setBusyClearanceId(req.id);
     return withToast(
@@ -1324,7 +1325,11 @@ function Shell({
         invalidate(qk.clearances(req.toClubId));
         invalidate(qk.players(req.fromClubId));
         invalidate(qk.players(req.toClubId));
-        toastShow(`${req.playerName}'s clearance rejected — they stay at ${req.fromClubName}`);
+        toastShow(
+          req.origin === 'registration'
+            ? `${req.playerName}'s clearance rejected — they remain at ${req.toClubName}, flagged clearance-rejected`
+            : `${req.playerName}'s clearance rejected — they stay at ${req.fromClubName}`,
+        );
       })
       .catch(() => {})
       .finally(() => setBusyClearanceId(null));

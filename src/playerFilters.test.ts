@@ -95,6 +95,19 @@ describe('filterPlayers — status', () => {
     expect(filterPlayers(ALL, f({ status: 'clearance-pending' }))).toEqual([bowler]);
     expect(filterPlayers(ALL, f({ status: 'inactive' }))).toEqual([]);
   });
+
+  it('matches the clearance-rejected status exactly', () => {
+    const rejected = { ...batter, idNumber: 'PP100099', status: 'clearance-rejected' };
+    expect(filterPlayers([...ALL, rejected], f({ status: 'clearance-rejected' }))).toEqual([
+      rejected,
+    ]);
+    // A rejected player is NOT swept up by the 'active' filter.
+    expect(filterPlayers([...ALL, rejected], f({ status: 'active' }))).toEqual([
+      wk,
+      allRounder,
+      batter,
+    ]);
+  });
 });
 
 describe('filterPlayers — club and team', () => {

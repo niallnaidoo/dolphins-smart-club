@@ -3384,7 +3384,7 @@ describe('registration-origin clearances (previous-club dropdown on the public f
     assert.equal(unknown.status, 400);
   });
 
-  test('union admin rejects: source restored, pending destination row removed', async () => {
+  test('union rejects a registration-origin clearance: player stays at destination flagged, removed from source', async () => {
     // Seed at source, then transfer-register at destination.
     await registerAt('rc-a', 'rc-a-token', {
       ...regBody({ idNumber: 'RC9004', cell: '0830000004' }),
@@ -3398,7 +3398,8 @@ describe('registration-origin clearances (previous-club dropdown on the public f
     const clr = (await repo.listClearancesForSource('dolphins', 'rc-a')).find(
       (x) => x.idNumber === 'RC9004' && x.status === 'pending',
     )!;
-    const countBefore = (await repo.getClub('dolphins', 'rc-b'))?.playerCount ?? 0;
+    const destCountBefore = (await repo.getClub('dolphins', 'rc-b'))?.playerCount ?? 0;
+    const srcCountBefore = (await repo.getClub('dolphins', 'rc-a'))?.playerCount ?? 0;
 
     const res = await app.request(`/admin/clearances/${clr.id}/reject`, {
       method: 'POST',
@@ -3415,14 +3416,29 @@ describe('registration-origin clearances (previous-club dropdown on the public f
     assert.equal(body.rejectReason, 'Fees owing');
     assert.ok(body.rejectedBy, 'rejecting admin recorded');
 
+    // Source (previous club) row removed; destination (current club) row KEPT + flagged.
     const source = (await repo.listPlayers('dolphins', 'rc-a')).find(
       (p) => p.idNumber === 'RC9004',
     );
-    assert.equal(source?.status, 'active', 'source player restored');
-    const dest = (await repo.listPlayers('dolphins', 'rc-b')).find((p) => p.idNumber === 'RC9004');
-    assert.equal(dest, undefined, 'pending destination row removed');
-    const countAfter = (await repo.getClub('dolphins', 'rc-b'))?.playerCount ?? 0;
-    assert.equal(countAfter, countBefore - 1, 'destination count restored');
+    assert.equal(source, undefined, 'source (previous club) player removed');
+    const dest = (await repo.listPlayers('dolphins', 'rc-b')).find(
+      (p) => p.idNumber === 'RC9004',
+    ) as { status?: string; clearanceRejectedReason?: string; clearanceRejectedAt?: string };
+    assert.equal(dest?.status, 'clearance-rejected', 'player stays at destination, flagged');
+    assert.equal(dest?.clearanceRejectedReason, 'Fees owing');
+    assert.ok(dest?.clearanceRejectedAt, 'reject timestamp copied onto the player');
+
+    // Counts: destination unchanged (row survives), source −1 (row gone).
+    assert.equal(
+      (await repo.getClub('dolphins', 'rc-b'))?.playerCount ?? 0,
+      destCountBefore,
+      'destination count unchanged',
+    );
+    assert.equal(
+      (await repo.getClub('dolphins', 'rc-a'))?.playerCount ?? 0,
+      srcCountBefore - 1,
+      'source count decremented',
+    );
     // The mirror flipped too (destination club sees the outcome).
     const mirror = (await repo.listInboundForDest('dolphins', 'rc-b')).find((x) => x.id === clr.id);
     assert.equal(mirror?.status, 'rejected');
@@ -3487,6 +3503,60 @@ describe('registration-origin clearances (previous-club dropdown on the public f
     assert.ok(
       await repo.getPlayer('dolphins', 'rc-b', 'req-reject').then((p) => p === null),
       'no destination row ever existed',
+    );
+  });
+
+  test('a clearance-rejected player transferred out later loses the reject flag', async () => {
+    // Seed a player already flagged clearance-rejected at rc-b (as if a prior registration
+    // clearance had been rejected), then request-transfer them to rc-a and approve.
+    await repo.createPlayer('dolphins', {
+      naturalKey: 'scrub-reject',
+      clubId: 'rc-b',
+      firstName: 'Flag',
+      lastName: 'Gone',
+      dob: '1994-02-02',
+      idNumber: 'RC9010',
+      isMinor: false,
+      status: 'clearance-rejected',
+      clearanceRejectedAt: '2026-06-10T00:00:00.000Z',
+      clearanceRejectedReason: 'Fees owing',
+      consentAt: '2026-05-01T00:00:00.000Z',
+      createdAt: '2026-05-01T00:00:00.000Z',
+    });
+    await repo.createClearance('dolphins', {
+      id: 'clr-scrub',
+      playerNaturalKey: 'scrub-reject',
+      playerName: 'Flag Gone',
+      idNumber: 'RC9010',
+      fromClubId: 'rc-b',
+      toClubId: 'rc-a',
+      fromClubName: 'RC Beta CC',
+      toClubName: 'RC Alpha CC',
+      requestedAt: new Date().toISOString(),
+      feesCleared: false,
+      misconductCleared: false,
+      status: 'pending',
+      clubApprovedAt: null,
+      adminOverrideAt: null,
+      version: 0,
+    });
+    await repo.resolveClearance('dolphins', 'rc-b', 'clr-scrub', {
+      mode: 'admin',
+      at: new Date().toISOString(),
+    });
+
+    const moved = (await repo.getPlayer('dolphins', 'rc-a', 'scrub-reject')) as {
+      status?: string;
+      clearanceRejectedAt?: string;
+      clearanceRejectedReason?: string;
+    } | null;
+    assert.equal(moved?.status, 'active', 'transferred in as active');
+    assert.equal(moved?.clearanceRejectedAt, undefined, 'stale reject timestamp scrubbed');
+    assert.equal(moved?.clearanceRejectedReason, undefined, 'stale reject reason scrubbed');
+    assert.equal(
+      await repo.getPlayer('dolphins', 'rc-b', 'scrub-reject'),
+      null,
+      'source row removed on approve',
     );
   });
 

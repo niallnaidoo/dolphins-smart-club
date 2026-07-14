@@ -67,6 +67,7 @@ import { useCopy } from './branding';
 import {
   Icon,
   Pill,
+  playerStatusPill,
   Btn,
   Card,
   KPI,
@@ -4675,6 +4676,7 @@ export function ClubPlayersView({
   const allRounders = mine.filter((p) => p.isAllRounder).length;
   const wks = mine.filter((p) => p.isWk).length;
   const pendingClearance = mine.filter((p) => p.status === 'clearance-pending').length;
+  const rejectedClearance = mine.filter((p) => p.status === 'clearance-rejected').length;
 
   return (
     <div>
@@ -4768,6 +4770,14 @@ export function ClubPlayersView({
             {pendingClearance}
           </div>
         </div>
+        {rejectedClearance > 0 && (
+          <div className="players-stat">
+            <div className="players-stat-l">Clearance rejected</div>
+            <div className="players-stat-n" style={{ color: 'var(--coral)' }}>
+              {rejectedClearance}
+            </div>
+          </div>
+        )}
       </div>
 
       <div style={{ marginTop: 14 }}>
@@ -4850,19 +4860,7 @@ export function ClubPlayersView({
                       </Pill>
                     )}
                   </td>
-                  <td>
-                    {p.status === 'clearance-pending' ? (
-                      <Pill tone="gold" dot>
-                        Clearance pending
-                      </Pill>
-                    ) : p.status === 'inactive' ? (
-                      <Pill tone="muted">Inactive</Pill>
-                    ) : (
-                      <Pill tone="teal" dot>
-                        Active
-                      </Pill>
-                    )}
-                  </td>
+                  <td>{playerStatusPill(p.status)}</td>
                   <td
                     style={{ textAlign: 'right', paddingRight: 14 }}
                     onClick={(e) => e.stopPropagation()}

@@ -265,6 +265,32 @@ export function Pill({ tone = 'muted', children, dot }: PillProps) {
   );
 }
 
+/**
+ * Single source of truth for a player's roster-status pill — shared by the admin cross-club
+ * list, the club roster, and the player detail modal so a status is never rendered
+ * inconsistently (or silently as "Active" when a new status is added). Absent ⇒ 'active'.
+ */
+export function playerStatusPill(status?: string) {
+  if (status === 'clearance-pending')
+    return (
+      <Pill tone="gold" dot>
+        Clearance pending
+      </Pill>
+    );
+  if (status === 'clearance-rejected')
+    return (
+      <Pill tone="coral" dot>
+        Clearance rejected
+      </Pill>
+    );
+  if (status === 'inactive') return <Pill tone="muted">Inactive</Pill>;
+  return (
+    <Pill tone="teal" dot>
+      Active
+    </Pill>
+  );
+}
+
 interface BtnProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   tone?: string;
   size?: string;

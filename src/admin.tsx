@@ -87,6 +87,7 @@ import {
   cqiBand,
   scoreCQI,
   useEscapeClose,
+  playerStatusPill,
 } from './atoms';
 
 /* ─── AdminFixtures — series cards + drilldown fixture table with distance + travel-cost ─── */
@@ -6174,7 +6175,7 @@ export function AdminClearances({ clearances, leagues, onOverride, onReject, bus
                       The Union office can override {req.fromClubName}'s approval and issue the
                       clearance to {req.toClubName} — or reject the request
                       {req.origin === 'registration'
-                        ? ` (the player stays registered at ${req.fromClubName} and the pending record at ${req.toClubName} is removed)`
+                        ? ` (the player stays at ${req.toClubName}, flagged clearance-rejected, and is removed from ${req.fromClubName})`
                         : ` (the player stays registered at ${req.fromClubName})`}
                       .
                     </div>
@@ -6187,7 +6188,10 @@ export function AdminClearances({ clearances, leagues, onOverride, onReject, bus
                       setConfirm({
                         kind: 'reject',
                         title: 'Reject this clearance?',
-                        body: `This will reject ${req.playerName}'s transfer to ${req.toClubName} on the Union's authority. They stay registered at ${req.fromClubName}. Both clubs will be notified.`,
+                        body:
+                          req.origin === 'registration'
+                            ? `This will reject ${req.playerName}'s clearance on the Union's authority. They stay on ${req.toClubName}'s roster flagged clearance-rejected and are removed from ${req.fromClubName}.`
+                            : `This will reject ${req.playerName}'s transfer to ${req.toClubName} on the Union's authority. They stay registered at ${req.fromClubName}. Both clubs will be notified.`,
                         onYes: (note) => {
                           onReject(req, note);
                           setConfirm(null);
@@ -6514,21 +6518,6 @@ function playerRoleLabel(p) {
     bits.push(p.bowlerType);
   }
   return bits.join(' · ') || '—';
-}
-
-function playerStatusPill(status) {
-  if (status === 'clearance-pending')
-    return (
-      <Pill tone="gold" dot>
-        Clearance pending
-      </Pill>
-    );
-  if (status === 'inactive') return <Pill tone="muted">Inactive</Pill>;
-  return (
-    <Pill tone="teal" dot>
-      Active
-    </Pill>
-  );
 }
 
 const PLAYERS_PER_PAGE = 25;
