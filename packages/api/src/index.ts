@@ -927,14 +927,22 @@ async function findPlayerByIdNumber(
 }
 
 /**
- * Materialize a self-registration onto the destination roster (`player.clubId` must
- * already be the destination). When the player named a real previous club and is found
- * there under the same natural key, this becomes a transfer: the row is created as
- * 'clearance-pending' together with a registration-origin clearance the source club (or
- * the union office) must resolve before the player goes active. Otherwise a plain active
- * row is created. Used by the public register route whether the player registers into the
- * link club or a different joining club. Repo errors (dedup/dest conflicts) propagate to the
- * caller, which maps them. Returns the opened clearance's source-club name, if any.
+ * Materialize a self-registration onto the destination roster (`player.clubId` must already be
+ * the destination). Before creating anything it looks up where this exact person is ALREADY
+ * registered across the union (by naturalKey), so a transfer routes to their REAL current club —
+ * not merely the club they typed — and the same person can never be active at two clubs at once:
+ *
+ *  - Active elsewhere → create the row 'clearance-pending' + a registration-origin clearance FROM
+ *    that club (which — or the union office — must approve before the player goes active). If the
+ *    club they NAMED isn't where they're actually registered, the clearance is still routed to the
+ *    real club, with a `note` recording the mismatch for whoever reviews it.
+ *  - Mid-transfer elsewhere (already 'clearance-pending') → DuplicatePendingClearanceError, so the
+ *    caller returns the collapsed 409 rather than opening a competing clearance.
+ *  - Not registered anywhere else → a plain active row (first registration / off-system previous).
+ *
+ * Used by the public register route whether the player registers into the link club or a different
+ * joining club. Repo errors (dedup/dest conflicts) propagate to the caller, which maps them.
+ * Returns the opened clearance's source-club name, if any.
  */
 async function createSelfRegistration(
   tenant: string,
@@ -942,48 +950,71 @@ async function createSelfRegistration(
   destClub: Club,
   lastClubId: string,
 ): Promise<{ clearanceFromName?: string }> {
-  // Re-registration at the SAME club (previous == the club being joined): record the history
-  // name but open no clearance — there is nothing to transfer, and a club-to-itself clearance
-  // would be unresolvable. Falls through to a plain active registration below.
+  // Re-registration at the SAME club (previous == the club being joined): record the history name;
+  // there is nothing to transfer. Falls through to a plain active row (or the guards below).
   if (lastClubId && lastClubId === player.clubId) {
     player.lastClub = destClub.name;
-  } else if (lastClubId) {
+  }
+
+  // Where is this exact person already registered elsewhere in the union? This — not the
+  // self-typed previous club — decides the transfer, so a wrong/duplicate/deleted pick can't
+  // mis-route the clearance or leave the player active at two clubs.
+  const elsewhere = await repo.findPlayerAcrossClubs(tenant, player.naturalKey, player.clubId);
+  const activeSources = elsewhere.filter((e) => e.status === 'active');
+
+  if (activeSources.length > 0) {
+    // Route to the club they NAMED only if that's genuinely where they are; otherwise auto-route
+    // to their real current club and flag the mismatch on the clearance note.
+    const named = activeSources.find((s) => s.clubId === lastClubId);
+    const source = named ?? activeSources[0];
+    player.lastClub = source.clubName;
+    let note: string | undefined;
+    if (!named) {
+      const namedClub = lastClubId ? await repo.getClub(tenant, lastClubId) : null;
+      note = lastClubId
+        ? namedClub
+          ? `Auto-routed: player named "${namedClub.name}" as previous club, but is registered at ${source.clubName}.`
+          : `Auto-routed: the named previous club is not on the system; player is registered at ${source.clubName}.`
+        : `Auto-routed to ${source.clubName}, where the player is registered (no previous club was named).`;
+    }
+    player.status = 'clearance-pending';
+    const clearance: PlayerClearance = {
+      id: randomUUID(),
+      playerNaturalKey: player.naturalKey,
+      playerName: `${player.firstName} ${player.lastName}`,
+      idNumber: player.idNumber,
+      team: player.team,
+      fromClubId: source.clubId,
+      toClubId: player.clubId,
+      fromClubName: source.clubName,
+      toClubName: destClub.name,
+      // requestedAt feeds the admin-list gsi1 sort key — required even though no rep initiated
+      // this (requestedBy stays absent; origin says who did).
+      requestedAt: now(),
+      origin: 'registration',
+      note,
+      feesCleared: false,
+      misconductCleared: false,
+      status: 'pending',
+      clubApprovedAt: null,
+      adminOverrideAt: null,
+      version: 0,
+    };
+    await repo.createPlayerWithClearance(tenant, player, clearance);
+    return { clearanceFromName: source.clubName };
+  }
+
+  if (elsewhere.some((e) => e.status === 'clearance-pending')) {
+    // Already mid-transfer under this identity — don't open a competing clearance or a second row.
+    throw new repo.DuplicatePendingClearanceError();
+  }
+
+  // Not registered anywhere else: a genuine new registration. Record the named on-system previous
+  // club as history text (no clearance — they aren't actually rostered there).
+  if (lastClubId && lastClubId !== player.clubId) {
     const sourceClub = await repo.getClub(tenant, lastClubId);
     if (!sourceClub) throw new HttpError(400, 'unknown previous club');
-    // The selected club's name is the stored lastClub text whether or not a matching
-    // registration is found there.
     player.lastClub = sourceClub.name;
-    const sourcePlayer = await findPlayerByIdNumber(tenant, lastClubId, player.idNumber);
-    // The clearance machinery addresses BOTH rows by one playerNaturalKey, so the source
-    // row's key must equal this registration's (a passport nationality respelling can
-    // diverge them). On mismatch — or no match at all — fall back to a plain registration
-    // rather than opening an unresolvable clearance.
-    if (sourcePlayer && sourcePlayer.naturalKey === player.naturalKey) {
-      player.status = 'clearance-pending';
-      const clearance: PlayerClearance = {
-        id: randomUUID(),
-        playerNaturalKey: player.naturalKey,
-        playerName: `${player.firstName} ${player.lastName}`,
-        idNumber: player.idNumber,
-        team: player.team,
-        fromClubId: lastClubId,
-        toClubId: player.clubId,
-        fromClubName: sourceClub.name,
-        toClubName: destClub.name,
-        // requestedAt feeds the admin-list gsi1 sort key — required even though no rep
-        // initiated this (requestedBy stays absent; origin says who did).
-        requestedAt: now(),
-        origin: 'registration',
-        feesCleared: false,
-        misconductCleared: false,
-        status: 'pending',
-        clubApprovedAt: null,
-        adminOverrideAt: null,
-        version: 0,
-      };
-      await repo.createPlayerWithClearance(tenant, player, clearance);
-      return { clearanceFromName: sourceClub.name };
-    }
   }
   player.status = 'active';
   await repo.createPlayer(tenant, player);

@@ -1011,6 +1011,32 @@ export async function getPlayer(
 }
 
 /**
+ * Every club in the tenant where this exact person (same `playerNaturalKey`) is already
+ * registered, excluding one club (the destination). Used at self-registration time to route a
+ * transfer to the player's REAL current club rather than the one they typed, and to stop the
+ * same person being active at two clubs at once. O(clubs) point-gets in parallel; the public
+ * register endpoint is token-gated + rate-limited so the fan-out is bounded. Matches on
+ * naturalKey — the same key the clearance machinery addresses both rows by, so a divergent key
+ * (e.g. a passport nationality respelling) won't match, exactly as a clearance couldn't anyway.
+ */
+export async function findPlayerAcrossClubs(
+  tenant: string,
+  naturalKey: string,
+  excludeClubId: string,
+): Promise<Array<{ clubId: string; clubName: string; status: PlayerRegistration['status'] }>> {
+  const clubs = await listClubs(tenant);
+  const hits = await Promise.all(
+    clubs
+      .filter((c) => c.id !== excludeClubId)
+      .map(async (c) => {
+        const p = await getPlayer(tenant, c.id, naturalKey);
+        return p ? { clubId: c.id, clubName: c.name, status: p.status } : null;
+      }),
+  );
+  return hits.filter((h): h is NonNullable<typeof h> => h !== null);
+}
+
+/**
  * Apply a partial update to a player registration under optimistic concurrency
  * (same version convention as updateClub: a client may pass an expected version;
  * legacy rows without one are treated as 0). Used by the ID-doc mark and roster

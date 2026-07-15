@@ -1842,6 +1842,85 @@ describe('POST /register — cross-club registrations, off-system alerts, admin 
     assert.equal(destRow?.status, 'clearance-pending');
   });
 
+  // Seed a player as active at rprev (via that club's own link) for the cross-club tests below.
+  const seedAtPrev = (idNumber: string, firstName: string, lastName: string) =>
+    app.request('/register/rprev?t=rev-prev-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body(prevKey, { firstName, lastName, idNumber, lastClub: '—' })),
+    });
+
+  test('auto-routes the clearance to the player’s REAL club when they name a different club', async () => {
+    await seedAtPrev('RVM', 'Miss', 'Match'); // actually registered at rprev
+    // They register into rdest but wrongly name the link club (rlink) as previous — they're not there.
+    const res = await postLink({
+      firstName: 'Miss',
+      lastName: 'Match',
+      idNumber: 'RVM',
+      currentClubId: 'rdest',
+      lastClubId: 'rlink',
+    });
+    assert.equal(res.status, 201);
+    // Routed to rprev (where they ACTUALLY are), NOT the named rlink.
+    assert.deepEqual(await res.json(), { ok: true, clearance: { fromClubName: 'Reg Prev CC' } });
+    const clr = (await repo.listAllClearances('dolphins')).find(
+      (c) => c.playerName === 'Miss Match',
+    );
+    assert.equal(clr?.fromClubId, 'rprev');
+    assert.equal(clr?.toClubId, 'rdest');
+    assert.match(clr?.note ?? '', /Reg Link CC/); // note records what they typed
+    assert.match(clr?.note ?? '', /Reg Prev CC/); // and where they actually are
+    // Not double-rostered: the destination row is clearance-pending, not a second active row.
+    const destRow = (
+      (await (await app.request('/clubs/rdest/players', { headers: headers(ADMIN) })).json()) as {
+        idNumber?: string;
+        status?: string;
+      }[]
+    ).find((p) => p.idNumber === 'RVM');
+    assert.equal(destRow?.status, 'clearance-pending');
+  });
+
+  test('auto-routes to the real club even when the named previous club is off-system', async () => {
+    await seedAtPrev('RVO', 'Off', 'Route');
+    const res = await postLink({
+      firstName: 'Off',
+      lastName: 'Route',
+      idNumber: 'RVO',
+      currentClubId: 'rdest',
+      lastClub: 'Ghost CC', // off-system name
+    });
+    assert.equal(res.status, 201);
+    assert.deepEqual(await res.json(), { ok: true, clearance: { fromClubName: 'Reg Prev CC' } });
+    // A real transfer was detected, so NO off-system alert is raised.
+    assert.equal(await reviewByName('Off Route'), undefined);
+    const clr = (await repo.listAllClearances('dolphins')).find(
+      (c) => c.playerName === 'Off Route',
+    );
+    assert.equal(clr?.fromClubId, 'rprev');
+    assert.ok(clr?.note, 'mismatch note recorded');
+  });
+
+  test('a player already mid-transfer cannot open a competing registration (409)', async () => {
+    await seedAtPrev('RVP', 'Pend', 'Ing');
+    // First transfer flips the rprev row to clearance-pending.
+    const first = await postLink({
+      firstName: 'Pend',
+      lastName: 'Ing',
+      idNumber: 'RVP',
+      currentClubId: 'rdest',
+      lastClubId: 'rprev',
+    });
+    assert.equal(first.status, 201);
+    // A second registration for the same identity is refused (indistinguishable 409).
+    const second = await postLink({
+      firstName: 'Pend',
+      lastName: 'Ing',
+      idNumber: 'RVP',
+      lastClub: '—',
+    });
+    assert.equal(second.status, 409);
+  });
+
   test('inbound cap: a foreign link flooding one club 429s past the per-hour limit', async () => {
     // A dedicated destination club so this test's 30+ inbound registrations stay isolated.
     await repo.createClub('dolphins', mkClub('rcap', 'Reg Cap CC'));
