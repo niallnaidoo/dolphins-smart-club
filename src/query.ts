@@ -13,7 +13,10 @@ export const queryClient = new QueryClient({
     queries: {
       staleTime: 30_000,
       retry: 1,
-      refetchOnWindowFocus: false,
+      // Refresh when the user returns to the tab so a screen left open updates
+      // without navigating. Gated by staleTime (30s), so it never fires inside the
+      // sub-second GSI-write window that the clubs/club setQueryData seeds protect.
+      refetchOnWindowFocus: true,
     },
   },
 });

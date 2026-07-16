@@ -1,5 +1,5 @@
 import { Sentry } from './sentry'; // first — installs global error handlers before render
-import { useState as useStateApp, useMemo as useMemoApp, useEffect } from 'react';
+import { useState as useStateApp, useMemo as useMemoApp, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
 import { createRoot } from 'react-dom/client';
@@ -844,6 +844,15 @@ function AuthedApp({ tenantConfig, tenantConfigError, onRetryTenantConfig }) {
   );
 }
 
+// Query-key roots skipped by the refetch-on-navigation invalidate below.
+// Consistency guards: 'clubs'/'club' are GSI-seeded via setQueryData (updateClub/addNote) so
+// an immediate refetch can revert a just-saved edit; 'tenant' honours branding's
+// staleTime:Infinity "cache hits only" contract.
+// Heavy aggregates: 'clearances-all'/'demographics' are N+1 enrichment endpoints (each row
+// enriched via getUser) shown on only one admin view each — refetching them on every sidebar
+// click is wasteful, so they ride the 30s staleTime + focus-refetch instead.
+const NAV_REFETCH_SKIP = new Set(['clubs', 'club', 'tenant', 'clearances-all', 'demographics']);
+
 function Shell({
   role,
   clubs,
@@ -989,6 +998,25 @@ function Shell({
     if (location.pathname === base || location.pathname === base + '/') view = 'home';
     else view = location.pathname.slice(base.length + 1);
   }
+
+  // ── Refetch page data on every in-console navigation ──
+  // Shell stays mounted (pages are URL-derived), so its useQuery hooks never remount and
+  // nothing refetches on its own. Invalidate active queries on pathname change so all users
+  // see current state, minus the NAV_REFETCH_SKIP roots (see that constant for the why).
+  // refetchType defaults to 'active', so only mounted queries refetch and old data stays on
+  // screen during the background refetch (no blank/flicker). firstNav skips the initial mount
+  // (already fetched); relies on no <StrictMode> — under StrictMode the double-mount would
+  // defeat the skip and fire one dev-only refetch.
+  const firstNav = useRef(true);
+  useEffect(() => {
+    if (firstNav.current) {
+      firstNav.current = false; // initial mount already fetches; don't double-fetch
+      return;
+    }
+    queryClient.invalidateQueries({
+      predicate: (q) => !NAV_REFETCH_SKIP.has(q.queryKey[0] as string),
+    });
+  }, [location.pathname]);
 
   // ── Auto-open onboarding the first time a club portal is entered ──
   useEffect(() => {
