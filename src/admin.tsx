@@ -3834,6 +3834,7 @@ export function AdminClubDetail({
   const [showLinkModal, setShowLinkModal] = useStateA(false);
   const [showInvite, setShowInvite] = useStateA(false);
   const [showCqi, setShowCqi] = useStateA(false);
+  const [showCqiEdit, setShowCqiEdit] = useStateA(false);
   const [showAffiliation, setShowAffiliation] = useStateA(false);
   const [showDocPreview, setShowDocPreview] = useStateA(null);
   const [showCompliant, setShowCompliant] = useStateA(false);
@@ -4617,6 +4618,11 @@ export function AdminClubDetail({
               >
                 {club.cqi === 0 ? 'Record CQI form' : 'View submitted CQI form'}
               </Btn>
+              {club.cqi > 0 && (
+                <Btn tone="outline" icon={Icon.Form} onClick={() => setShowCqiEdit(true)}>
+                  Edit CQI form
+                </Btn>
+              )}
               <Btn tone="outline" icon={Icon.Eye} onClick={() => setShowAffiliation(true)}>
                 View affiliation form
               </Btn>
@@ -4661,6 +4667,15 @@ export function AdminClubDetail({
           onSave={onSaveCqi}
           initialEditing={club.cqi === 0}
           onClose={() => setShowCqi(false)}
+        />
+      )}
+      {showCqiEdit && (
+        <CqiViewModal
+          club={club}
+          toast={toast}
+          onSave={onSaveCqi}
+          initialEditing={true}
+          onClose={() => setShowCqiEdit(false)}
         />
       )}
       {showDocPreview && (
