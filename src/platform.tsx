@@ -53,9 +53,48 @@ function slugProblem(slug: string): string | null {
   return null;
 }
 
-// Mirrors LOGO_CONTENT_TYPES / MAX_LOGO_BYTES on POST …/logo-upload.
+// Mirrors BRANDING_UPLOAD_KINDS on POST …/logo-upload.
 const LOGO_TYPES = ['image/png', 'image/svg+xml', 'image/webp'];
 const MAX_LOGO_BYTES = 1024 * 1024;
+const HERO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const MAX_HERO_BYTES = 4 * 1024 * 1024;
+/** Longest edge for hero uploads — enough for a full-bleed backdrop on any screen. */
+const HERO_MAX_EDGE = 2560;
+
+/**
+ * Downscale an oversized hero photo before upload: cap the longest edge at
+ * HERO_MAX_EDGE and re-encode as WebP. Phone photos run 3–8 MB — un-shrunk they'd
+ * bounce off the server cap, and the winners would tax every login-screen visit.
+ * Returns the original file when it's already small enough or won't decode (the
+ * presign's content-length-range backstops whatever we send).
+ */
+async function downscaleHero(file: File): Promise<Blob> {
+  try {
+    // Explicit EXIF handling — the browser default changed over the years, and a
+    // sideways portrait phone photo as a login backdrop is not a subtle bug.
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    try {
+      const scale = HERO_MAX_EDGE / Math.max(bitmap.width, bitmap.height);
+      if (scale >= 1) return file;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return file;
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, 'image/webp', 0.85),
+      );
+      // Safari can't encode WebP — toBlob silently falls back to a full-size PNG,
+      // often BIGGER than the original. Never ship a re-encode that didn't shrink.
+      return blob && blob.size < file.size ? blob : file;
+    } finally {
+      bitmap.close();
+    }
+  } catch {
+    return file;
+  }
+}
 
 /** The org-copy slots resolveCopy (src/branding.ts) falls back over. */
 // Order matters for the Copy card's 2-column grid: heroBlurb (the only full-width
@@ -1767,6 +1806,7 @@ function BrandFields({
   onChange,
   showAdvanced = false,
   split = false,
+  heroUpload,
 }: {
   value: BrandDraft;
   onChange: (d: BrandDraft) => void;
@@ -1774,6 +1814,9 @@ function BrandFields({
   /** Lay controls and the live preview side-by-side (client settings page). Off in the
    *  narrow wizard column, where the fields stack. Constant per mounted instance. */
   split?: boolean;
+  /** Uploads a hero image and resolves to its public URL. Absent in the create wizard
+   *  (the per-slug presign 404s before the tenant exists), which hides the button. */
+  heroUpload?: (blob: Blob) => Promise<string>;
 }) {
   const { colors, font } = value;
   const [base, setBase] = useState(() =>
@@ -1782,6 +1825,14 @@ function BrandFields({
   const [newToken, setNewToken] = useState('');
   const [newValue, setNewValue] = useState('');
   const [advErr, setAdvErr] = useState('');
+  const [heroBusy, setHeroBusy] = useState(false);
+  const [heroErr, setHeroErr] = useState('');
+  const heroFileRef = useRef<HTMLInputElement>(null);
+  // The hero upload resolves seconds after its click; applying the result against the
+  // click-time `value` closure would wipe edits made meanwhile. Always merge into the
+  // latest draft via this ref.
+  const valueRef = useRef(value);
+  valueRef.current = value;
 
   const setColors = (patch: Record<string, string>) =>
     onChange({ ...value, colors: { ...colors, ...patch } });
@@ -1806,6 +1857,35 @@ function BrandFields({
     if (isValidHex(colors[r.token])) previewVars[r.token] = colors[r.token];
   previewVars['--brand-on-primary'] = isValidHex(primary) ? onColor(primary) : '#FFFFFF';
   previewVars[HERO_TOKEN] = hero || defaultHeroGradient(colors);
+
+  async function onHeroFile(file: File | undefined) {
+    if (!file || !heroUpload) return;
+    setHeroErr('');
+    if (!HERO_TYPES.includes(file.type)) {
+      setHeroErr('JPEG, PNG or WebP only');
+      return;
+    }
+    setHeroBusy(true);
+    try {
+      const blob = await downscaleHero(file);
+      if (blob.size > MAX_HERO_BYTES) {
+        setHeroErr('Image must be 4 MB or less');
+        return;
+      }
+      const publicUrl = await heroUpload(blob);
+      // Draft-only on purpose: the upload lands in the draft like every other brand
+      // edit and goes live on "Save branding" — never straight to the login screen.
+      const latest = valueRef.current;
+      onChange({
+        ...latest,
+        colors: { ...latest.colors, [HERO_TOKEN]: `url('${publicUrl}')` },
+      });
+    } catch (e) {
+      setHeroErr(e instanceof ApiError ? e.message : 'Upload failed — try again');
+    } finally {
+      setHeroBusy(false);
+    }
+  }
 
   function addToken() {
     const t = newToken.trim();
@@ -1942,7 +2022,15 @@ function BrandFields({
             spellCheck={false}
             onChange={(e) => setColor(HERO_TOKEN, e.target.value)}
           />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginTop: 8,
+              flexWrap: 'wrap',
+            }}
+          >
             <span
               style={{
                 width: 66,
@@ -1955,19 +2043,53 @@ function BrandFields({
                 backgroundPosition: 'center',
               }}
             />
+            {heroUpload && (
+              <>
+                <input
+                  ref={heroFileRef}
+                  type="file"
+                  accept={HERO_TYPES.join(',')}
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    e.target.value = '';
+                    onHeroFile(f);
+                  }}
+                />
+                <Btn
+                  tone="outline"
+                  size="sm"
+                  icon={Icon.Upload}
+                  disabled={heroBusy}
+                  onClick={() => heroFileRef.current?.click()}
+                >
+                  {heroBusy ? 'Uploading…' : 'Upload image'}
+                </Btn>
+              </>
+            )}
             <Btn
               tone="outline"
               size="sm"
+              disabled={heroBusy}
               onClick={() => setColor(HERO_TOKEN, defaultHeroGradient(colors))}
             >
               Use generated gradient
             </Btn>
             {hero && (
-              <Btn tone="ghost" size="sm" onClick={() => removeToken(HERO_TOKEN)}>
+              <Btn
+                tone="ghost"
+                size="sm"
+                disabled={heroBusy}
+                onClick={() => removeToken(HERO_TOKEN)}
+              >
                 Clear
               </Btn>
             )}
           </div>
+          {heroUpload && (
+            <p style={HINT}>JPEG, PNG or WebP · large photos are downscaled · applies on save.</p>
+          )}
+          {heroErr && <div style={ERR}>{heroErr}</div>}
         </Field>
       </div>
 
@@ -2167,15 +2289,36 @@ function BrandCard({
     }
   }
 
+  // Upload only — BrandFields puts the URL in the draft and saveIt persists it, so a
+  // hero photo never goes live ahead of the palette it was picked to match. Save is
+  // locked while the upload is in flight: saving the pre-upload draft would land the
+  // hero a moment later as a fresh "dirty" surprise.
+  const [heroUploading, setHeroUploading] = useState(false);
+  async function heroUpload(blob: Blob): Promise<string> {
+    setHeroUploading(true);
+    try {
+      const post = await api.platformLogoUploadUrl(config.tenant, blob.type, 'hero');
+      await api.uploadLogoToS3(post, blob);
+      return post.publicUrl;
+    } finally {
+      setHeroUploading(false);
+    }
+  }
+
   return (
     <Panel
       title="Brand & theme"
       sub="Colours, typeface and hero backdrop, injected at runtime. Blank colours fall back to the app default; edits preview live below."
     >
-      <BrandFields value={draft} onChange={setDraft} showAdvanced split />
+      <BrandFields value={draft} onChange={setDraft} showAdvanced split heroUpload={heroUpload} />
       {err && <div style={ERR}>{err}</div>}
       <div style={{ marginTop: 14 }}>
-        <Btn tone="teal" size="sm" onClick={saveIt} disabled={!dirty || busy || invalid}>
+        <Btn
+          tone="teal"
+          size="sm"
+          onClick={saveIt}
+          disabled={!dirty || busy || invalid || heroUploading}
+        >
           {busy ? 'Saving…' : 'Save branding'}
         </Btn>
       </div>

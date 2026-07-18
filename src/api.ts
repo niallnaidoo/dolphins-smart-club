@@ -460,13 +460,14 @@ export const platformAddAdmin = (slug: string, email: string) =>
     `/platform/tenants/${encodeURIComponent(slug)}/admins`,
     { method: 'POST', body: { email } },
   );
-// contentType must be image/png | image/svg+xml | image/webp (≤ 1 MB, 300s expiry).
-// The grant is a presigned POST — submit via uploadLogoToS3, then persist publicUrl
-// as branding.logoUrl through platformUpdateTenant.
-export const platformLogoUploadUrl = (slug: string, contentType: string) =>
+// Presigned-POST grant for a branding asset (300s expiry). kind 'logo' (default):
+// png/svg/webp ≤ 1 MB, persisted as branding.logoUrl. kind 'hero': jpeg/png/webp
+// ≤ 4 MB, persisted as a url('…') value in the --hero-image colour token. Submit
+// via uploadLogoToS3, then save publicUrl through platformUpdateTenant.
+export const platformLogoUploadUrl = (slug: string, contentType: string, kind?: 'logo' | 'hero') =>
   request<LogoUploadPost>(`/platform/tenants/${encodeURIComponent(slug)}/logo-upload`, {
     method: 'POST',
-    body: { contentType },
+    body: { contentType, kind },
   });
 export const platformDnsSheet = (slug: string) =>
   request<DnsSheet>(`/platform/tenants/${encodeURIComponent(slug)}/dns`);
@@ -486,9 +487,10 @@ export const platformTenantOverview = (slug: string) =>
   request<TenantOverview>(`/platform/tenants/${encodeURIComponent(slug)}/overview`);
 
 /**
- * Submit a logo to S3 via the presigned POST grant (not the API — plain fetch, no
- * auth headers). Policy fields must all ride along and the file part must be LAST:
- * S3 ignores form fields after the file, so a trailing file is the only valid order.
+ * Submit a branding asset (logo or hero image) to S3 via the presigned POST grant
+ * (not the API — plain fetch, no auth headers). Policy fields must all ride along
+ * and the file part must be LAST: S3 ignores form fields after the file, so a
+ * trailing file is the only valid order.
  */
 export async function uploadLogoToS3(post: LogoUploadPost, file: Blob) {
   const form = new FormData();

@@ -10,6 +10,8 @@
  * Merge-patch semantics (never a whole-item Put, never a fresh item):
  *   • colors  — existing map + seed family, seed winning; tokens the seed
  *               doesn't define (legacy --navy/--teal/…) are left untouched.
+ *               EXCEPTION: an existing --hero-image survives — operators upload
+ *               hero backdrops from the console, and a re-run must not revert one.
  *   • copy    — ONLY the new slots (orgShort, cohortName, heroTitle, heroBlurb,
  *               crumbRoot) are SET; admin-edited slots (e.g. copy.support) and
  *               everything else on the row (adminCount, clubSignupLink,
@@ -25,6 +27,7 @@
  * Re-running is a no-op once rows match ("up to date"). --dry-run prints the
  * per-tenant diff and writes nothing.
  */
+import { pathToFileURL } from 'node:url';
 import * as repo from './repo.js';
 import { BRANDING, SEED_TENANTS } from './seed-core.js';
 
@@ -66,8 +69,9 @@ function parseArgs(argv: string[]): CliArgs {
   return { tenants: tenants.length > 0 ? tenants : [...SEED_TENANTS], dryRun, setLogo };
 }
 
-/** Build the merge patch for one tenant; returns null when the row is already current. */
-function buildPatch(
+/** Build the merge patch for one tenant; returns null when the row is already current.
+ *  Exported so the unit test can drive the hero-preservation rule directly. */
+export function buildPatch(
   existing: { colors: Record<string, string>; copy: Record<string, string> },
   seed: (typeof BRANDING)[string],
   setLogo: string | undefined,
@@ -77,8 +81,12 @@ function buildPatch(
   const diff: string[] = [];
   const patch: repo.BrandingMergePatch = {};
 
-  const mergedColors = { ...existing.colors, ...seed.colors };
-  const colorChanges = Object.entries(seed.colors).filter(
+  // Seed-wins for colours, EXCEPT the hero backdrop: operators upload per-tenant
+  // hero images from the console, and a re-run must not revert one to the seed venue.
+  const seedColors: Record<string, string> = { ...seed.colors };
+  if (existing.colors['--hero-image']) delete seedColors['--hero-image'];
+  const mergedColors = { ...existing.colors, ...seedColors };
+  const colorChanges = Object.entries(seedColors).filter(
     ([token, value]) => existing.colors[token] !== value,
   );
   if (colorChanges.length > 0) {
@@ -169,7 +177,11 @@ async function main(): Promise<void> {
   if (failures > 0) process.exit(1);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Run only when executed directly (npx tsx …/backfill-branding.ts) — importing
+// buildPatch from a test must not kick off a live backfill.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

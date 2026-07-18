@@ -1028,7 +1028,9 @@ describe('POST /platform/tenants/:slug/logo-upload', () => {
     assert.match(body.objectKey, /^branding\/sharks\/logo-[0-9a-f]{8}\.png$/);
     assert.equal(body.publicUrl, `https://tutorials.test/${body.objectKey}`);
     assert.equal(body.fields['Content-Type'], 'image/png');
-    // The signed policy must carry the 1 MB cap and the exact content type.
+    assert.equal(body.fields['Cache-Control'], 'public, max-age=31536000, immutable');
+    // The signed policy must carry the 1 MB cap, the content type and the cache
+    // header — a field without its matching policy condition makes S3 reject the POST.
     const policy = JSON.parse(Buffer.from(body.fields.Policy, 'base64').toString('utf8')) as {
       conditions: unknown[];
     };
@@ -1041,6 +1043,16 @@ describe('POST /platform/tenants/:slug/logo-upload', () => {
           cond[2] === 1024 * 1024,
       ),
       'content-length-range 0..1MB enforced',
+    );
+    assert.ok(
+      policy.conditions.some(
+        (cond) =>
+          Array.isArray(cond) &&
+          cond[0] === 'eq' &&
+          cond[1] === '$Cache-Control' &&
+          cond[2] === 'public, max-age=31536000, immutable',
+      ),
+      'Cache-Control policy condition signed',
     );
   });
 
@@ -1076,6 +1088,59 @@ describe('POST /platform/tenants/:slug/logo-upload', () => {
       body: JSON.stringify({ contentType: 'image/png' }),
     });
     assert.equal(res.status, 404);
+  });
+
+  test('kind:"hero" → jpeg allowed, 4 MB cap, hero- key, immutable cache header', async () => {
+    const res = await app.request('/platform/tenants/sharks/logo-upload', {
+      method: 'POST',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({ contentType: 'image/jpeg', kind: 'hero' }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { fields: Record<string, string>; objectKey: string };
+    assert.match(body.objectKey, /^branding\/sharks\/hero-[0-9a-f]{8}\.jpg$/);
+    assert.equal(body.fields['Cache-Control'], 'public, max-age=31536000, immutable');
+    const policy = JSON.parse(Buffer.from(body.fields.Policy, 'base64').toString('utf8')) as {
+      conditions: unknown[];
+    };
+    assert.ok(
+      policy.conditions.some(
+        (cond) =>
+          Array.isArray(cond) &&
+          cond[0] === 'content-length-range' &&
+          cond[1] === 0 &&
+          cond[2] === 4 * 1024 * 1024,
+      ),
+      'content-length-range 0..4MB enforced',
+    );
+    assert.ok(
+      policy.conditions.some(
+        (cond) =>
+          Array.isArray(cond) &&
+          cond[0] === 'eq' &&
+          cond[1] === '$Cache-Control' &&
+          cond[2] === 'public, max-age=31536000, immutable',
+      ),
+      'Cache-Control policy condition signed',
+    );
+  });
+
+  test('kind:"hero" rejects svg → 400; unknown kind → 400, not a silent logo fallback', async () => {
+    const svg = await app.request('/platform/tenants/sharks/logo-upload', {
+      method: 'POST',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({ contentType: 'image/svg+xml', kind: 'hero' }),
+    });
+    assert.equal(svg.status, 400);
+
+    const typo = await app.request('/platform/tenants/sharks/logo-upload', {
+      method: 'POST',
+      headers: platformHeaders(OPERATOR),
+      body: JSON.stringify({ contentType: 'image/png', kind: 'bg' }),
+    });
+    assert.equal(typo.status, 400);
+    const body = (await typo.json()) as { error: string };
+    assert.match(body.error, /kind/);
   });
 });
 

@@ -2418,13 +2418,24 @@ app.put('/tenant/support', requireAdmin, async (c) => {
 // middleware block) — tenant-independent, so :slug in the path names the target
 // tenant explicitly instead of the request host.
 
-/** Allowed logo upload types → stored extension (allowlist doubles as the gate). */
-const LOGO_CONTENT_TYPES: Record<string, string> = {
-  'image/png': 'png',
-  'image/svg+xml': 'svg',
-  'image/webp': 'webp',
+/** Per-kind branding upload rules — content type → stored extension (the allowlist
+ *  doubles as the gate). `logo` is the sign-in/header mark (small, SVG-friendly);
+ *  `hero` is the backdrop photo (raster only — an SVG backdrop buys nothing). */
+const BRANDING_UPLOAD_KINDS: Record<
+  'logo' | 'hero',
+  { types: Record<string, string>; maxBytes: number }
+> = {
+  logo: {
+    types: { 'image/png': 'png', 'image/svg+xml': 'svg', 'image/webp': 'webp' },
+    maxBytes: 1024 * 1024, // 1 MB
+  },
+  hero: {
+    types: { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' },
+    maxBytes: 4 * 1024 * 1024, // 4 MB — the client downscales first; this is the backstop
+  },
 };
-const MAX_LOGO_BYTES = 1024 * 1024; // 1 MB
+/** Branding object keys are UUID-suffixed (never rewritten), so cache forever. */
+const BRANDING_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 
 /** Sides a club fields in one league — absent map/key counts as 1 (legacy clubs). */
 function clubTeamCount(club: Club): number {
@@ -2720,34 +2731,44 @@ app.post('/platform/tenants/:slug/admins', async (c) => {
 /**
  * POST /platform/tenants/:slug/logo-upload — presigned POST (not PUT: only a POST
  * policy can enforce content-length-range) to the PUBLIC TutorialAssets bucket, so
- * the login page can show the logo unauthenticated. Body {contentType}; response
- * {url, fields, objectKey, publicUrl} — the client submits multipart form-data with
- * `fields` + the file to `url`, then saves `publicUrl` as branding.logoUrl.
+ * the login page can show the assets unauthenticated. Body {contentType, kind?}
+ * where kind is 'logo' (default) or 'hero'; response {url, fields, objectKey,
+ * publicUrl} — the client submits multipart form-data with `fields` + the file to
+ * `url`, then saves `publicUrl` as branding.logoUrl (logo) or as a url('…') value
+ * in the --hero-image colour token (hero).
  */
 app.post('/platform/tenants/:slug/logo-upload', async (c) => {
   const slug = c.req.param('slug');
   const config = await repo.getTenantConfig(slug);
   if (!config) throw new HttpError(404, 'tenant not found');
-  const { contentType } = await c.req
-    .json<{ contentType?: string }>()
-    .catch(() => ({ contentType: undefined }));
-  const ext = contentType ? LOGO_CONTENT_TYPES[contentType] : undefined;
+  const body = await c.req
+    .json<{ contentType?: string; kind?: string }>()
+    .catch(() => ({}) as { contentType?: string; kind?: string });
+  // An unknown kind must 400, not silently fall back to logo limits — a typo'd kind
+  // would otherwise surface as a baffling type/size rejection. Literal comparison,
+  // not `in`: prototype keys (kind:"toString") would pass an `in` check and 500.
+  const kind = body.kind || 'logo';
+  if (kind !== 'logo' && kind !== 'hero') throw new HttpError(400, 'kind must be "logo" or "hero"');
+  const rules = BRANDING_UPLOAD_KINDS[kind];
+  const contentType = body.contentType;
+  const ext = contentType ? rules.types[contentType] : undefined;
   if (!contentType || !ext)
-    throw new HttpError(400, 'contentType must be image/png, image/svg+xml or image/webp');
+    throw new HttpError(400, `contentType must be ${Object.keys(rules.types).join(', ')}`);
   if (!TUTORIALS_BUCKET)
     throw new HttpError(
       501,
-      'logo upload requires the cloud assets bucket (unavailable in offline dev)',
+      'asset upload requires the cloud assets bucket (unavailable in offline dev)',
     );
-  const objectKey = `branding/${slug}/logo-${randomUUID().slice(0, 8)}.${ext}`;
+  const objectKey = `branding/${slug}/${kind}-${randomUUID().slice(0, 8)}.${ext}`;
   const post = await createPresignedPost(s3, {
     Bucket: TUTORIALS_BUCKET,
     Key: objectKey,
     Conditions: [
-      ['content-length-range', 0, MAX_LOGO_BYTES],
+      ['content-length-range', 0, rules.maxBytes],
       ['eq', '$Content-Type', contentType],
+      ['eq', '$Cache-Control', BRANDING_CACHE_CONTROL],
     ],
-    Fields: { 'Content-Type': contentType },
+    Fields: { 'Content-Type': contentType, 'Cache-Control': BRANDING_CACHE_CONTROL },
     Expires: 300,
   });
   return c.json({
